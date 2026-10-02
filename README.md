@@ -9,8 +9,7 @@ FastAPI와 LangGraph 기반의 대화형 식단 추천 백엔드입니다. 사�
 - 사용자 재료 확인·수정
 - `session_id` 기반 LangGraph 상태 관리
 - 내부 레시피 DB 기반 추천
-- Nutrition·Shopping Tool 호출
-- ChromaDB 기반 재료 활용법·대체재·보관법 검색
+
 
 ## API
 

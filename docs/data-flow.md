@@ -10,51 +10,52 @@
 
 `POST /chat`의 외부 계약은 [Chat API 명세](api/chat.md)를 따릅니다. BE1과 BE2 사이의 호출 경로와 세부 payload 형식은 아직 구현 전이므로, 아래의 BE2 인터페이스는 역할 기반의 논리적 데이터 흐름입니다.
 
-## 1. FE → BE1: Chat API와 대화 상태 전이
+## 1. 외부 대화 흐름: FE ↔ BE1
+
+FE는 `POST /chat`만 호출하고, `status`와 `step`으로 다음 화면을 결정한다. BE1은 HTTP API,
+세션 상태, LangGraph 전이와 응답 DTO 변환을 담당한다.
 
 ```mermaid
 sequenceDiagram
     participant FE as FE Streamlit App
     participant BE1 as BE1 API Server and LangGraph
 
-    FE->>BE1: POST /chat
-    Note right of FE: session_id, message, attachments optional
-    BE1->>BE1: session_id로 대화 상태 조회 및 워크플로우 분기
+    FE->>BE1: POST /chat (이미지 없음)
+    BE1-->>FE: 200 NEED_MORE_INFO / IMAGE_INPUT
 
-    alt 이미지가 필요함
-        BE1-->>FE: 200 NEED_MORE_INFO and IMAGE_INPUT
-        Note left of FE: response, questions
-    else 이미지가 첨부됨
-        BE1->>BE1: BE2 Vision 결과를 세션 상태에 반영
-        BE1->>BE1: 후보를 세션 상태에 저장
-        BE1-->>FE: 200 NEED_MORE_INFO and INGREDIENT_CONFIRM
-        Note left of FE: response, ingredients
-    else 사용자가 재료를 확정함
-        BE1-->>FE: 200 NEED_MORE_INFO and CONDITION_INPUT
-        Note left of FE: response, questions
-    else 사용자가 조건을 입력함
-        BE1->>BE1: BE2 ToolResult를 세션 상태에 반영
-        BE1-->>FE: 200 SUCCESS and COMPLETED
-    else 처리 오류
-        BE1-->>FE: 500 ERROR
-        Note left of FE: response
-    end
+    FE->>BE1: POST /chat (이미지 첨부)
+    BE1->>BE1: 재료 후보를 세션 상태에 반영
+    BE1-->>FE: 200 NEED_MORE_INFO / INGREDIENT_CONFIRM
+
+    FE->>BE1: POST /chat (재료 확인 결과)
+    BE1-->>FE: 200 NEED_MORE_INFO / CONDITION_INPUT
+
+    FE->>BE1: POST /chat (식단·시간 조건)
+    BE1->>BE1: 도구 결과를 세션 상태에 반영
+    BE1-->>FE: 200 SUCCESS / COMPLETED
 ```
 
-FE는 `status`와 `step`으로 화면 흐름을 결정하고, `response`, `questions`, `ingredients`, `data`는 표시 데이터로 사용합니다. `ERROR`에는 `step`이 없습니다. BE1은 이미지를 직접 인식하지 않으며, 2절의 BE2 Vision 결과를 `INGREDIENT_CONFIRM` 응답으로 변환합니다.
+입력 형식 오류·안전성 검사 실패는 `400 ERROR`, 처리 실패는 `500 ERROR`로 반환한다. `ERROR`에는
+`step`이 없다. BE1은 이미지를 직접 인식하지 않으며, 2절의 BE2 Vision 결과를
+`INGREDIENT_CONFIRM` 응답으로 변환한다.
 
-## 2. BE1 → BE2: Vision·Tool Hub Function Call
+## 2. 내부 도구 흐름: BE1 ↔ BE2
+
+BE1은 사용자에게 확인받기 전의 재료 후보를 추천·RAG 입력으로 보내지 않는다. BE2는 Vision과
+Tool Hub 실행 결과만 반환하며, FE용 JSON으로 바꾸는 책임은 BE1에 있다.
 
 ```mermaid
 sequenceDiagram
     participant BE1 as BE1 LangGraph Orchestrator
     participant BE2 as BE2 Tool Hub, Vision, RAG
 
+    Note over BE1,BE2: 이미지 첨부 후
     BE1->>BE2: VisionRequest
     Note right of BE1: session_id, image input or image_ref
     BE2-->>BE1: ToolResult
     Note left of BE2: ingredient candidates, source metadata optional
 
+    Note over BE1,BE2: FE가 재료와 조건을 확정한 후
     BE1->>BE2: ToolRequest
     Note right of BE1: session_id, tool_name, confirmed_ingredients, user_conditions
     BE2-->>BE1: ToolResult
@@ -89,10 +90,14 @@ sequenceDiagram
 
 이미지 인식으로 얻은 재료 후보는 FE의 사용자 확인 전에는 BE2의 추천·검색 입력으로 사용하지 않습니다. BE2의 `ToolResult`는 BE1 내부 워크플로우용 결과이며, BE1이 이를 `/chat` 외부 응답 형태로 변환합니다.
 
-## 흐름 요약
+## 책임 경계 요약
 
 ```mermaid
 flowchart LR
-    FE[FE Streamlit App] <-->|ChatRequest and ChatResponse| BE1[BE1 API Server and LangGraph]
-    BE1 <-->|VisionRequest, ToolRequest, ToolResult| BE2[BE2 Tool Hub, Vision, RAG]
+    FE[FE]
+    BE1[BE1<br/>API · Session · LangGraph]
+    BE2[BE2<br/>Vision · Tool Hub · RAG]
+
+    FE <-->|ChatRequest · ChatResponse| BE1
+    BE1 <-->|VisionRequest · ToolRequest · ToolResult| BE2
 ```

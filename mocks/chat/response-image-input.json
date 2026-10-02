@@ -1,0 +1,8 @@
+{
+  "status": "NEED_MORE_INFO",
+  "step": "IMAGE_INPUT",
+  "response": "정확한 재료 확인을 위해 냉장고 또는 영수증 이미지를 첨부해주세요.",
+  "questions": [
+    "냉장고, 냉동실 또는 영수증 이미지를 첨부해주세요."
+  ]
+}

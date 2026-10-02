@@ -1,8 +1,10 @@
 from app.schemas.chat import (
     ChatConditionInputResponse,
     ChatErrorResponse,
+    ChatImageInputResponse,
     ChatRequest,
     ChatSuccessResponse,
+    RecommendationData,
 )
 
 
@@ -17,6 +19,15 @@ def test_chat_request_accepts_at_most_five_image_attachments() -> None:
     )
 
     assert len(request.attachments) == 5
+
+
+def test_chat_request_allows_missing_attachments() -> None:
+    request = ChatRequest(
+        session_id="session-002",
+        message="다이어트 저녁 메뉴 추천해줘.",
+    )
+
+    assert request.attachments == []
 
 
 def test_chat_response_models_match_each_workflow_state() -> None:
@@ -34,3 +45,38 @@ def test_chat_response_models_match_each_workflow_state() -> None:
     assert condition_response.step == "CONDITION_INPUT"
     assert error_response.status == "ERROR"
     assert ChatSuccessResponse.__name__ == "ChatSuccessResponse"
+
+    image_response = ChatImageInputResponse(
+        status="NEED_MORE_INFO",
+        step="IMAGE_INPUT",
+        response="이미지를 첨부해주세요.",
+        questions=["냉장고 또는 영수증 이미지를 첨부해주세요."],
+    )
+    assert image_response.step == "IMAGE_INPUT"
+
+
+def test_recommendation_data_requires_two_sets_of_five_recipes() -> None:
+    recipe = {
+        "recipe_id": "R001",
+        "title": "두부 양배추 볶음",
+        "image": None,
+        "cook_time": 20,
+        "owned_ingredients": ["두부"],
+        "missing_ingredients": [],
+        "shopping_list": [],
+        "nutrition": {
+            "calories": 430,
+            "protein": 28,
+            "carbohydrate": 18,
+            "fat": 15,
+        },
+    }
+    data = RecommendationData(
+        recipe_sets=[
+            {"set_id": "SET001", "recipes": [recipe.copy() for _ in range(5)]},
+            {"set_id": "SET002", "recipes": [recipe.copy() for _ in range(5)]},
+        ]
+    )
+
+    assert len(data.recipe_sets) == 2
+    assert all(len(recipe_set.recipes) == 5 for recipe_set in data.recipe_sets)

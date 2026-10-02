@@ -77,8 +77,13 @@ class Recipe(BaseModel):
     nutrition: Nutrition
 
 
+class RecipeSet(BaseModel):
+    set_id: str = Field(min_length=1)
+    recipes: list[Recipe] = Field(min_length=5, max_length=5)
+
+
 class RecommendationData(BaseModel):
-    recipes: list[Recipe] = Field(min_length=1)
+    recipe_sets: list[RecipeSet] = Field(min_length=2, max_length=2)
 
 
 class ChatSuccessResponse(BaseModel):
@@ -91,6 +96,13 @@ class ChatSuccessResponse(BaseModel):
 class ChatConditionInputResponse(BaseModel):
     status: Literal["NEED_MORE_INFO"]
     step: Literal["CONDITION_INPUT"]
+    response: str
+    questions: list[str] = Field(min_length=1)
+
+
+class ChatImageInputResponse(BaseModel):
+    status: Literal["NEED_MORE_INFO"]
+    step: Literal["IMAGE_INPUT"]
     response: str
     questions: list[str] = Field(min_length=1)
 
@@ -110,6 +122,7 @@ class ChatErrorResponse(BaseModel):
 ChatResponse = (
     ChatSuccessResponse
     | ChatConditionInputResponse
+    | ChatImageInputResponse
     | ChatIngredientConfirmResponse
     | ChatErrorResponse
 )

@@ -14,12 +14,12 @@ FastAPI Router
   ▼
 ChatService ── 세션별 현재 단계 저장
   │
-  ├── Jev 조건 판정 (선택 사항, CONDITION_INPUT에서만)
+  ├── Jev 자연어 조건 판정 (선택 사항)
   ▼
 LangGraph route_chat
   ▼
 응답 변환
-  ├── IMAGE_INPUT / INGREDIENT_CONFIRM / CONDITION_INPUT
+  ├── INPUT_REQUIREMENTS / IMAGE_INPUT / INGREDIENT_CONFIRM / CONDITION_INPUT
   └── COMPLETED → 임시 레시피 데이터 + OpenAI 완료 안내 문구
   ▼
 ChatResponse JSON
@@ -45,7 +45,7 @@ ChatResponse JSON
 ```json
 {
   "session_id": "session-001",
-  "message": "냉장고 재료로 저녁 메뉴를 추천해줘.",
+  "message": "다이어트 식단으로 20분 안에 만들고 싶어요.",
   "attachments": [
     { "type": "image", "data": "<base64-image-or-url>" }
   ]
@@ -57,6 +57,7 @@ ChatResponse JSON
 | `session_id` | 빈 문자열 불가. 동일 세션의 워크플로우 단계를 이어 간다. |
 | `message` | 1~2,000자. 안전성 검사를 통과해야 한다. |
 | `attachments` | 선택 사항이며 최대 5개. 현재 `image` 타입만 허용한다. |
+| 식단 목적·시간 | 별도 필드 없이 `message`에서 자연어로 전달한다. Jev 또는 fallback이 충분성을 판정한다. |
 
 ### 응답 공통 규칙
 
@@ -64,6 +65,7 @@ FE는 `status`, `step`만으로 화면 흐름을 분기한다.
 
 | HTTP | `status` | `step` | 의미 |
 | --- | --- | --- | --- |
+| 200 | `NEED_MORE_INFO` | `INPUT_REQUIREMENTS` | 이미지와 자연어 조건을 한 번에 수집한다. |
 | 200 | `NEED_MORE_INFO` | `IMAGE_INPUT` | 이미지 첨부가 필요하다. |
 | 200 | `NEED_MORE_INFO` | `INGREDIENT_CONFIRM` | 인식된 재료 후보의 확인이 필요하다. |
 | 200 | `NEED_MORE_INFO` | `CONDITION_INPUT` | 식단 목표·조리 시간 등의 조건이 필요하다. |
@@ -88,29 +90,33 @@ FastAPI 기본 검증 오류인 `422 {"detail": ...}`는 `app/main.py`에서 `40
 
 ```text
 WAITING_IMAGE
-  ├── 이미지 없음 ───────────────→ IMAGE_INPUT (WAITING_IMAGE 유지)
+  ├── 이미지·자연어 조건 없음 ────→ INPUT_REQUIREMENTS (WAITING_IMAGE 유지)
+  ├── 자연어 조건만 있음 ─────────→ IMAGE_INPUT (WAITING_IMAGE 유지)
   └── 이미지 있음 ───────────────→ INGREDIENT_CONFIRM
                                       │
 WAITING_INGREDIENT_CONFIRM ────────────┘
-  └──────────────────────────────────→ CONDITION_INPUT
+  ├── 조건 있음 ────────────────────→ COMPLETED
+  └── 조건 없음 ────────────────────→ CONDITION_INPUT
                                        (WAITING_CONDITIONS)
 
 WAITING_CONDITIONS
-  ├── Jev: needs_more_info, 신뢰도 충족 → CONDITION_INPUT 유지
-  └── 그 외(ready·비활성·실패·저신뢰) → COMPLETED
+  ├── 자연어 조건 부족 ────────────→ CONDITION_INPUT 유지
+  └── 자연어 조건 충족 ────────────→ COMPLETED
 ```
 
 | 내부 상태 | 외부 응답 | 다음 내부 상태 |
 | --- | --- | --- |
+| `WAITING_IMAGE`, 이미지·자연어 조건 없음 | `INPUT_REQUIREMENTS` | `WAITING_IMAGE` |
 | `WAITING_IMAGE`, 이미지 없음 | `IMAGE_INPUT` | `WAITING_IMAGE` |
 | `WAITING_IMAGE`, 이미지 있음 | `INGREDIENT_CONFIRM` | `WAITING_INGREDIENT_CONFIRM` |
+| `WAITING_INGREDIENT_CONFIRM`, 조건 있음 | `COMPLETED` | `COMPLETED` |
 | `WAITING_INGREDIENT_CONFIRM` | `CONDITION_INPUT` | `WAITING_CONDITIONS` |
 | `WAITING_CONDITIONS`, 조건 부족 | `CONDITION_INPUT` | `WAITING_CONDITIONS` |
 | `WAITING_CONDITIONS`, 조건 충족 또는 fallback | `COMPLETED` | `COMPLETED` |
 | `COMPLETED` | `COMPLETED` | `COMPLETED` |
 
 세션 상태는 `ChatSessionRepository` 뒤의 프로세스 메모리에 저장된다. 현재는 단계뿐 아니라
-재료 후보, 확정 재료, 마지막 조건 메시지를 보관할 수 있다. 서버를 재시작하면 상태가 초기화되고,
+재료 후보, 확정 재료, 충분성이 판별된 자연어 사용자 조건 원문을 보관할 수 있다. 서버를 재시작하면 상태가 초기화되고,
 멀티 인스턴스 배포 시에는 같은 인터페이스의 Redis·DB 구현체로 교체해야 한다.
 
 ## 4. 완료 응답의 데이터 구성
@@ -146,13 +152,14 @@ Recipe·Nutrition·Shopping·RAG Function Call을 요청한다.
 
 ## 5. TypeSafe Jev 조건 판정
 
-Jev는 `CONDITION_INPUT`에서 현재 사용자 메시지의 식단 목표·조리 시간 충족 여부를 판단한다.
+Jev는 모든 사용자 메시지에서 식단 목표·조리 시간 충족 여부를 판단한다. 외부 `/chat` 요청에는
+구조화된 조건 필드가 없으며, 충분하다고 판정된 메시지 원문만 세션의 내부 Tool 입력으로 보관한다.
 자세한 설치와 환경변수는 [Jev 연동 가이드](jev.md)를 참고한다.
 
-1. `ChatService`가 현재 상태가 `WAITING_CONDITIONS`인지 확인한다.
-2. 활성화된 경우 Jev API에 고정된 `choice` 질문을 보낸다.
-3. `choice`가 `needs_more_info`이고 confidence가 기준 이상이면 조건 입력을 반복한다.
-4. `ready`, API 실패, timeout, 응답 구조 오류, confidence 미달은 기존 Graph 흐름으로 fallback한다.
+1. `ChatService`가 자연어 `message`를 Jev의 고정된 `choice` 질문으로 평가한다.
+2. `ready`가 confidence 기준 이상이면 메시지 원문을 조건으로 보관한다.
+3. `needs_more_info`가 confidence 기준 이상이면 조건 입력을 반복한다.
+4. API 실패, timeout, 응답 구조 오류, confidence 미달은 목표 키워드와 시간 표현을 함께 확인하는 보수적 fallback으로 처리한다.
 
 외부 API 호출은 세션 잠금 밖에서 수행해, 한 세션의 네트워크 지연이 다른 세션의 처리를
 막지 않게 한다. API 키·사용자 메시지 원문은 애플리케이션 로그에 기록하지 않는다.
@@ -203,7 +210,7 @@ uv run uvicorn app.main:app --reload
 | 위치 | 검증 대상 |
 | --- | --- |
 | `tests/unit/test_chat_schema.py` | 요청 DTO 제약, 응답 DTO, 모든 응답 fixture의 계약 적합성 |
-| `tests/unit/test_chat_service.py` | 상태 전이, 안전 오류, 요청 형식 오류, Jev low-confidence fallback, OpenAPI 응답 코드 |
+| `tests/unit/test_chat_service.py` | 상태 전이, 동시 이미지·조건 수집, 안전 오류, 요청 형식 오류, Jev fallback, OpenAPI 응답 코드 |
 | `tests/unit/test_prompt_management.py` | 프롬프트 조합과 비신뢰 입력 분리 |
 | `tests/unit/test_safety.py` | 입력·출력 안전성 검사 |
 | `mocks/chat/` | FE가 사용할 상태별 요청·응답 예시 |

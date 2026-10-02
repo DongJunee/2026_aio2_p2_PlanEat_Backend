@@ -5,7 +5,7 @@
 """
 
 import asyncio
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Mapping
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -25,7 +25,7 @@ class ChatSessionState:
     step: str = "WAITING_IMAGE"
     ingredient_candidates: tuple[IngredientCandidate, ...] = field(default_factory=tuple)
     confirmed_ingredients: tuple[IngredientCandidate, ...] = field(default_factory=tuple)
-    user_conditions_message: str | None = None
+    user_conditions: Mapping[str, object] | None = None
 
 
 class ChatSessionRepository(Protocol):

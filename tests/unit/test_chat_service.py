@@ -45,7 +45,7 @@ def test_chat_api_advances_one_session_through_langgraph(monkeypatch) -> None:
         json={"session_id": session_id, "message": "저녁 메뉴 추천해줘"},
     )
     assert image_request.status_code == 200
-    assert image_request.json()["step"] == "IMAGE_INPUT"
+    assert image_request.json()["step"] == "INPUT_REQUIREMENTS"
 
     ingredient_confirmation = client.post(
         "/chat",
@@ -156,7 +156,7 @@ def test_high_confidence_jev_decision_keeps_condition_step() -> None:
 def test_tool_request_rejects_unconfirmed_ingredient_candidates() -> None:
     session = ChatSessionState(
         step="COMPLETED",
-        user_conditions_message="다이어트 식단으로 20분 안에 만들고 싶어요",
+        user_conditions={"message": "다이어트 식단으로 20분 안에 만들고 싶어요."},
     )
 
     with pytest.raises(ToolRequestPreparationError, match="확인한 재료"):
@@ -171,7 +171,7 @@ def test_fake_tool_hub_accepts_only_prepared_tool_request() -> None:
     session = ChatSessionState(
         step="COMPLETED",
         confirmed_ingredients=(IngredientCandidate(name="두부", amount="1모"),),
-        user_conditions_message="다이어트 식단으로 20분 안에 만들고 싶어요",
+        user_conditions={"message": "다이어트 식단으로 20분 안에 만들고 싶어요."},
     )
     request = build_tool_request(
         session_id="prepared-tool-request-session",
@@ -182,9 +182,7 @@ def test_fake_tool_hub_accepts_only_prepared_tool_request() -> None:
     result = asyncio.run(FakeToolHubProvider().execute(request))
 
     assert request.confirmed_ingredients == ({"name": "두부", "amount": "1모"},)
-    assert request.user_conditions == {
-        "message": "다이어트 식단으로 20분 안에 만들고 싶어요"
-    }
+    assert request.user_conditions == {"message": "다이어트 식단으로 20분 안에 만들고 싶어요."}
     assert result.result == {"accepted_tool_name": "recipe_recommendation"}
     assert result.source_metadata == {"provider": "fake-tool-hub"}
 
@@ -215,3 +213,29 @@ def test_image_step_keeps_ingredients_as_unconfirmed_candidates() -> None:
         "계란",
     ]
     assert session.confirmed_ingredients == ()
+
+
+def test_chat_api_reads_natural_language_conditions_in_one_follow_up(monkeypatch) -> None:
+    monkeypatch.setattr(chat_service, "_llm_responder", FakeCompletionMessageGenerator())
+    client = TestClient(app)
+    session_id = "combined-input-session"
+
+    initial = client.post(
+        "/chat", json={"session_id": session_id, "message": "메뉴 추천해줘"}
+    )
+    assert initial.json()["step"] == "INPUT_REQUIREMENTS"
+
+    image_and_message = client.post(
+        "/chat",
+        json={
+            "session_id": session_id,
+            "message": "다이어트 식단으로 20분 안에 만들고 싶어요",
+            "attachments": [{"type": "image", "data": "https://example.com/fridge.jpg"}],
+        },
+    )
+    assert image_and_message.json()["step"] == "INGREDIENT_CONFIRM"
+
+    completed = client.post(
+        "/chat", json={"session_id": session_id, "message": "재료가 맞아요"}
+    )
+    assert completed.json()["step"] == "COMPLETED"

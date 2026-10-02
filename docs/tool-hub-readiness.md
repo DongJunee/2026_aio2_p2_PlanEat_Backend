@@ -8,7 +8,7 @@
 | 항목 | 구현 위치 | 내용 |
 | --- | --- | --- |
 | 세션 저장소 경계 | `app/repositories/chat_session.py` | `ChatSessionRepository`와 메모리 구현체를 분리했다. 이후 Redis·DB 구현체로 교체할 수 있다. |
-| Tool 호출 전 상태 | `ChatSessionState` | 재료 후보, 확정 재료, 조건 메시지를 보관할 수 있다. |
+| Tool 호출 전 상태 | `ChatSessionState` | 재료 후보, 확정 재료, 충분성이 판별된 자연어 사용자 조건 원문을 보관할 수 있다. |
 | Tool 계약 경계 | `app/agent/tools/contracts.py` | `ToolRequest`, `ToolResult`, 요청 준비 오류를 정의했다. |
 | Vision 호출 경계 | `docs/data-flow.md` | BE1이 첨부 이미지를 BE2 Vision Function Call로 전달하고 후보를 받는 목표 흐름을 정의했다. 상세 DTO는 팀 합의 전이다. |
 | 사용자 확인 보호 | `build_tool_request()` | `confirmed_ingredients`가 비어 있으면 Tool 요청 생성을 거부한다. 이미지 후보 재료는 전달하지 않는다. |
@@ -35,8 +35,8 @@
 
 1. **재료 확인 입력 형식**: 확인, 삭제, 수량 수정, 재료 추가를 어떤 JSON 또는 메시지 형식으로
    FE가 보낼지 결정한다. 합의 후에만 `confirmed_ingredients`를 채운다.
-2. **사용자 조건 DTO**: 식단 목표, 조리 시간, 알레르기 등의 필드·필수 여부·정규화 규칙을
-   결정한다. 현재는 원문 메시지만 보관하며, Tool 요청에서도 임시 `message` 필드로만 표현한다.
+2. **사용자 조건 DTO**: 현재 `diet_goal`, `cook_time_minutes`를 수집한다. 알레르기 등 추가
+   필드의 필수 여부·정규화 규칙은 FE·BE2와 합의해 확장한다.
 3. **BE2 endpoint와 인증**: URL, 인증 방식, tool 이름의 허용 목록, 요청·응답의 상세 DTO를
    정한다. Vision 요청에 이미지를 직접 담을지 안전한 `image_ref`를 쓸지도 함께 결정한다.
 4. **오류 정책**: timeout, 재시도 횟수, 부분 결과, BE2 오류를 FE에 어떻게 표시할지 결정한다.

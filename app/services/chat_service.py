@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 from collections.abc import Mapping, Sequence
+import re
 from typing import Protocol
 
 from app.agent.graph import ChatState, WorkflowStep, chat_graph
@@ -75,22 +76,21 @@ class ChatService:
 
         session = await self._session_repository.get(request.session_id)
         previous_step = session.step
+        request_conditions = await self._read_conditions_from_message(request.message)
+        effective_conditions = request_conditions or session.user_conditions
         state: ChatState = {
             "step": previous_step,
             "has_image": bool(request.attachments),
+            "has_conditions": effective_conditions is not None,
         }
         if previous_step == "WAITING_CONDITIONS":
-            # 외부 I/O를 세션 잠금 밖에서 수행해 다른 세션을 지연시키지 않는다.
-            # Jev가 비활성화·실패·저신뢰이면 None으로 남겨 기존 완료 전이를 유지한다.
-            decision = await self._condition_evaluator.evaluate(request.message)
-            state["condition_ready"] = decision.is_ready if decision is not None else None
+            state["condition_ready"] = effective_conditions is not None
 
         result = await chat_graph.ainvoke(state)
         next_session = _next_session_state(
             session=session,
             next_step=result["step"],
-            previous_step=previous_step,
-            user_message=request.message,
+            user_conditions=request_conditions,
         )
         await self._session_repository.save(request.session_id, next_session)
 
@@ -112,6 +112,17 @@ class ChatService:
                 "step": "IMAGE_INPUT",
                 "response": "정확한 재료 확인을 위해 냉장고 또는 영수증 이미지를 첨부해주세요.",
                 "questions": ["냉장고, 냉동실 또는 영수증 이미지를 첨부해주세요."],
+            }
+        if response_kind == "INPUT_REQUIREMENTS":
+            return {
+                "status": "NEED_MORE_INFO",
+                "step": "INPUT_REQUIREMENTS",
+                "response": "추천에 필요한 이미지와 조건을 자연어로 함께 알려주세요.",
+                "questions": [
+                    "냉장고, 냉동실 또는 영수증 이미지를 첨부해주세요.",
+                    "메시지에 식단 목표를 알려주세요. 예: 다이어트, 고단백, 채식",
+                    "메시지에 조리 가능한 시간을 알려주세요. 예: 20분 이내",
+                ],
             }
         if response_kind == "INGREDIENT_CONFIRM":
             return {
@@ -138,22 +149,60 @@ class ChatService:
             "data": {"recipe_sets": recipe_sets},
         }
 
+    async def _read_conditions_from_message(
+        self, user_message: str
+    ) -> Mapping[str, object] | None:
+        """자연어 메시지에서 추천 조건의 충분성을 판단해 내부 전달값으로 보관합니다.
+
+        외부 API에 구조화된 ``conditions`` 필드를 노출하지 않는다. Jev의 고신뢰 판단을
+        우선하며, 비활성화·장애·저신뢰 상황에서는 개발 환경에서도 동작하도록 최소한의
+        목표·시간 표현만 확인한다. Tool Hub에는 원문만 전달해 별도 계약 합의 전 임의의
+        추출 필드를 강제하지 않는다.
+        """
+
+        # 외부 I/O는 세션 저장소 잠금 밖에서 실행한다.
+        decision = await self._condition_evaluator.evaluate(user_message)
+        if decision is not None:
+            if not decision.is_ready:
+                return None
+            return {"message": user_message}
+
+        if _has_fallback_conditions(user_message):
+            return {"message": user_message}
+        return None
+
 
 def _next_session_state(
     *,
     session: ChatSessionState,
     next_step: WorkflowStep,
-    previous_step: WorkflowStep,
-    user_message: str,
+    user_conditions: Mapping[str, object] | None,
 ) -> ChatSessionState:
     """단계 전이 중 얻은 데이터를 Tool 호출용 세션 상태에 안전하게 보존합니다."""
 
     next_session = replace(session, step=next_step)
     if next_step == "WAITING_INGREDIENT_CONFIRM" and not session.ingredient_candidates:
-        return replace(next_session, ingredient_candidates=_INGREDIENT_CANDIDATES)
-    if previous_step == "WAITING_CONDITIONS" and next_step == "COMPLETED":
-        return replace(next_session, user_conditions_message=user_message)
+        next_session = replace(next_session, ingredient_candidates=_INGREDIENT_CANDIDATES)
+    if user_conditions is not None:
+        return replace(next_session, user_conditions=user_conditions)
     return next_session
+
+
+def _has_fallback_conditions(user_message: str) -> bool:
+    """Jev를 사용할 수 없을 때만 적용할 보수적인 자연어 조건 확인 규칙입니다."""
+
+    has_goal = bool(
+        re.search(
+            r"다이어트|체중.?감량|저칼로리|저탄고지|저탄수|고단백|벌크업|건강식|건강한|"
+            r"채식|비건|당.?조절|일반식",
+            user_message,
+            flags=re.IGNORECASE,
+        )
+    )
+    has_time = bool(
+        re.search(r"\d+\s*분(?:\s*(?:안|이내|내))?|\d+\s*시간", user_message)
+    )
+    return has_goal and has_time
 
 
 def _demo_recipe_sets() -> list[dict[str, object]]:

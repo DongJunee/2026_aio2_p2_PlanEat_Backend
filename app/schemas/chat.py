@@ -106,6 +106,15 @@ class ChatImageInputResponse(BaseModel):
     questions: list[str] = Field(min_length=1)
 
 
+class ChatInputRequirementsResponse(BaseModel):
+    """이미지와 자연어 추천 조건을 한 번에 수집하는 응답입니다."""
+
+    status: Literal["NEED_MORE_INFO"]
+    step: Literal["INPUT_REQUIREMENTS"]
+    response: str
+    questions: list[str] = Field(min_length=1)
+
+
 class ChatIngredientConfirmResponse(BaseModel):
     status: Literal["NEED_MORE_INFO"]
     step: Literal["INGREDIENT_CONFIRM"]
@@ -122,6 +131,7 @@ ChatResponse = (
     ChatSuccessResponse
     | ChatConditionInputResponse
     | ChatImageInputResponse
+    | ChatInputRequirementsResponse
     | ChatIngredientConfirmResponse
     | ChatErrorResponse
 )

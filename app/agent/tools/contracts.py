@@ -19,8 +19,9 @@ class ToolRequestPreparationError(ValueError):
 class ToolRequest:
     """BE1에서 BE2로 전달할 정규화 전 Tool 요청입니다.
 
-    ``confirmed_ingredients``와 ``user_conditions``의 상세 필드는 BE2와 합의 후
-    구체 DTO로 교체한다. 현재는 임의의 후보 재료가 전달되는 것을 방지하는 역할을 한다.
+    ``user_conditions``에는 BE1이 자연어 메시지에서 충분성을 판별한 조건 원문을 담는다.
+    상세 추출 DTO는 BE2와 합의 후 구체화한다. 현재는 임의의 후보 재료가 전달되는 것을
+    방지하는 역할을 한다.
     """
 
     session_id: str
@@ -45,7 +46,7 @@ def build_tool_request(
 
     if not session.confirmed_ingredients:
         raise ToolRequestPreparationError("사용자가 확인한 재료가 없습니다.")
-    if not session.user_conditions_message:
+    if not session.user_conditions:
         raise ToolRequestPreparationError("사용자 조건이 없습니다.")
 
     return ToolRequest(
@@ -55,6 +56,5 @@ def build_tool_request(
             {"name": ingredient.name, "amount": ingredient.amount}
             for ingredient in session.confirmed_ingredients
         ),
-        # 자연어 조건의 세부 정규화 규칙은 FE·BE2 합의 전까지 확정하지 않는다.
-        user_conditions={"message": session.user_conditions_message},
+        user_conditions=session.user_conditions,
     )

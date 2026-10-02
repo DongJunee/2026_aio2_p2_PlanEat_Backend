@@ -20,24 +20,23 @@ sequenceDiagram
     participant FE as FE Streamlit App
     participant BE1 as BE1 API Server and LangGraph
 
-    FE->>BE1: POST /chat (이미지 없음)
-    BE1-->>FE: 200 NEED_MORE_INFO / IMAGE_INPUT
+    FE->>BE1: POST /chat (이미지·자연어 조건 없음)
+    BE1-->>FE: 200 NEED_MORE_INFO / INPUT_REQUIREMENTS
 
-    FE->>BE1: POST /chat (이미지 첨부)
+    FE->>BE1: POST /chat (이미지·자연어 message 함께 전송)
     BE1->>BE1: 재료 후보를 세션 상태에 반영
     BE1-->>FE: 200 NEED_MORE_INFO / INGREDIENT_CONFIRM
 
     FE->>BE1: POST /chat (재료 확인 결과)
-    BE1-->>FE: 200 NEED_MORE_INFO / CONDITION_INPUT
-
-    FE->>BE1: POST /chat (식단·시간 조건)
     BE1->>BE1: 도구 결과를 세션 상태에 반영
     BE1-->>FE: 200 SUCCESS / COMPLETED
 ```
 
 입력 형식 오류·안전성 검사 실패는 `400 ERROR`, 처리 실패는 `500 ERROR`로 반환한다. `ERROR`에는
-`step`이 없다. BE1은 이미지를 직접 인식하지 않으며, 2절의 BE2 Vision 결과를
-`INGREDIENT_CONFIRM` 응답으로 변환한다.
+`step`이 없다. 이미지와 자연어 조건이 모두 없으면 BE1은 `INPUT_REQUIREMENTS`로 두 입력을 함께
+요청한다. FE는 별도 조건 JSON이 아닌 `message`에 식단 목적·조리 시간을 적어 보낸다. 한쪽만 있으면
+기존 `IMAGE_INPUT` 또는 `CONDITION_INPUT`을 반환한다. BE1은 이미지를
+직접 인식하지 않으며, 2절의 BE2 Vision 결과를 `INGREDIENT_CONFIRM` 응답으로 변환한다.
 
 ## 2. 내부 도구 흐름: BE1 ↔ BE2
 

@@ -98,6 +98,6 @@ LLM 최종 응답을 사용하려면 `.env`에 `OPENAI_API_KEY`를 설정합니�
 
 ### 선택 사항: TypeSafe Jev 조건 판정
 
-`TYPESAFE_JEV_ENABLED=true`와 `TYPESAFE_API_KEY`를 설정하면, `CONDITION_INPUT` 단계에서 Jev가 식단 목표와 조리 가능 시간이 모두 제공됐는지 판정합니다. 신뢰도가 `TYPESAFE_JEV_MIN_CONFIDENCE` 이상일 때만 결과를 반영합니다. API 키가 없거나 Jev 호출이 실패·저신뢰이면 기존 LangGraph 전이로 자동 fallback됩니다.
+`TYPESAFE_JEV_ENABLED=true`와 `TYPESAFE_API_KEY`를 설정하면, Jev가 각 자연어 `message`에서 식단 목표와 조리 가능 시간이 모두 제공됐는지 판정합니다. 신뢰도가 `TYPESAFE_JEV_MIN_CONFIDENCE` 이상일 때만 결과를 반영합니다. API 키가 없거나 Jev 호출이 실패·저신뢰이면 목표 키워드와 시간 표현을 확인하는 보수적 fallback이 적용됩니다.
 
 Jev에는 이 판정에 필요한 현재 사용자 메시지만 전송됩니다. 실서비스 활성화 전에는 개인정보 처리·보관 정책과 TypeSafe 계약을 확인하세요.

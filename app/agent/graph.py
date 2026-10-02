@@ -15,14 +15,19 @@ WorkflowStep = Literal[
 class ChatState(TypedDict, total=False):
     step: WorkflowStep
     has_image: bool
+    has_conditions: bool
     condition_ready: bool | None
     response_kind: Literal[
-        "IMAGE_INPUT", "INGREDIENT_CONFIRM", "CONDITION_INPUT", "COMPLETED"
+        "IMAGE_INPUT",
+        "INPUT_REQUIREMENTS",
+        "INGREDIENT_CONFIRM",
+        "CONDITION_INPUT",
+        "COMPLETED",
     ]
 
 
 def route_chat(state: ChatState) -> ChatState:
-    """현재 세션 단계와 이미지 첨부 여부로 다음 FE 응답을 결정합니다."""
+    """현재 세션 단계와 자연어 조건 판정 결과로 다음 FE 응답을 결정합니다."""
 
     step = state.get("step", "WAITING_IMAGE")
 
@@ -32,10 +37,17 @@ def route_chat(state: ChatState) -> ChatState:
                 "step": "WAITING_INGREDIENT_CONFIRM",
                 "response_kind": "INGREDIENT_CONFIRM",
             }
+        if not state.get("has_conditions"):
+            return {"step": "WAITING_IMAGE", "response_kind": "INPUT_REQUIREMENTS"}
         return {"step": "WAITING_IMAGE", "response_kind": "IMAGE_INPUT"}
 
     if step == "WAITING_INGREDIENT_CONFIRM":
+        if state.get("has_conditions"):
+            return {"step": "COMPLETED", "response_kind": "COMPLETED"}
         return {"step": "WAITING_CONDITIONS", "response_kind": "CONDITION_INPUT"}
+
+    if step == "WAITING_CONDITIONS" and state.get("has_conditions"):
+        return {"step": "COMPLETED", "response_kind": "COMPLETED"}
 
     if step == "WAITING_CONDITIONS" and state.get("condition_ready") is False:
         # Jev가 높은 신뢰도로 조건 부족을 판단했을 때만 한 번 더 입력을 받는다.

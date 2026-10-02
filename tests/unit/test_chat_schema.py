@@ -9,6 +9,7 @@ from app.schemas.chat import (
     ChatConditionInputResponse,
     ChatErrorResponse,
     ChatImageInputResponse,
+    ChatInputRequirementsResponse,
     ChatRequest,
     ChatSuccessResponse,
     ChatResponse,
@@ -40,6 +41,17 @@ def test_chat_request_allows_missing_attachments() -> None:
     assert request.attachments == []
 
 
+def test_chat_request_rejects_structured_conditions() -> None:
+    """식단 목표와 시간은 별도 DTO가 아니라 message에서 판별한다."""
+
+    with pytest.raises(ValidationError):
+        ChatRequest(
+            session_id="session-conditions",
+            message="다이어트 식단으로 20분 안에 만들고 싶어요.",
+            conditions={"diet_goal": "다이어트", "cook_time_minutes": 20},
+        )
+
+
 def test_chat_request_rejects_an_overly_long_message() -> None:
     with pytest.raises(ValidationError):
         ChatRequest(session_id="session-003", message="a" * 2_001)
@@ -68,6 +80,14 @@ def test_chat_response_models_match_each_workflow_state() -> None:
         questions=["냉장고 또는 영수증 이미지를 첨부해주세요."],
     )
     assert image_response.step == "IMAGE_INPUT"
+
+    combined_response = ChatInputRequirementsResponse(
+        status="NEED_MORE_INFO",
+        step="INPUT_REQUIREMENTS",
+        response="이미지와 조건을 알려주세요.",
+        questions=["이미지를 첨부해주세요.", "식단 목표를 선택해주세요."],
+    )
+    assert combined_response.step == "INPUT_REQUIREMENTS"
 
 
 def test_recommendation_data_requires_two_sets_of_five_recipes() -> None:
@@ -104,6 +124,7 @@ def test_response_fixtures_match_chat_response_contract() -> None:
         "response-condition-input.json",
         "response-error.json",
         "response-image-input.json",
+        "response-input-requirements.json",
         "response-ingredient-confirm.json",
         "response-success.json",
     ):

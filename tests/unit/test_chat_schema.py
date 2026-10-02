@@ -1,11 +1,21 @@
+import json
+from pathlib import Path
+
+import pytest
+from pydantic import ValidationError
+from pydantic.type_adapter import TypeAdapter
+
 from app.schemas.chat import (
     ChatConditionInputResponse,
     ChatErrorResponse,
     ChatImageInputResponse,
     ChatRequest,
     ChatSuccessResponse,
+    ChatResponse,
     RecommendationData,
 )
+
+_MOCK_DIRECTORY = Path(__file__).resolve().parents[2] / "mocks" / "chat"
 
 
 def test_chat_request_accepts_at_most_five_image_attachments() -> None:
@@ -28,6 +38,11 @@ def test_chat_request_allows_missing_attachments() -> None:
     )
 
     assert request.attachments == []
+
+
+def test_chat_request_rejects_an_overly_long_message() -> None:
+    with pytest.raises(ValidationError):
+        ChatRequest(session_id="session-003", message="a" * 2_001)
 
 
 def test_chat_response_models_match_each_workflow_state() -> None:
@@ -80,3 +95,16 @@ def test_recommendation_data_requires_two_sets_of_five_recipes() -> None:
 
     assert len(data.recipe_sets) == 2
     assert all(len(recipe_set.recipes) == 5 for recipe_set in data.recipe_sets)
+
+
+def test_response_fixtures_match_chat_response_contract() -> None:
+    adapter = TypeAdapter(ChatResponse)
+
+    for filename in (
+        "response-condition-input.json",
+        "response-error.json",
+        "response-image-input.json",
+        "response-ingredient-confirm.json",
+        "response-success.json",
+    ):
+        adapter.validate_python(json.loads((_MOCK_DIRECTORY / filename).read_text()))

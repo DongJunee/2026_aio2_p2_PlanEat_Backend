@@ -18,7 +18,7 @@ class ChatRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     session_id: str = Field(min_length=1)
-    message: str = Field(min_length=1)
+    message: str = Field(min_length=1, max_length=2_000)
     attachments: list[Attachment] = Field(default_factory=list, max_length=5)
 
 

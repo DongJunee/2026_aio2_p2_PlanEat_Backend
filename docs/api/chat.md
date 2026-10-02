@@ -12,7 +12,7 @@ Content-Type: application/json
 | Field | Type | Required | Description |
 |---|---|:---:|---|
 | `session_id` | string | O | 대화 세션 ID |
-| `message` | string | O | 자연어 요청 또는 추가 답변 |
+| `message` | string | O | 자연어 요청 또는 추가 답변, 최대 2,000자 |
 | `attachments` | array | X | 이미지 목록, 최대 5개 |
 
 ```json
@@ -31,6 +31,30 @@ Content-Type: application/json
 `attachments[].type`은 현재 `image`만 지원합니다.
 
 ## Response
+
+`status`와 `step`은 FE 분기 처리에 사용하는 고정 코드입니다. 사용자에게 표시하는 문구는 `response`, 추가 입력 항목은 `questions`·`ingredients`·`data`를 사용합니다.
+
+### 상태 코드
+
+| HTTP 상태 | `status` | 설명 |
+|---:|---|---|
+| 200 | `SUCCESS` | 레시피 추천이 완료되었습니다. |
+| 200 | `NEED_MORE_INFO` | 다음 진행을 위해 사용자 입력 또는 확인이 필요합니다. |
+| 400 | `ERROR` | 요청 형식이 올바르지 않거나, 정규화된 입력 검증에서 안전하지 않은 요청으로 판단되었습니다. |
+| 500 | `ERROR` | 요청 처리 중 서버 오류가 발생했습니다. |
+
+### 진행 단계 코드
+
+`step`은 `status`가 `SUCCESS` 또는 `NEED_MORE_INFO`일 때 포함됩니다.
+
+| `status` | `step` | FE 처리 |
+|---|---|---|
+| `SUCCESS` | `COMPLETED` | `data.recipe_sets`를 표시합니다. |
+| `NEED_MORE_INFO` | `IMAGE_INPUT` | `questions`를 표시하고 이미지 첨부를 요청합니다. |
+| `NEED_MORE_INFO` | `CONDITION_INPUT` | `questions`를 표시하고 추가 조건을 입력받습니다. |
+| `NEED_MORE_INFO` | `INGREDIENT_CONFIRM` | `ingredients`를 표시하고 인식 재료를 확인받습니다. |
+
+`ERROR` 응답에는 `step`을 포함하지 않습니다.
 
 ### 이미지 첨부 필요: `200 NEED_MORE_INFO`
 
@@ -106,12 +130,23 @@ FE에서 사용할 수 있는 전체 성공 응답은 [`mocks/chat/response-succ
 }
 ```
 
-### Error: `500`
+### Error: `400` 또는 `500`
 
 ```json
 {
   "status": "ERROR",
   "response": "요청 처리 중 오류가 발생했습니다."
+}
+```
+
+요청 본문이 DTO 규칙에 맞지 않으면 HTTP `400`과 아래 형식을 반환합니다. FastAPI 기본
+`422` 검증 오류 객체를 반환하지 않으므로, FE는 모든 오류를 같은 `ERROR` 형태로 처리할 수
+있습니다.
+
+```json
+{
+  "status": "ERROR",
+  "response": "요청 형식이 올바르지 않습니다."
 }
 ```
 
@@ -172,6 +207,16 @@ FE에서 사용할 수 있는 전체 성공 응답은 [`mocks/chat/response-succ
 ## 처리 규칙
 
 - `session_id`로 LangGraph State를 유지합니다.
+- Tool Hub 연동 전에는 이미지 인식 재료와 추천 결과를 API·FE 통합 검증용 임시 데이터로 반환합니다.
+- `COMPLETED` 단계의 `response` 문구는 `OPENAI_MODEL`(기본값 `gpt-4o-mini`)로 생성합니다.
+- OpenAI API 키가 없거나 LLM 호출에 실패하면 `500 ERROR`를 반환합니다.
+- 최종 추천 응답 프롬프트는 [`prompts/`](../../prompts/)의 공통·단계별 조각을 조합해 관리합니다.
+- 프롬프트의 역할·출력·보안 지시는 `instructions`에, 사용자 메시지와 추천 데이터는 출처별 `input` 블록에 분리해 전달합니다.
+- 최종 응답 LLM에는 Tool을 제공하지 않으며, 출력은 최대 120 토큰으로 제한합니다.
+- Chat API는 NFKC·소문자·구분 문자 제거로 정규화한 입력을 검사하고, 통과한 사용자
+  메시지도 비신뢰 데이터 블록으로만 LLM에 전달합니다. LLM 출력은 내부 지시·API 키 노출
+  여부를 다시 검사합니다.
+- Tool Hub 연동 후에는 이 임시 데이터를 Vision·Recipe·Nutrition·Shopping Tool 실행 결과로 대체합니다.
 - 사용자 확인 전의 이미지 인식 결과는 추천에 사용하지 않습니다.
 - Recipe Tool은 내부 레시피 DB를 조회합니다.
 - Nutrition Tool은 영양 정보를 제공합니다.

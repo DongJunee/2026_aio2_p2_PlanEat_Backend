@@ -4,7 +4,7 @@ FE 개발용 `POST /chat` 요청·응답 fixture입니다.
 
 | 파일 | 용도 |
 |---|---|
-| `request-text.json` | 텍스트 요청 |
+| `request-no-image.json` | 이미지 없이 보내는 텍스트 요청 |
 | `request-image.json` | 이미지 첨부 요청 |
 | `response-image-input.json` | 이미지 첨부 요청 응답 |
 | `response-ingredient-confirm.json` | 인식 재료 확인 단계 |

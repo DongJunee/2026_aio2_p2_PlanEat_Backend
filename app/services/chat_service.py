@@ -157,7 +157,7 @@ def _next_session_state(
 
 
 def _demo_recipe_sets() -> list[dict[str, object]]:
-    """BE1 연결 전 API·FE 통합 검증에 사용할 최소 유효 응답입니다."""
+    """BE2 연결 전 API·FE 통합 검증에 사용할 최소 유효 응답입니다."""
 
     recipes = [
         {

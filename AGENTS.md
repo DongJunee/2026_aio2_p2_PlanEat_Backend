@@ -1,6 +1,6 @@
 # PlanEat Backend 협업 지침
 
-> 최종 수정: 2026-10-02 (v1.0)
+> 최종 수정: 2026-10-03 (v1.1)
 >
 > 이 문서를 수정하면 날짜와 버전을 함께 갱신한다.
 
@@ -16,8 +16,8 @@
 - API 계약: `docs/api/chat.md`
 - FE fixture: `mocks/chat/`
 - 데이터 흐름: `docs/data-flow.md`
-- 현재 Tool Hub·RAG는 미연동 상태다. BE2는 API·세션·LangGraph 단계 전이만 담당하며,
-  BE1이 준비되기 전에는 결정적인 임시 데이터로 FE 통합을 검증한다.
+- 현재 Tool Hub·RAG는 미연동 상태다. BE1은 API·세션·LangGraph 단계 전이만 담당하며,
+  BE2가 준비되기 전에는 결정적인 임시 데이터로 FE 통합을 검증한다.
 
 다음 문서는 구현의 기준이다.
 
@@ -38,7 +38,7 @@ app/
 ├── api/v1/endpoints/chat/  HTTP 입력 수신, 응답 모델 노출
 ├── schemas/                Pydantic 요청·응답 DTO와 검증 규칙
 ├── agent/                  LangGraph State, 노드, 전이 규칙
-│   └── tools/              BE1 Tool Hub 연결 어댑터의 확장 지점
+│   └── tools/              BE2 Tool Hub 연결 어댑터의 확장 지점
 ├── services/               세션 상태와 워크플로우 실행 연결
 ├── integrations/           LLM·Vision·Recipe Source·Vector Store 연결
 ├── repositories/           세션·레시피 DB 접근
@@ -61,10 +61,10 @@ tests/                      pytest 단위·API 통합 테스트
 
 | 역할 | 담당자 | 주 담당 영역 | 책임 산출물 |
 | --- | --- | --- | --- |
-| BE1 | 박동준 | Tool Hub·RAG | Tool 실행·RAG 검색, 정규화된 `ToolResult` 반환 |
-| BE2 | 최경락 | LangGraph Orchestrator·API Server | `/chat` 계약, 세션 상태, LangGraph 분기, FE 응답 변환 |
+| BE1 | 최경락 | LangGraph Orchestrator·API Server | `/chat` 계약, 세션 상태, LangGraph 분기, FE 응답 변환 |
+| BE2 | 박동준 | Tool Hub·RAG | Tool 실행·RAG 검색, 정규화된 `ToolResult` 반환 |
 
-### FE ↔ BE2 계약
+### FE ↔ BE1 계약
 
 ```text
 ChatRequest  = { session_id, message, attachments? }
@@ -81,9 +81,9 @@ ChatResponse.step   = COMPLETED | IMAGE_INPUT | CONDITION_INPUT | INGREDIENT_CON
 - `shopping_list` 항목은 `ingredient`, `amount`만 가진다. 가격·비용·예산 필드를
   새로 추가하지 않는다.
 
-### BE2 ↔ BE1 계약
+### BE1 ↔ BE2 계약
 
-BE1 인터페이스의 URL과 상세 DTO는 BE1 구현 시점에 합의한다. 그 전까지 BE2는 BE1을
+BE2 인터페이스의 URL과 상세 DTO는 BE2 구현 시점에 합의한다. 그 전까지 BE1은 BE2를
 직접 호출하지 않으며, fixture 또는 fake provider를 통해 전이와 API 계약만 검증한다.
 
 ```text
@@ -92,7 +92,7 @@ ToolResult  = { result, source_metadata?, error? }
 ```
 
 - 사용자 확인 전 이미지 인식 재료 후보를 추천·RAG 입력으로 사용하지 않는다.
-- BE1 결과는 BE2 내부 상태에 반영한 뒤 `/chat` 응답 DTO로 변환한다.
+- BE2 결과는 BE1 내부 상태에 반영한 뒤 `/chat` 응답 DTO로 변환한다.
 - Tool Hub 연동으로 외부 API 계약을 바꿔서는 안 된다. 계약 변경이 필요하면 5절을
   따른다.
 
@@ -118,9 +118,9 @@ ToolResult  = { result, source_metadata?, error? }
   성공·실패 경로를 재현한다.
 - 운영 프롬프트는 최상단 `prompts/`에서만 관리한다. 사용자 메시지나 Tool Hub·RAG
   결과를 `instructions`에 붙여 넣지 않고, 출처를 표시한 비신뢰 입력 블록으로 전달한다.
-- Tool Hub의 timeout, 재시도, fallback, 결과 DTO를 바꾸면 BE1·BE2 담당자와 API 계약,
+- Tool Hub의 timeout, 재시도, fallback, 결과 DTO를 바꾸면 BE2·BE1 담당자와 API 계약,
   fixture, 테스트를 함께 갱신한다.
-- BE1이 아직 준비되지 않은 영역은 임시 데이터를 사용할 수 있으나, 코드 docstring과
+- BE2가 아직 준비되지 않은 영역은 임시 데이터를 사용할 수 있으나, 코드 docstring과
   문서에 임시 동작임을 표시하고 교체 지점을 분리한다.
 
 ## 5. API·계약 변경 규칙
@@ -133,7 +133,7 @@ ToolResult  = { result, source_metadata?, error? }
 3. `docs/api/chat.md`와 관련 `mocks/chat/*.json`을 갱신한다.
 4. 정상 흐름과 해당 실패·입력 검증 흐름의 테스트를 추가·수정한다.
 5. `/openapi.json`에서 경로와 요청·응답 스키마가 의도대로 노출되는지 확인한다.
-6. FE 또는 BE1에 영향을 주면 변경 전 담당자에게 공유한다.
+6. FE 또는 BE2에 영향을 주면 변경 전 담당자에게 공유한다.
 
 기존 FE 계약을 깨는 필드 삭제·이름 변경·타입 변경은 임의로 진행하지 않는다. 호환 계층,
 버전 경로, 또는 팀 합의된 동시 배포 방식을 먼저 결정한다.
@@ -170,4 +170,4 @@ ToolResult  = { result, source_metadata?, error? }
 - [ ] 새 환경변수·의존성·외부 서비스 변경이 관련 파일에 반영되었고 비밀값은 없다.
 - [ ] `PYTHONPATH=. uv run pytest`와 `git diff --check`를 실행했거나 실행할 수 없는 이유를
   기록했다.
-- [ ] 공유 파일 또는 FE·BE1 계약을 바꿨다면 관련 담당자에게 리뷰를 요청했다.
+- [ ] 공유 파일 또는 FE·BE2 계약을 바꿨다면 관련 담당자에게 리뷰를 요청했다.

@@ -45,7 +45,44 @@ sequenceDiagram
 
 FE는 `status`와 `step`으로 화면 흐름을 결정하고, `response`, `questions`, `ingredients`, `data`는 표시 데이터로 사용합니다. `ERROR`에는 `step`이 없습니다. BE1은 이미지를 직접 인식하지 않으며, BE2의 Vision Function Call 결과를 `INGREDIENT_CONFIRM` 응답으로 변환합니다.
 
-## 2. BE1 → BE2: 도구 실행과 RAG 결과
+## 2. FE → BE1 → Jev: 조건 충분성 판정
+
+Jev는 선택적 결정 모델이며, `CONDITION_INPUT` 단계에서만 사용한다. 레시피 생성이나 최종
+사용자 안내 문구 생성에는 사용하지 않는다.
+
+```mermaid
+sequenceDiagram
+    participant FE as FE Streamlit App
+    participant BE1 as BE1 API Server and LangGraph
+    participant Jev as TypeSafe Jev (optional)
+    participant BE2 as BE2 Tool Hub and RAG
+
+    FE->>BE1: 조건 입력
+    Note right of FE: 식단 목표, 조리 시간 등
+    BE1->>BE1: CONDITION_INPUT 상태 확인
+
+    alt Jev 활성화 및 API 키 설정됨
+        BE1->>Jev: Choice 질문
+        Note right of BE1: 현재 조건 메시지, 고정 조건 충족 기준
+        Jev-->>BE1: ready or needs_more_info, confidence
+        alt needs_more_info and confidence >= threshold
+            BE1-->>FE: 200 NEED_MORE_INFO and CONDITION_INPUT
+            Note left of FE: 누락된 조건을 다시 요청
+        else ready or low confidence
+            BE1->>BE2: ToolRequest
+            Note right of BE1: 사용자 확인 재료, 사용자 조건
+        end
+    else Jev 비활성, timeout, 오류, 응답 형식 오류
+        BE1->>BE1: 기존 결정적 전이로 fallback
+        BE1->>BE2: ToolRequest
+    end
+```
+
+Jev의 `needs_more_info` 결과가 설정된 최소 confidence 이상일 때만 `CONDITION_INPUT`을 유지한다.
+`ready`, API 오류, timeout, 응답 형식 오류, confidence 미달은 Chat API 오류가 아니라 기존
+LangGraph 전이로 fallback되어 다음 Tool Hub 단계로 진행한다. 자세한 설정은 [Jev 연동 가이드](jev.md)를 참고한다.
+
+## 3. BE1 → BE2: 도구 실행과 RAG 결과
 
 ```mermaid
 sequenceDiagram
@@ -109,7 +146,12 @@ flowchart LR
     BE2 -->|Ingredient candidates| BE1
     BE1 -->|INGREDIENT_CONFIRM| FE
     FE -->|Confirmed ingredients and conditions| BE1
+    BE1 -->|Condition readiness Choice| JEV[TypeSafe Jev optional]
+    JEV -->|needs_more_info and high confidence| BE1
+    BE1 -->|CONDITION_INPUT| FE
+    JEV -->|ready or low confidence| BE1
     BE1 -->|Recipe, Nutrition, Shopping, RAG Function Calls| BE2
+    BE1 -->|Jev disabled or unavailable: fallback| BE2
     BE2 -->|Normalized ToolResult| BE1
     BE1 -->|ChatResponse| FE
 ```

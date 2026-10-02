@@ -23,8 +23,7 @@
         "shopping_list": [
           {
             "ingredient": "간장",
-            "amount": "1병",
-            "estimated_price": 2500
+            "amount": "1병"
           }
         ],
         "nutrition": {
@@ -55,13 +54,11 @@
         "shopping_list": [
           {
             "ingredient": "레몬즙",
-            "amount": "1병",
-            "estimated_price": 3000
+            "amount": "1병"
           },
           {
             "ingredient": "올리브유",
-            "amount": "1병",
-            "estimated_price": 6000
+            "amount": "1병"
           }
         ],
         "nutrition": {
@@ -108,8 +105,7 @@
         "shopping_list": [
           {
             "ingredient": "대파",
-            "amount": "1대",
-            "estimated_price": 1000
+            "amount": "1대"
           }
         ],
         "nutrition": {
@@ -140,13 +136,11 @@
         "shopping_list": [
           {
             "ingredient": "카레가루",
-            "amount": "1봉",
-            "estimated_price": 3500
+            "amount": "1봉"
           },
           {
             "ingredient": "양파",
-            "amount": "2개",
-            "estimated_price": 2000
+            "amount": "2개"
           }
         ],
         "nutrition": {

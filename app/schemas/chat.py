@@ -48,7 +48,6 @@ class ShoppingItem(BaseModel):
 
     ingredient: str = Field(min_length=1)
     amount: str = Field(min_length=1)
-    estimated_price: int | float = Field(ge=0)
 
 
 class Nutrition(BaseModel):

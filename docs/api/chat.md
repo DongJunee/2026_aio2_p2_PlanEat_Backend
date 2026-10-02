@@ -86,8 +86,7 @@ FE에서 사용할 수 있는 전체 성공 응답은 [`mocks/chat/response-succ
   "response": "추천을 위해 몇 가지 정보를 더 알려주세요.",
   "questions": [
     "식단 목표가 무엇인가요?",
-    "조리 가능한 시간은 얼마나 되나요?",
-    "예산은 얼마인가요?"
+    "조리 가능한 시간은 얼마나 되나요?"
   ]
 }
 ```
@@ -153,8 +152,7 @@ FE에서 사용할 수 있는 전체 성공 응답은 [`mocks/chat/response-succ
 ```json
 {
   "ingredient": "간장",
-  "amount": "1병",
-  "estimated_price": 2500
+  "amount": "1병"
 }
 ```
 
@@ -177,7 +175,7 @@ FE에서 사용할 수 있는 전체 성공 응답은 [`mocks/chat/response-succ
 - 사용자 확인 전의 이미지 인식 결과는 추천에 사용하지 않습니다.
 - Recipe Tool은 내부 레시피 DB를 조회합니다.
 - Nutrition Tool은 영양 정보를 제공합니다.
-- Shopping Tool은 부족 재료와 예상 비용을 생성합니다.
+- Shopping Tool은 부족 재료와 장보기 목록을 생성합니다.
 - ChromaDB는 재료 활용법·대체재·보관법 검색에 사용합니다.
 - 새로운 Tool은 `/chat` 계약을 바꾸지 않고 Workflow에 추가합니다.
 

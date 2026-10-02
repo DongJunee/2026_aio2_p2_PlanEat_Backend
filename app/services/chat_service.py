@@ -1,13 +1,23 @@
 """Chat API의 세션 관리와 LangGraph 실행을 연결합니다."""
 
-import asyncio
+from dataclasses import replace
 from collections.abc import Mapping, Sequence
 from typing import Protocol
 
 from app.agent.graph import ChatState, WorkflowStep, chat_graph
 from app.core.config import get_settings
 from app.core.safety import SafetyViolationError, validate_user_message
+from app.integrations.decision_engine.typesafe_jev import (
+    ConditionReadinessDecision,
+    JevConditionReadinessEvaluator,
+)
 from app.integrations.llm.openai_responder import LLMResponseError, OpenAIResponder
+from app.repositories.chat_session import (
+    ChatSessionRepository,
+    ChatSessionState,
+    InMemoryChatSessionRepository,
+    IngredientCandidate,
+)
 from app.schemas.chat import ChatRequest
 
 _INGREDIENTS = [
@@ -15,6 +25,10 @@ _INGREDIENTS = [
     {"name": "양배추", "amount": "반 통"},
     {"name": "계란", "amount": "4개"},
 ]
+_INGREDIENT_CANDIDATES = tuple(
+    IngredientCandidate(name=ingredient["name"], amount=ingredient["amount"])
+    for ingredient in _INGREDIENTS
+)
 
 
 class CompletionMessageGenerator(Protocol):
@@ -28,13 +42,28 @@ class CompletionMessageGenerator(Protocol):
         """추천 데이터에 대한 사용자용 안내 문구를 반환합니다."""
 
 
+class ConditionReadinessEvaluator(Protocol):
+    """조건 입력의 충분성을 판단하는 외부 결정 모델 인터페이스입니다."""
+
+    async def evaluate(self, user_message: str) -> ConditionReadinessDecision | None:
+        """신뢰도 기준을 통과한 조건 충족 결과만 반환합니다."""
+
+
 class ChatService:
     """세션 상태, LangGraph 전이, 최종 LLM 응답 생성을 연결합니다."""
 
-    def __init__(self, llm_responder: CompletionMessageGenerator | None = None) -> None:
-        self._sessions: dict[str, WorkflowStep] = {}
-        self._lock = asyncio.Lock()
-        self._llm_responder = llm_responder or OpenAIResponder(get_settings())
+    def __init__(
+        self,
+        llm_responder: CompletionMessageGenerator | None = None,
+        condition_evaluator: ConditionReadinessEvaluator | None = None,
+        session_repository: ChatSessionRepository | None = None,
+    ) -> None:
+        settings = get_settings()
+        self._llm_responder = llm_responder or OpenAIResponder(settings)
+        self._condition_evaluator = condition_evaluator or JevConditionReadinessEvaluator(
+            settings
+        )
+        self._session_repository = session_repository or InMemoryChatSessionRepository()
 
     async def handle(self, request: ChatRequest) -> tuple[dict[str, object], int]:
         """요청을 한 단계 진행시키고, LLM 실패를 안전한 API 오류로 변환합니다."""
@@ -44,15 +73,26 @@ class ChatService:
         except SafetyViolationError:
             return {"status": "ERROR", "response": "요청을 처리할 수 없습니다."}, 400
 
-        async with self._lock:
-            previous_step = self._sessions.get(request.session_id, "WAITING_IMAGE")
-            state: ChatState = {
-                "step": previous_step,
-                "has_image": bool(request.attachments),
-            }
-            result = await chat_graph.ainvoke(state)
-            next_step = result["step"]
-            self._sessions[request.session_id] = next_step
+        session = await self._session_repository.get(request.session_id)
+        previous_step = session.step
+        state: ChatState = {
+            "step": previous_step,
+            "has_image": bool(request.attachments),
+        }
+        if previous_step == "WAITING_CONDITIONS":
+            # 외부 I/O를 세션 잠금 밖에서 수행해 다른 세션을 지연시키지 않는다.
+            # Jev가 비활성화·실패·저신뢰이면 None으로 남겨 기존 완료 전이를 유지한다.
+            decision = await self._condition_evaluator.evaluate(request.message)
+            state["condition_ready"] = decision.is_ready if decision is not None else None
+
+        result = await chat_graph.ainvoke(state)
+        next_session = _next_session_state(
+            session=session,
+            next_step=result["step"],
+            previous_step=previous_step,
+            user_message=request.message,
+        )
+        await self._session_repository.save(request.session_id, next_session)
 
         try:
             return await self._to_response(result, request.message), 200
@@ -97,6 +137,23 @@ class ChatService:
             "response": completion_message,
             "data": {"recipe_sets": recipe_sets},
         }
+
+
+def _next_session_state(
+    *,
+    session: ChatSessionState,
+    next_step: WorkflowStep,
+    previous_step: WorkflowStep,
+    user_message: str,
+) -> ChatSessionState:
+    """단계 전이 중 얻은 데이터를 Tool 호출용 세션 상태에 안전하게 보존합니다."""
+
+    next_session = replace(session, step=next_step)
+    if next_step == "WAITING_INGREDIENT_CONFIRM" and not session.ingredient_candidates:
+        return replace(next_session, ingredient_candidates=_INGREDIENT_CANDIDATES)
+    if previous_step == "WAITING_CONDITIONS" and next_step == "COMPLETED":
+        return replace(next_session, user_conditions_message=user_message)
+    return next_session
 
 
 def _demo_recipe_sets() -> list[dict[str, object]]:

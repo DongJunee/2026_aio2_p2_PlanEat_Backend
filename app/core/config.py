@@ -6,12 +6,17 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    """`.env`와 시스템 환경변수에서 OpenAI 설정을 읽습니다."""
+    """`.env`와 시스템 환경변수에서 외부 AI 연동 설정을 읽습니다."""
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     openai_api_key: str | None = None
     openai_model: str = "gpt-4o-mini"
+    typesafe_jev_enabled: bool = False
+    typesafe_api_key: str | None = None
+    typesafe_model: str = "jev-latest"
+    typesafe_timeout_seconds: float = 2.0
+    typesafe_jev_min_confidence: float = 0.8
 
 
 @lru_cache

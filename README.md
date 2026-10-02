@@ -21,6 +21,9 @@ FastAPI와 LangGraph 기반의 대화형 식단 추천 백엔드입니다. 사�
 상세 요청·응답 형식은 [Chat API 명세](docs/api/chat.md)를 참고합니다.
 역할별 데이터 교환은 [데이터 흐름도](docs/data-flow.md)를 참고합니다.
 프롬프트 관리·보안 원칙은 [Prompt 관리](docs/prompt-management.md)를 참고합니다.
+TypeSafe Jev 조건 판정 설정은 [Jev 연동 가이드](docs/jev.md)를 참고합니다.
+소스 구조와 실행 흐름은 [구현 개요](docs/implementation-overview.md)를 참고합니다.
+Tool Hub 연결 전 준비 상태는 [Tool Hub 연동 준비](docs/tool-hub-readiness.md)를 참고합니다.
 
 주요 상태:
 
@@ -91,3 +94,9 @@ git diff --check
 현재 `/chat`은 LangGraph 기반의 세션 단계 전이를 제공합니다. Tool Hub·RAG 연동 전에는 API·FE 통합 검증을 위한 임시 재료·추천 데이터를 반환합니다.
 
 LLM 최종 응답을 사용하려면 `.env`에 `OPENAI_API_KEY`를 설정합니다. 기본 모델은 `gpt-4o-mini`이며, 필요하면 `OPENAI_MODEL`로 변경할 수 있습니다.
+
+### 선택 사항: TypeSafe Jev 조건 판정
+
+`TYPESAFE_JEV_ENABLED=true`와 `TYPESAFE_API_KEY`를 설정하면, `CONDITION_INPUT` 단계에서 Jev가 식단 목표와 조리 가능 시간이 모두 제공됐는지 판정합니다. 신뢰도가 `TYPESAFE_JEV_MIN_CONFIDENCE` 이상일 때만 결과를 반영합니다. API 키가 없거나 Jev 호출이 실패·저신뢰이면 기존 LangGraph 전이로 자동 fallback됩니다.
+
+Jev에는 이 판정에 필요한 현재 사용자 메시지만 전송됩니다. 실서비스 활성화 전에는 개인정보 처리·보관 정책과 TypeSafe 계약을 확인하세요.

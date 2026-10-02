@@ -1,5 +1,9 @@
+import json
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
+from pydantic.type_adapter import TypeAdapter
 
 from app.schemas.chat import (
     ChatConditionInputResponse,
@@ -7,8 +11,11 @@ from app.schemas.chat import (
     ChatImageInputResponse,
     ChatRequest,
     ChatSuccessResponse,
+    ChatResponse,
     RecommendationData,
 )
+
+_MOCK_DIRECTORY = Path(__file__).resolve().parents[2] / "mocks" / "chat"
 
 
 def test_chat_request_accepts_at_most_five_image_attachments() -> None:
@@ -88,3 +95,16 @@ def test_recommendation_data_requires_two_sets_of_five_recipes() -> None:
 
     assert len(data.recipe_sets) == 2
     assert all(len(recipe_set.recipes) == 5 for recipe_set in data.recipe_sets)
+
+
+def test_response_fixtures_match_chat_response_contract() -> None:
+    adapter = TypeAdapter(ChatResponse)
+
+    for filename in (
+        "response-condition-input.json",
+        "response-error.json",
+        "response-image-input.json",
+        "response-ingredient-confirm.json",
+        "response-success.json",
+    ):
+        adapter.validate_python(json.loads((_MOCK_DIRECTORY / filename).read_text()))

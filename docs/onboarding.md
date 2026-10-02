@@ -34,7 +34,7 @@ cp .env.example .env
 - 요청: `session_id`, `message`, 선택적 `attachments`
 - 첨부파일: 현재 `image`, 최대 5개
 - 상태: `SUCCESS`, `NEED_MORE_INFO`, `ERROR`
-- 상세 계약: [docs/api/chat.md](docs/api/chat.md)
+- 상세 계약: [Chat API](api/chat.md)
 
 ## 4. 코드 위치
 

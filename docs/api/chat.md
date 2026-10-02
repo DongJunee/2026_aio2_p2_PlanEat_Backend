@@ -125,7 +125,7 @@ Content-Type: application/json
 | `questions` | 추가로 필요한 조건 질문 |
 | `ingredients` | 사용자 확인이 필요한 재료 목록 |
 
-레시피의 `importance`는 `필수`, `구매 권장`, `대체 가능`, `생략 가능` 중 하나입니다. 영양 정보의 단위는 열량 `kcal`, 나머지 영양소 `g`입니다.
+레시피의 `importance`는 `필수`, `권장`, `대체 가능`, `생략 가능` 중 하나입니다. 영양 정보의 단위는 열량 `kcal`, 나머지 영양소 `g`입니다.
 
 ## 처리 원칙
 
@@ -136,3 +136,14 @@ Content-Type: application/json
 - Shopping Tool은 부족 재료와 권장 수량을 생성합니다.
 - ChromaDB는 재료 활용법, 대체재, 보관법 검색에 사용합니다.
 - 새로운 Tool은 `/chat` 계약을 바꾸지 않고 LangGraph Workflow에 추가합니다.
+
+## FE Mock
+
+상태별 요청·응답 fixture는 [`mocks/chat/`](../../mocks/chat/)에 있습니다.
+
+- `request-text.json`
+- `request-image.json`
+- `response-ingredient-confirm.json`
+- `response-condition-input.json`
+- `response-success.json`
+- `response-error.json`

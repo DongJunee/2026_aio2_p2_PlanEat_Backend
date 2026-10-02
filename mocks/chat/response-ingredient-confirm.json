@@ -1,0 +1,27 @@
+{
+  "status": "NEED_MORE_INFO",
+  "step": "INGREDIENT_CONFIRM",
+  "response": "AI가 인식한 재료를 확인해주세요.",
+  "ingredients": [
+    {
+      "name": "두부",
+      "amount": "1모"
+    },
+    {
+      "name": "양배추",
+      "amount": "반 통"
+    },
+    {
+      "name": "계란",
+      "amount": "4개"
+    },
+    {
+      "name": "당근",
+      "amount": "1개"
+    },
+    {
+      "name": "닭가슴살",
+      "amount": "200g"
+    }
+  ]
+}

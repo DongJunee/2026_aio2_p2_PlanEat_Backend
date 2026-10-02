@@ -1,0 +1,243 @@
+{
+  "status": "SUCCESS",
+  "step": "COMPLETED",
+  "response": "조건에 맞는 레시피 2세트(세트당 5개)를 추천했습니다.",
+  "data": {
+    "recipe_sets": [
+      {
+        "set_id": "SET001",
+        "recipes": [
+      {
+        "recipe_id": "R001",
+        "title": "두부 양배추 볶음",
+        "image": "https://example.com/images/tofu-cabbage.jpg",
+        "cook_time": 20,
+        "owned_ingredients": ["두부", "양배추", "당근"],
+        "missing_ingredients": [
+          {
+            "name": "간장",
+            "importance": "필수",
+            "alternative": null
+          }
+        ],
+        "shopping_list": [
+          {
+            "ingredient": "간장",
+            "amount": "1병",
+            "estimated_price": 2500
+          }
+        ],
+        "nutrition": {
+          "calories": 430,
+          "protein": 28,
+          "carbohydrate": 18,
+          "fat": 15
+        }
+      },
+      {
+        "recipe_id": "R002",
+        "title": "닭가슴살 양배추 샐러드",
+        "image": "https://example.com/images/chicken-cabbage-salad.jpg",
+        "cook_time": 15,
+        "owned_ingredients": ["닭가슴살", "양배추", "당근"],
+        "missing_ingredients": [
+          {
+            "name": "레몬즙",
+            "importance": "권장",
+            "alternative": "식초"
+          },
+          {
+            "name": "올리브유",
+            "importance": "대체 가능",
+            "alternative": "참기름"
+          }
+        ],
+        "shopping_list": [
+          {
+            "ingredient": "레몬즙",
+            "amount": "1병",
+            "estimated_price": 3000
+          },
+          {
+            "ingredient": "올리브유",
+            "amount": "1병",
+            "estimated_price": 6000
+          }
+        ],
+        "nutrition": {
+          "calories": 360,
+          "protein": 35,
+          "carbohydrate": 12,
+          "fat": 16
+        }
+      },
+      {
+        "recipe_id": "R003",
+        "title": "계란 당근 볶음밥",
+        "image": "https://example.com/images/egg-carrot-rice.jpg",
+        "cook_time": 20,
+        "owned_ingredients": ["계란", "당근", "양배추"],
+        "missing_ingredients": [
+          {
+            "name": "대파",
+            "importance": "생략 가능",
+            "alternative": null
+          }
+        ],
+        "shopping_list": [],
+        "nutrition": {
+          "calories": 510,
+          "protein": 18,
+          "carbohydrate": 72,
+          "fat": 16
+        }
+      },
+      {
+        "recipe_id": "R004",
+        "title": "두부 계란국",
+        "image": "https://example.com/images/tofu-egg-soup.jpg",
+        "cook_time": 25,
+        "owned_ingredients": ["두부", "계란", "양배추"],
+        "missing_ingredients": [
+          {
+            "name": "대파",
+            "importance": "대체 가능",
+            "alternative": "부추"
+          }
+        ],
+        "shopping_list": [
+          {
+            "ingredient": "대파",
+            "amount": "1대",
+            "estimated_price": 1000
+          }
+        ],
+        "nutrition": {
+          "calories": 290,
+          "protein": 24,
+          "carbohydrate": 10,
+          "fat": 14
+        }
+      },
+      {
+        "recipe_id": "R005",
+        "title": "닭가슴살 채소 카레",
+        "image": "https://example.com/images/chicken-vegetable-curry.jpg",
+        "cook_time": 30,
+        "owned_ingredients": ["닭가슴살", "당근", "양배추"],
+        "missing_ingredients": [
+          {
+            "name": "카레가루",
+            "importance": "필수",
+            "alternative": null
+          },
+          {
+            "name": "양파",
+            "importance": "권장",
+            "alternative": "대파"
+          }
+        ],
+        "shopping_list": [
+          {
+            "ingredient": "카레가루",
+            "amount": "1봉",
+            "estimated_price": 3500
+          },
+          {
+            "ingredient": "양파",
+            "amount": "2개",
+            "estimated_price": 2000
+          }
+        ],
+        "nutrition": {
+          "calories": 540,
+          "protein": 32,
+          "carbohydrate": 58,
+          "fat": 18
+        }
+      }
+        ]
+      },
+      {
+        "set_id": "SET002",
+        "recipes": [
+          {
+            "recipe_id": "R101",
+            "title": "두부 버섯 덮밥",
+            "image": "https://example.com/images/tofu-mushroom-rice.jpg",
+            "cook_time": 20,
+            "owned_ingredients": ["두부", "양파"],
+            "missing_ingredients": [],
+            "shopping_list": [],
+            "nutrition": {
+              "calories": 470,
+              "protein": 24,
+              "carbohydrate": 60,
+              "fat": 14
+            }
+          },
+          {
+            "recipe_id": "R102",
+            "title": "계란 양배추찜",
+            "image": "https://example.com/images/egg-cabbage-steam.jpg",
+            "cook_time": 15,
+            "owned_ingredients": ["계란", "양배추"],
+            "missing_ingredients": [],
+            "shopping_list": [],
+            "nutrition": {
+              "calories": 280,
+              "protein": 22,
+              "carbohydrate": 12,
+              "fat": 15
+            }
+          },
+          {
+            "recipe_id": "R103",
+            "title": "닭가슴살 당근 볶음",
+            "image": "https://example.com/images/chicken-carrot-stir-fry.jpg",
+            "cook_time": 25,
+            "owned_ingredients": ["닭가슴살", "당근"],
+            "missing_ingredients": [],
+            "shopping_list": [],
+            "nutrition": {
+              "calories": 390,
+              "protein": 36,
+              "carbohydrate": 20,
+              "fat": 13
+            }
+          },
+          {
+            "recipe_id": "R104",
+            "title": "양배추 계란국",
+            "image": "https://example.com/images/cabbage-egg-soup.jpg",
+            "cook_time": 20,
+            "owned_ingredients": ["양배추", "계란"],
+            "missing_ingredients": [],
+            "shopping_list": [],
+            "nutrition": {
+              "calories": 240,
+              "protein": 18,
+              "carbohydrate": 11,
+              "fat": 12
+            }
+          },
+          {
+            "recipe_id": "R105",
+            "title": "두부 채소전",
+            "image": "https://example.com/images/tofu-vegetable-pancake.jpg",
+            "cook_time": 30,
+            "owned_ingredients": ["두부", "계란", "당근", "양파"],
+            "missing_ingredients": [],
+            "shopping_list": [],
+            "nutrition": {
+              "calories": 410,
+              "protein": 27,
+              "carbohydrate": 24,
+              "fat": 20
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

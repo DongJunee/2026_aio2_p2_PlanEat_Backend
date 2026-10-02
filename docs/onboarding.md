@@ -34,7 +34,9 @@ cp .env.example .env
 - 요청: `session_id`, `message`, 선택적 `attachments`
 - 첨부파일: 현재 `image`, 최대 5개
 - 상태: `SUCCESS`, `NEED_MORE_INFO`, `ERROR`
-- 상세 계약: [docs/api/chat.md](docs/api/chat.md)
+- 이미지가 없으면 `IMAGE_INPUT` 단계로 이미지 첨부를 요청
+- 성공 응답: `recipe_sets` 2개, 각 세트의 레시피 5개
+- 상세 계약: [Chat API](api/chat.md)
 
 ## 4. 코드 위치
 

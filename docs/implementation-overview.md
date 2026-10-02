@@ -115,8 +115,10 @@ WAITING_CONDITIONS
 
 ## 4. 완료 응답의 데이터 구성
 
-`COMPLETED`에서는 `_demo_recipe_sets()`가 임시 레시피 데이터를 만든다. 이는 BE1 Tool Hub가
-준비되기 전 계약·FE 통합을 검증하기 위한 것이며, 실제 검색·추천 결과가 아니다.
+`COMPLETED`에서는 `_demo_recipe_sets()`가 임시 레시피 데이터를 만든다. 이는 BE2 Tool Hub가
+준비되기 전 계약·FE 통합을 검증하기 위한 것이며, 실제 검색·추천 결과가 아니다. 실제 연동에서는
+BE1이 이미지를 직접 인식하지 않고, BE2 Vision Function Call이 반환한 후보를 FE가 확정한 뒤에만
+Recipe·Nutrition·Shopping·RAG Function Call을 요청한다.
 
 ```json
 {
@@ -217,11 +219,11 @@ git diff --check
 
 | 현재 임시 구현 | 향후 교체 지점 |
 | --- | --- |
-| `_INGREDIENTS`의 고정 재료 후보 | Vision 또는 BE1 Tool Hub의 이미지 인식 결과 |
-| `_demo_recipe_sets()`의 고정 레시피 10개 | BE1 Recipe·Nutrition·Shopping 결과 |
+| `_INGREDIENTS`의 고정 재료 후보 | Vision 또는 BE2 Tool Hub의 이미지 인식 결과 |
+| `_demo_recipe_sets()`의 고정 레시피 10개 | BE2 Recipe·Nutrition·Shopping 결과 |
 | 프로세스 메모리 세션 | DB 또는 Redis 세션 저장소 |
 | Jev의 단일 조건 충분성 판단 | 합의된 정책에 따른 추가 라우팅·점수화 판단 |
-| Tool Hub fake provider·호출 전 검증 | BE1 URL·timeout·재시도 정책을 반영한 실제 비동기 어댑터 |
+| Tool Hub fake provider·호출 전 검증 | BE2 URL·timeout·재시도 정책을 반영한 실제 비동기 어댑터 |
 
 Tool Hub·RAG가 연결되더라도 외부 `/chat` DTO, `status`, `step`, 레시피 2세트·세트당 5개라는
 FE 계약은 유지해야 한다.

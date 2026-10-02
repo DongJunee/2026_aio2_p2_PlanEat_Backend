@@ -1,0 +1,14 @@
+{
+  "session_id": "session-001",
+  "message": "냉장고 재료로 만들 수 있는 메뉴 추천해줘.",
+  "attachments": [
+    {
+      "type": "image",
+      "data": "<base64-image-or-url>"
+    },
+    {
+      "type": "image",
+      "data": "<base64-image-or-url>"
+    }
+  ]
+}

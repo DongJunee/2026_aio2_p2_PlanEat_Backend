@@ -5,17 +5,26 @@ FastAPI와 LangGraph 기반의 대화형 식단 추천 백엔드입니다. 사�
 ## 핵심 기능
 
 - 첨부 이미지 최대 5장 처리
+- 이미지가 없으면 이미지 첨부 요청 단계로 전환
 - 이미지별 식재료 추출 및 중복 병합
 - 사용자 재료 확인·수정
 - `session_id` 기반 LangGraph 상태 관리
 - 내부 레시피 DB 기반 추천
 
+- 성공 응답은 레시피 2세트, 세트당 5개 레시피
+- Nutrition·Shopping Tool 호출
+- ChromaDB 기반 재료 활용법·대체재·보관법 검색
 
 ## API
 
 단일 진입점은 `POST /chat`입니다.
 
 상세 요청·응답 형식은 [Chat API 명세](docs/api/chat.md)를 참고합니다.
+역할별 데이터 교환은 [데이터 흐름도](docs/data-flow.md)를 참고합니다.
+프롬프트 관리·보안 원칙은 [Prompt 관리](docs/prompt-management.md)를 참고합니다.
+TypeSafe Jev 조건 판정 설정은 [Jev 연동 가이드](docs/jev.md)를 참고합니다.
+소스 구조와 실행 흐름은 [구현 개요](docs/implementation-overview.md)를 참고합니다.
+Tool Hub 연결 전 준비 상태는 [Tool Hub 연동 준비](docs/tool-hub-readiness.md)를 참고합니다.
 
 주요 상태:
 
@@ -51,9 +60,9 @@ FastAPI와 LangGraph 기반의 대화형 식단 추천 백엔드입니다. 사�
 │   │   ├── recipe_source/              # 식품안전나라 적재·갱신
 │   │   └── vector_store/               # ChromaDB
 │   └── db/                             # DB 설정
-├── scripts/                            # 레시피 데이터 적재·갱신
+├── prompts/                            # LLM 운영 프롬프트
 ├── tests/                              # 단위·통합 테스트
-├── docs/api/chat.md                    # Chat API 명세
+├── docs/                               # 프로젝트 관련 문서
 ├── data/                               # 로컬 DB·ChromaDB(커밋하지 않음)
 ├── pyproject.toml                      # uv 의존성 설정
 ├── .env.example                        # 환경 변수 예시
@@ -76,12 +85,6 @@ uv run uvicorn app.main:app --reload
 cp .env.example .env
 ```
 
-Windows PowerShell:
-
-```powershell
-Copy-Item .env.example .env
-```
-
 ## 테스트
 
 ```bash
@@ -89,4 +92,12 @@ uv run pytest
 git diff --check
 ```
 
-현재 실제 구현은 `/health`까지이며, `/chat`과 Agent·Tool 디렉터리는 명세 기반의 구현 구조입니다.
+현재 `/chat`은 LangGraph 기반의 세션 단계 전이를 제공합니다. Tool Hub·RAG 연동 전에는 API·FE 통합 검증을 위한 임시 재료·추천 데이터를 반환합니다.
+
+LLM 최종 응답을 사용하려면 `.env`에 `OPENAI_API_KEY`를 설정합니다. 기본 모델은 `gpt-4o-mini`이며, 필요하면 `OPENAI_MODEL`로 변경할 수 있습니다.
+
+### 선택 사항: TypeSafe Jev 조건 판정
+
+`TYPESAFE_JEV_ENABLED=true`와 `TYPESAFE_API_KEY`를 설정하면, `CONDITION_INPUT` 단계에서 Jev가 식단 목표와 조리 가능 시간이 모두 제공됐는지 판정합니다. 신뢰도가 `TYPESAFE_JEV_MIN_CONFIDENCE` 이상일 때만 결과를 반영합니다. API 키가 없거나 Jev 호출이 실패·저신뢰이면 기존 LangGraph 전이로 자동 fallback됩니다.
+
+Jev에는 이 판정에 필요한 현재 사용자 메시지만 전송됩니다. 실서비스 활성화 전에는 개인정보 처리·보관 정책과 TypeSafe 계약을 확인하세요.

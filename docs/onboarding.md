@@ -34,7 +34,9 @@ cp .env.example .env
 - 요청: `session_id`, `message`, 선택적 `attachments`
 - 첨부파일: 현재 `image`, 최대 5개
 - 상태: `SUCCESS`, `NEED_MORE_INFO`, `ERROR`
-- 상세 계약: [docs/api/chat.md](docs/api/chat.md)
+- 이미지가 없으면 `IMAGE_INPUT` 단계로 이미지 첨부를 요청
+- 성공 응답: `recipe_sets` 2개, 각 세트의 레시피 5개
+- 상세 계약: [Chat API](api/chat.md)
 
 ## 4. 코드 위치
 
@@ -57,3 +59,14 @@ uv run pytest
 git diff --check
 git status
 ```
+
+## 6. 선택 사항: TypeSafe Jev 조건 판정
+
+Jev는 사용자 메시지로부터 식단 목표와 조리 가능 시간이 충분히 입력됐는지를 `choice`와 confidence로 판단합니다. 외부 `/chat` 요청·응답 계약은 바꾸지 않습니다.
+
+1. TypeSafe Console에서 API 키를 발급한다.
+2. `.env`에 `TYPESAFE_JEV_ENABLED=true`, `TYPESAFE_API_KEY`, 필요하면 timeout·confidence 설정을 추가한다.
+3. 키를 넣지 않은 상태에서는 기존 결정적 LangGraph 전이가 계속 동작하는지 확인한다.
+4. 키를 넣은 상태에서는 불충분한 조건 입력이 `CONDITION_INPUT`을 유지하는지, 충분한 입력이 `COMPLETED`로 진행하는지 검증한다.
+
+Jev 호출 실패, 응답 형식 오류, 또는 최저 confidence 미만 결과는 모두 기존 전이로 fallback된다. 운영 활성화 전에는 사용자 메시지가 TypeSafe에 전송되는 것에 대한 개인정보·데이터 보관 검토가 필요하다.

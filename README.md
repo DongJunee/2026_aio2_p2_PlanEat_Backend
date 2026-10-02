@@ -19,6 +19,7 @@ FastAPI와 LangGraph 기반의 대화형 식단 추천 백엔드입니다. 사�
 단일 진입점은 `POST /chat`입니다.
 
 상세 요청·응답 형식은 [Chat API 명세](docs/api/chat.md)를 참고합니다.
+역할별 데이터 교환은 [데이터 흐름도](docs/data-flow.md)를 참고합니다.
 
 주요 상태:
 
@@ -79,12 +80,6 @@ uv run uvicorn app.main:app --reload
 cp .env.example .env
 ```
 
-Windows PowerShell:
-
-```powershell
-Copy-Item .env.example .env
-```
-
 ## 테스트
 
 ```bash
@@ -92,4 +87,3 @@ uv run pytest
 git diff --check
 ```
 
-현재 실제 구현은 `/health`까지이며, `/chat`과 Agent·Tool 디렉터리는 명세 기반의 구현 구조입니다.

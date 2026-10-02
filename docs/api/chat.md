@@ -32,6 +32,29 @@ Content-Type: application/json
 
 ## Response
 
+`status`와 `step`은 FE 분기 처리에 사용하는 고정 코드입니다. 사용자에게 표시하는 문구는 `response`, 추가 입력 항목은 `questions`·`ingredients`·`data`를 사용합니다.
+
+### 상태 코드
+
+| HTTP 상태 | `status` | 설명 |
+|---:|---|---|
+| 200 | `SUCCESS` | 레시피 추천이 완료되었습니다. |
+| 200 | `NEED_MORE_INFO` | 다음 진행을 위해 사용자 입력 또는 확인이 필요합니다. |
+| 500 | `ERROR` | 요청 처리 중 서버 오류가 발생했습니다. |
+
+### 진행 단계 코드
+
+`step`은 `status`가 `SUCCESS` 또는 `NEED_MORE_INFO`일 때 포함됩니다.
+
+| `status` | `step` | FE 처리 |
+|---|---|---|
+| `SUCCESS` | `COMPLETED` | `data.recipe_sets`를 표시합니다. |
+| `NEED_MORE_INFO` | `IMAGE_INPUT` | `questions`를 표시하고 이미지 첨부를 요청합니다. |
+| `NEED_MORE_INFO` | `CONDITION_INPUT` | `questions`를 표시하고 추가 조건을 입력받습니다. |
+| `NEED_MORE_INFO` | `INGREDIENT_CONFIRM` | `ingredients`를 표시하고 인식 재료를 확인받습니다. |
+
+`ERROR` 응답에는 `step`을 포함하지 않습니다.
+
 ### 이미지 첨부 필요: `200 NEED_MORE_INFO`
 
 이미지는 Request에서 선택값이지만, 재료 기반 추천을 시작하려면 이미지가 필요합니다.

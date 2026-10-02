@@ -20,6 +20,7 @@ FastAPI와 LangGraph 기반의 대화형 식단 추천 백엔드입니다. 사�
 
 상세 요청·응답 형식은 [Chat API 명세](docs/api/chat.md)를 참고합니다.
 역할별 데이터 교환은 [데이터 흐름도](docs/data-flow.md)를 참고합니다.
+프롬프트 관리·보안 원칙은 [Prompt 관리](docs/prompt-management.md)를 참고합니다.
 
 주요 상태:
 
@@ -55,9 +56,9 @@ FastAPI와 LangGraph 기반의 대화형 식단 추천 백엔드입니다. 사�
 │   │   ├── recipe_source/              # 식품안전나라 적재·갱신
 │   │   └── vector_store/               # ChromaDB
 │   └── db/                             # DB 설정
-├── scripts/                            # 레시피 데이터 적재·갱신
+├── prompts/                            # LLM 운영 프롬프트
 ├── tests/                              # 단위·통합 테스트
-├── docs/api/chat.md                    # Chat API 명세
+├── docs/                               # 프로젝트 관련 문서
 ├── data/                               # 로컬 DB·ChromaDB(커밋하지 않음)
 ├── pyproject.toml                      # uv 의존성 설정
 ├── .env.example                        # 환경 변수 예시
@@ -87,3 +88,6 @@ uv run pytest
 git diff --check
 ```
 
+현재 `/chat`은 LangGraph 기반의 세션 단계 전이를 제공합니다. Tool Hub·RAG 연동 전에는 API·FE 통합 검증을 위한 임시 재료·추천 데이터를 반환합니다.
+
+LLM 최종 응답을 사용하려면 `.env`에 `OPENAI_API_KEY`를 설정합니다. 기본 모델은 `gpt-4o-mini`이며, 필요하면 `OPENAI_MODEL`로 변경할 수 있습니다.

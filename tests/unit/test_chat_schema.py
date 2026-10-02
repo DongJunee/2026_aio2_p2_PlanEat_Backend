@@ -1,3 +1,6 @@
+import pytest
+from pydantic import ValidationError
+
 from app.schemas.chat import (
     ChatConditionInputResponse,
     ChatErrorResponse,
@@ -28,6 +31,11 @@ def test_chat_request_allows_missing_attachments() -> None:
     )
 
     assert request.attachments == []
+
+
+def test_chat_request_rejects_an_overly_long_message() -> None:
+    with pytest.raises(ValidationError):
+        ChatRequest(session_id="session-003", message="a" * 2_001)
 
 
 def test_chat_response_models_match_each_workflow_state() -> None:

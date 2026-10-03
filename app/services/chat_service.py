@@ -6,11 +6,20 @@ import re
 from typing import Protocol
 
 from app.agent.graph import ChatState, WorkflowStep, chat_graph
+from app.agent.tools.contracts import (
+    ToolRequest,
+    ToolRequestPreparationError,
+    ToolResult,
+    build_tool_request,
+)
+from app.agent.tools.fake_provider import FakeToolHubProvider
 from app.core.config import get_settings
 from app.core.safety import SafetyViolationError, validate_user_message
 from app.integrations.decision_engine.typesafe_jev import (
     ConditionReadinessDecision,
+    IngredientConfirmationDecision,
     JevConditionReadinessEvaluator,
+    JevIngredientConfirmationEvaluator,
 )
 from app.integrations.llm.openai_responder import LLMResponseError, OpenAIResponder
 from app.repositories.chat_session import (
@@ -50,6 +59,20 @@ class ConditionReadinessEvaluator(Protocol):
         """신뢰도 기준을 통과한 조건 충족 결과만 반환합니다."""
 
 
+class IngredientConfirmationEvaluator(Protocol):
+    """재료 후보에 대한 사용자 자연어 확인 의도를 판단합니다."""
+
+    async def evaluate(self, user_message: str) -> IngredientConfirmationDecision | None:
+        """확정·거절·수정·모호함 중 하나를 반환합니다."""
+
+
+class ToolHubProvider(Protocol):
+    """BE2 Tool Hub가 제공해야 하는 비동기 실행 인터페이스입니다."""
+
+    async def execute(self, request: ToolRequest) -> ToolResult:
+        """정규화된 ToolRequest를 실행합니다."""
+
+
 class ChatService:
     """세션 상태, LangGraph 전이, 최종 LLM 응답 생성을 연결합니다."""
 
@@ -57,6 +80,8 @@ class ChatService:
         self,
         llm_responder: CompletionMessageGenerator | None = None,
         condition_evaluator: ConditionReadinessEvaluator | None = None,
+        ingredient_confirmation_evaluator: IngredientConfirmationEvaluator | None = None,
+        tool_provider: ToolHubProvider | None = None,
         session_repository: ChatSessionRepository | None = None,
     ) -> None:
         settings = get_settings()
@@ -64,6 +89,12 @@ class ChatService:
         self._condition_evaluator = condition_evaluator or JevConditionReadinessEvaluator(
             settings
         )
+        self._ingredient_confirmation_evaluator = (
+            ingredient_confirmation_evaluator
+            or JevIngredientConfirmationEvaluator(settings)
+        )
+        # BE2 endpoint가 합의되기 전까지는 fake가 같은 계약의 호출 경계를 검증한다.
+        self._tool_provider = tool_provider or FakeToolHubProvider()
         self._session_repository = session_repository or InMemoryChatSessionRepository()
 
     async def handle(self, request: ChatRequest) -> tuple[dict[str, object], int]:
@@ -78,10 +109,29 @@ class ChatService:
         previous_step = session.step
         request_conditions = await self._read_conditions_from_message(request.message)
         effective_conditions = request_conditions or session.user_conditions
+        confirmation_decision: IngredientConfirmationDecision | None = None
+        candidate_ingredients = session.ingredient_candidates
+        confirmed_ingredients = session.confirmed_ingredients
+        if previous_step == "WAITING_INGREDIENT_CONFIRM":
+            confirmation_decision = await self._read_ingredient_confirmation(request.message)
+            candidate_ingredients, confirmed_ingredients = _apply_confirmation_decision(
+                session=session,
+                decision=confirmation_decision,
+                user_message=request.message,
+            )
+            if confirmation_decision.intent == "edited" and not candidate_ingredients:
+                # 후보를 모두 제거한 수정은 확인 목록을 만들 수 없으므로 재촬영으로 전환한다.
+                confirmation_decision = IngredientConfirmationDecision(
+                    intent="rejected", confidence=confirmation_decision.confidence
+                )
         state: ChatState = {
             "step": previous_step,
             "has_image": bool(request.attachments),
             "has_conditions": effective_conditions is not None,
+            "has_confirmed_ingredients": bool(confirmed_ingredients),
+            "ingredient_confirmation": (
+                confirmation_decision.intent if confirmation_decision is not None else None
+            ),
         }
         if previous_step == "WAITING_CONDITIONS":
             state["condition_ready"] = effective_conditions is not None
@@ -91,16 +141,32 @@ class ChatService:
             session=session,
             next_step=result["step"],
             user_conditions=request_conditions,
+            ingredient_candidates=(
+                candidate_ingredients if confirmation_decision is not None else None
+            ),
+            confirmed_ingredients=(
+                confirmed_ingredients if confirmation_decision is not None else None
+            ),
         )
         await self._session_repository.save(request.session_id, next_session)
 
         try:
-            return await self._to_response(result, request.message), 200
+            if result["step"] == "COMPLETED":
+                tool_error = await self._execute_tool_request(
+                    session_id=request.session_id,
+                    session=next_session,
+                )
+                if tool_error is not None:
+                    return tool_error, 500
+            return await self._to_response(result, request.message, next_session), 200
         except LLMResponseError:
             return {"status": "ERROR", "response": "추천 응답 생성 중 오류가 발생했습니다."}, 500
 
     async def _to_response(
-        self, state: Mapping[str, object], user_message: str
+        self,
+        state: Mapping[str, object],
+        user_message: str,
+        session: ChatSessionState,
     ) -> dict[str, object]:
         """LangGraph의 내부 단계를 외부 Chat API 응답 형식으로 변환합니다."""
 
@@ -112,6 +178,13 @@ class ChatService:
                 "step": "IMAGE_INPUT",
                 "response": "정확한 재료 확인을 위해 냉장고 또는 영수증 이미지를 첨부해주세요.",
                 "questions": ["냉장고, 냉동실 또는 영수증 이미지를 첨부해주세요."],
+            }
+        if response_kind == "INGREDIENT_RETRY":
+            return {
+                "status": "NEED_MORE_INFO",
+                "step": "IMAGE_INPUT",
+                "response": "인식된 재료가 맞지 않습니다. 재료가 보이는 이미지를 다시 첨부해주세요.",
+                "questions": ["재료가 잘 보이는 냉장고 또는 영수증 이미지를 다시 첨부해주세요."],
             }
         if response_kind == "INPUT_REQUIREMENTS":
             return {
@@ -125,11 +198,18 @@ class ChatService:
                 ],
             }
         if response_kind == "INGREDIENT_CONFIRM":
+            confirmation = state.get("ingredient_confirmation")
+            if confirmation == "edited":
+                message = "수정된 재료 목록을 확인해주세요."
+            elif confirmation == "unclear":
+                message = "재료가 모두 맞는지, 수정할 재료가 있는지 알려주세요."
+            else:
+                message = "AI가 인식한 재료를 확인해주세요."
             return {
                 "status": "NEED_MORE_INFO",
                 "step": "INGREDIENT_CONFIRM",
-                "response": "AI가 인식한 재료를 확인해주세요.",
-                "ingredients": _INGREDIENTS,
+                "response": message,
+                "ingredients": _ingredient_payload(session.ingredient_candidates),
             }
         if response_kind == "CONDITION_INPUT":
             return {
@@ -148,6 +228,37 @@ class ChatService:
             "response": completion_message,
             "data": {"recipe_sets": recipe_sets},
         }
+
+    async def _read_ingredient_confirmation(
+        self, user_message: str
+    ) -> IngredientConfirmationDecision:
+        """Jev 판정을 우선하고, 장애·비활성 시 제한적인 로컬 판정으로 fallback합니다."""
+
+        decision = await self._ingredient_confirmation_evaluator.evaluate(user_message)
+        if decision is not None:
+            return decision
+        return _fallback_ingredient_confirmation(user_message)
+
+    async def _execute_tool_request(
+        self, *, session_id: str, session: ChatSessionState
+    ) -> dict[str, str] | None:
+        """확정 재료와 조건을 BE2 계약으로 만들어 provider에 전달합니다."""
+
+        try:
+            request = build_tool_request(
+                session_id=session_id,
+                tool_name="recipe_recommendation",
+                session=session,
+            )
+            result = await self._tool_provider.execute(request)
+        except ToolRequestPreparationError:
+            return {
+                "status": "ERROR",
+                "response": "재료 확인이 완료되지 않아 추천을 진행할 수 없습니다.",
+            }
+        if result.error:
+            return {"status": "ERROR", "response": "추천 도구 실행 중 오류가 발생했습니다."}
+        return None
 
     async def _read_conditions_from_message(
         self, user_message: str
@@ -177,15 +288,126 @@ def _next_session_state(
     session: ChatSessionState,
     next_step: WorkflowStep,
     user_conditions: Mapping[str, object] | None,
+    ingredient_candidates: tuple[IngredientCandidate, ...] | None = None,
+    confirmed_ingredients: tuple[IngredientCandidate, ...] | None = None,
 ) -> ChatSessionState:
     """단계 전이 중 얻은 데이터를 Tool 호출용 세션 상태에 안전하게 보존합니다."""
 
     next_session = replace(session, step=next_step)
-    if next_step == "WAITING_INGREDIENT_CONFIRM" and not session.ingredient_candidates:
+    if (
+        next_step == "WAITING_INGREDIENT_CONFIRM"
+        and ingredient_candidates is None
+        and not session.ingredient_candidates
+    ):
         next_session = replace(next_session, ingredient_candidates=_INGREDIENT_CANDIDATES)
+    if ingredient_candidates is not None:
+        next_session = replace(next_session, ingredient_candidates=ingredient_candidates)
+    if confirmed_ingredients is not None:
+        next_session = replace(next_session, confirmed_ingredients=confirmed_ingredients)
+    if next_step == "WAITING_IMAGE":
+        next_session = replace(
+            next_session,
+            ingredient_candidates=tuple(),
+            confirmed_ingredients=tuple(),
+        )
     if user_conditions is not None:
         return replace(next_session, user_conditions=user_conditions)
     return next_session
+
+
+def _apply_confirmation_decision(
+    *,
+    session: ChatSessionState,
+    decision: IngredientConfirmationDecision,
+    user_message: str,
+) -> tuple[tuple[IngredientCandidate, ...], tuple[IngredientCandidate, ...]]:
+    """분류된 의도에 따라 후보·확정 재료를 갱신합니다."""
+
+    if decision.intent == "confirmed":
+        # 후보를 확정 목록으로 이동해 사용자 확인 전 데이터가 Tool 입력에 남지 않게 한다.
+        return tuple(), session.ingredient_candidates
+    if decision.intent == "rejected":
+        return tuple(), tuple()
+    if decision.intent == "edited":
+        return _apply_ingredient_edit(session.ingredient_candidates, user_message), tuple()
+    return session.ingredient_candidates, tuple()
+
+
+def _fallback_ingredient_confirmation(user_message: str) -> IngredientConfirmationDecision:
+    """Jev를 사용할 수 없을 때 확인 의도를 결정하는 최소 fallback입니다."""
+
+    if re.search(r"추가|더 넣|빼고|삭제|제외|교체|바꿔|수정|없고|없는|대신", user_message):
+        return IngredientConfirmationDecision(intent="edited", confidence=1.0)
+    if re.search(r"아니|틀렸|잘못|다시|전혀", user_message):
+        return IngredientConfirmationDecision(intent="rejected", confidence=1.0)
+    if re.search(r"맞아요|맞습니다|맞아|전부 맞|다 맞|네[, ]*(맞|그렇)|확인했", user_message):
+        return IngredientConfirmationDecision(intent="confirmed", confidence=1.0)
+    return IngredientConfirmationDecision(intent="unclear", confidence=1.0)
+
+
+_EDITABLE_INGREDIENT_AMOUNTS = {
+    "양파": "수량 미정",
+    "당근": "수량 미정",
+    "마늘": "수량 미정",
+    "버섯": "수량 미정",
+    "토마토": "수량 미정",
+    "감자": "수량 미정",
+    "대파": "수량 미정",
+    "파프리카": "수량 미정",
+    "닭가슴살": "수량 미정",
+    "오이": "수량 미정",
+    "애호박": "수량 미정",
+}
+_AMOUNT_PATTERN = r"\d+(?:\.\d+)?\s*(?:개|모|쪽|팩|g|그램|봉|캔|통|장|마리|인분)"
+
+
+def _apply_ingredient_edit(
+    candidates: tuple[IngredientCandidate, ...], user_message: str
+) -> tuple[IngredientCandidate, ...]:
+    """자주 쓰는 한국어 수정 표현을 후보 목록에 반영합니다.
+
+    이 parser는 임시 BE2 계약 전 fallback이다. 인식·수량 추출을 BE2가 제공하면 이 지점을
+    해당 정규화 결과로 교체하며, 해석되지 않은 문장은 기존 후보를 보존해 재확인한다.
+    """
+
+    updated = list(candidates)
+    remove_markers = r"없|빼|삭제|제외"
+    for candidate in tuple(updated):
+        name = re.escape(candidate.name)
+        if re.search(
+            rf"(?:{name}).{{0,12}}(?:{remove_markers})|(?:{remove_markers}).{{0,12}}(?:{name})",
+            user_message,
+        ):
+            updated = [item for item in updated if item.name != candidate.name]
+            continue
+        amount_match = re.search(rf"{name}.{{0,8}}({_AMOUNT_PATTERN})", user_message)
+        if amount_match:
+            replacement = IngredientCandidate(
+                name=candidate.name, amount=amount_match.group(1)
+            )
+            updated = [replacement if item.name == candidate.name else item for item in updated]
+
+    for name, default_amount in _EDITABLE_INGREDIENT_AMOUNTS.items():
+        if any(item.name == name for item in updated):
+            continue
+        if not re.search(rf"{re.escape(name)}.{{0,12}}(?:추가|넣|있)", user_message):
+            continue
+        amount_match = re.search(rf"{re.escape(name)}.{{0,8}}({_AMOUNT_PATTERN})", user_message)
+        updated.append(
+            IngredientCandidate(
+                name=name,
+                amount=amount_match.group(1) if amount_match else default_amount,
+            )
+        )
+    return tuple(updated)
+
+
+def _ingredient_payload(
+    candidates: tuple[IngredientCandidate, ...],
+) -> list[dict[str, str]]:
+    """세션의 immutable 후보를 FE 응답용 JSON 목록으로 변환합니다."""
+
+    return [{"name": candidate.name, "amount": candidate.amount} for candidate in candidates]
 
 
 def _has_fallback_conditions(user_message: str) -> bool:

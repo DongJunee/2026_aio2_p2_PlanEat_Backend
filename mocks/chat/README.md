@@ -15,4 +15,8 @@ FE 개발용 `POST /chat` 요청·응답 fixture입니다.
 
 `response-success.json`은 `recipe_sets` 2개와 세트별 레시피 5개로 구성되어 있습니다.
 
+`INGREDIENT_CONFIRM` 단계에서 FE는 확인 전용 필드 없이 자연어 `message`를 다시 보냅니다.
+예를 들어 `네, 모두 맞아요`는 확정, `계란은 빼고 양파 1개 추가해줘`는 수정,
+`아니요, 틀렸어요`는 이미지 재요청, 모호한 답변은 재확인 흐름으로 처리됩니다.
+
 모든 응답은 [Chat API 명세](../../docs/api/chat.md)의 필드명을 따릅니다.

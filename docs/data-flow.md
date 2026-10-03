@@ -27,9 +27,21 @@ sequenceDiagram
     BE1->>BE1: 재료 후보를 세션 상태에 반영
     BE1-->>FE: 200 NEED_MORE_INFO / INGREDIENT_CONFIRM
 
-    FE->>BE1: POST /chat (재료 확인 결과)
-    BE1->>BE1: 도구 결과를 세션 상태에 반영
-    BE1-->>FE: 200 SUCCESS / COMPLETED
+    FE->>BE1: POST /chat (재료 확인 자연어 답변)
+    alt confirmed
+        BE1->>BE1: 후보를 confirmed_ingredients로 이동
+        BE1->>BE2: ToolRequest (확정 재료·조건)
+        BE2-->>BE1: ToolResult
+        BE1-->>FE: 200 SUCCESS / COMPLETED
+    else edited
+        BE1->>BE1: 후보를 수정
+        BE1-->>FE: 200 NEED_MORE_INFO / INGREDIENT_CONFIRM
+    else rejected
+        BE1->>BE1: 후보 폐기
+        BE1-->>FE: 200 NEED_MORE_INFO / IMAGE_INPUT
+    else unclear
+        BE1-->>FE: 200 NEED_MORE_INFO / INGREDIENT_CONFIRM
+    end
 ```
 
 입력 형식 오류·안전성 검사 실패는 `400 ERROR`, 처리 실패는 `500 ERROR`로 반환한다. `ERROR`에는
@@ -40,7 +52,8 @@ sequenceDiagram
 
 ## 2. 내부 도구 흐름: BE1 ↔ BE2
 
-BE1은 사용자에게 확인받기 전의 재료 후보를 추천·RAG 입력으로 보내지 않는다. BE2는 Vision과
+BE1은 사용자에게 확인받기 전의 재료 후보를 추천·RAG 입력으로 보내지 않는다. 사용자가
+`confirmed`로 답한 뒤에만 `confirmed_ingredients`를 ToolRequest에 넣는다. BE2는 Vision과
 Tool Hub 실행 결과만 반환하며, FE용 JSON으로 바꾸는 책임은 BE1에 있다.
 
 ```mermaid
@@ -69,6 +82,13 @@ sequenceDiagram
 | `tool_name` | BE1이 실행할 도구 선택 |
 | `confirmed_ingredients` | 사용자 확인을 마친 재료만 전달 |
 | `user_conditions` | 식단 목표·조리 시간 등 추천 조건 전달 |
+
+### 사용자 재료 확인 판정
+
+BE1은 재료 확인 단계에서 Jev Choice 질문으로 `confirmed`, `rejected`, `edited`, `unclear`를
+분류한다. Jev가 비활성화되거나 실패하면 제한적인 로컬 자연어 fallback을 사용한다. `edited`의
+간단한 추가·삭제·수량 변경은 BE1 fallback parser에 반영하고, 복잡한 식재료 추출은 BE2 DTO
+합의 후 교체한다.
 
 ### Vision Function Call 입력 계약
 

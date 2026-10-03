@@ -16,10 +16,13 @@ class ChatState(TypedDict, total=False):
     step: WorkflowStep
     has_image: bool
     has_conditions: bool
+    has_confirmed_ingredients: bool
     condition_ready: bool | None
+    ingredient_confirmation: Literal["confirmed", "rejected", "edited", "unclear"] | None
     response_kind: Literal[
         "IMAGE_INPUT",
         "INPUT_REQUIREMENTS",
+        "INGREDIENT_RETRY",
         "INGREDIENT_CONFIRM",
         "CONDITION_INPUT",
         "COMPLETED",
@@ -42,9 +45,28 @@ def route_chat(state: ChatState) -> ChatState:
         return {"step": "WAITING_IMAGE", "response_kind": "IMAGE_INPUT"}
 
     if step == "WAITING_INGREDIENT_CONFIRM":
-        if state.get("has_conditions"):
+        confirmation = state.get("ingredient_confirmation")
+        if confirmation == "rejected":
+            return {"step": "WAITING_IMAGE", "response_kind": "INGREDIENT_RETRY"}
+        if confirmation in {"edited", "unclear"}:
+            return {
+                "step": "WAITING_INGREDIENT_CONFIRM",
+                "response_kind": "INGREDIENT_CONFIRM",
+            }
+        if confirmation == "confirmed" and state.get("has_conditions"):
             return {"step": "COMPLETED", "response_kind": "COMPLETED"}
-        return {"step": "WAITING_CONDITIONS", "response_kind": "CONDITION_INPUT"}
+        if confirmation == "confirmed":
+            return {"step": "WAITING_CONDITIONS", "response_kind": "CONDITION_INPUT"}
+        return {
+            "step": "WAITING_INGREDIENT_CONFIRM",
+            "response_kind": "INGREDIENT_CONFIRM",
+        }
+
+    if step == "WAITING_CONDITIONS" and not state.get("has_confirmed_ingredients"):
+        return {
+            "step": "WAITING_INGREDIENT_CONFIRM",
+            "response_kind": "INGREDIENT_CONFIRM",
+        }
 
     if step == "WAITING_CONDITIONS" and state.get("has_conditions"):
         return {"step": "COMPLETED", "response_kind": "COMPLETED"}

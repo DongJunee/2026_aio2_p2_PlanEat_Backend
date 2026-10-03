@@ -12,16 +12,26 @@ LangGraph가 다음 단계를 정하는 보조 판단기로만 사용한다.
 
 ## 2. PlanEat에서의 사용 범위
 
-현재 Jev는 각 사용자 `message`에서 아래 질문 하나를 판단한다. 외부 요청에는 별도 조건 DTO를
-두지 않으며, Jev가 충분하다고 판단한 자연어 메시지 원문을 내부 Tool 입력으로 보관한다.
+현재 Jev는 각 사용자 `message`에서 조건 충분성과 재료 확인 의도를 판단한다. 외부 요청에는
+별도 조건·확인 DTO를 두지 않으며, 자연어 메시지를 Jev에 전달해 내부 상태 전이를 결정한다.
 
 > 사용자가 식단 목표와 조리 가능한 시간을 모두 제공했는가?
 
 | Jev 결과 | confidence | LangGraph 처리 |
 | --- | --- | --- |
 | `needs_more_info` | 설정한 최저 confidence 이상 | `CONDITION_INPUT`을 유지하고 추가 조건을 요청한다. |
-| `ready` | 설정한 최저 confidence 이상 | 추천 완료 단계로 진행한다. |
+| `ready` | 설정한 최저 confidence 이상 | 조건이 준비된 것으로 저장하고 이미지·재료 확인 단계의 다음 전이를 진행한다. |
 | API 오류, 응답 형식 오류, 최저 confidence 미만 | 관계없음 | Jev 결과를 사용하지 않고 기존 결정적 전이로 fallback한다. |
+
+재료 확인 단계에서는 별도의 `ingredient_confirmation` 질문을 사용한다. Jev는 수정 내용을
+직접 추출하지 않고 의도만 반환하며, 현재는 BE1의 제한적인 parser가 흔한 추가·삭제·수량 변경을 반영한다.
+
+| Jev 결과 | LangGraph 처리 |
+|---|---|
+| `confirmed` | 후보를 `confirmed_ingredients`로 이동하고 조건 입력 여부를 확인한다. |
+| `edited` | 추가·삭제·수량 변경을 후보에 반영한 뒤 재확인한다. |
+| `rejected` | 후보를 폐기하고 이미지를 다시 요청한다. |
+| `unclear` | 후보를 유지하고 확인 답변을 다시 요청한다. |
 
 예를 들어 `다이어트 메뉴 추천해줘`는 조리 시간이 없으므로 추가 입력을 요청할 수 있다.
 `다이어트 식단으로 20분 안에 만들고 싶어요`는 두 조건이 있어 완료 단계로 진행할 수 있다.
@@ -43,7 +53,7 @@ cp .env.example .env
 ```
 
 ```env
-# Jev 조건 판정을 활성화한다.
+# Jev 자연어 조건·재료 확인 판정을 활성화한다.
 TYPESAFE_JEV_ENABLED=true
 
 # TypeSafe Console에서 발급한 실제 키를 입력한다.
@@ -88,9 +98,10 @@ Swagger UI(`http://127.0.0.1:8000/docs`)에서 같은 `session_id`로 아래 순
 
 1. 이미지 없이 요청해 `IMAGE_INPUT`을 확인한다.
 2. 이미지를 첨부해 `INGREDIENT_CONFIRM`을 확인한다.
-3. 재료를 확인해 `CONDITION_INPUT`을 확인한다.
-4. 조리 시간이 빠진 조건을 보내 `CONDITION_INPUT` 유지 여부를 확인한다.
-5. 식단 목표와 조리 시간을 모두 보낸 뒤 `COMPLETED` 진행 여부를 확인한다.
+3. 재료 확인에 `네, 모두 맞아요`를 보내 `confirmed` 처리를 확인한다.
+4. 재료 확인에 `계란은 빼고 양파 1개 추가해줘`를 보내 수정 목록 재확인을 확인한다.
+5. 재료 확인에 `아니요, 틀렸어요`를 보내 이미지 재요청을 확인한다.
+6. 식단 목표와 조리 시간을 모두 보낸 뒤 `COMPLETED`와 fake ToolRequest 전달을 확인한다.
 
 완료 응답 문구까지 확인하려면 기존 `OPENAI_API_KEY`도 `.env`에 설정해야 한다.
 

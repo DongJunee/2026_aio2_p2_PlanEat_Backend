@@ -155,6 +155,31 @@ FE에서 사용할 수 있는 전체 성공 응답은 [`mocks/chat/response-succ
 }
 ```
 
+FE는 별도 확인 DTO를 보내지 않고 사용자의 자연어 답변을 `message`로 다시 전송합니다.
+BE1은 Jev의 `choice` 판정으로 답변 의도를 분류합니다.
+
+| 내부 판정 | 처리 | 외부 응답 |
+|---|---|---|
+| `confirmed` | 후보를 확정 재료로 이동하고, 조건이 있으면 ToolRequest를 준비합니다. | `COMPLETED` 또는 `CONDITION_INPUT` |
+| `edited` | 추가·삭제·수량 변경을 후보에 반영하고 다시 확인받습니다. | `INGREDIENT_CONFIRM` |
+| `rejected` | 후보를 폐기하고 이미지를 다시 요청합니다. | `IMAGE_INPUT` |
+| `unclear` | 후보를 유지하고 확인 답변을 다시 요청합니다. | `INGREDIENT_CONFIRM` |
+
+예를 들어 `"계란은 빼고 양파 1개 추가해줘"`는 `edited`로 분류되어 수정된 후보 목록이
+다시 반환됩니다. `"네, 모두 맞아요"`는 `confirmed`로 분류됩니다.
+
+재료가 확정되고 식단 조건도 준비되면 내부적으로 아래 요청을 생성합니다. 이 DTO는 FE에
+노출되지 않으며, 현재는 fake provider가 BE2 호출 경계를 검증합니다.
+
+```text
+ToolRequest = {
+  session_id,
+  tool_name: "recipe_recommendation",
+  confirmed_ingredients,
+  user_conditions
+}
+```
+
 ### Error: `400` 또는 `500`
 
 ```json
@@ -234,6 +259,9 @@ FE에서 사용할 수 있는 전체 성공 응답은 [`mocks/chat/response-succ
 - `session_id`로 LangGraph State를 유지합니다.
 - 이미지와 자연어 조건이 모두 없는 경우 `INPUT_REQUIREMENTS`로 두 입력을 한 번에 요청합니다.
 - 이미지와 식단 목적·조리 시간이 담긴 자연어 메시지를 함께 받은 뒤에는 재료 확인만 거치고 추천 단계로 진행합니다.
+- 사용자 확인 전 재료 후보는 추천 Tool에 전달하지 않습니다.
+- `confirmed` 판정 이후에만 확정 재료를 ToolRequest에 포함합니다.
+- `edited`·`rejected`·`unclear` 판정은 각각 후보 수정·이미지 재요청·재확인 응답으로 처리합니다.
 - Tool Hub 연동 전에는 이미지 인식 재료와 추천 결과를 API·FE 통합 검증용 임시 데이터로 반환합니다.
 - `COMPLETED` 단계의 `response` 문구는 `OPENAI_MODEL`(기본값 `gpt-4o-mini`)로 생성합니다.
 - OpenAI API 키가 없거나 LLM 호출에 실패하면 `500 ERROR`를 반환합니다.

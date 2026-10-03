@@ -30,6 +30,11 @@ Content-Type: application/json
 
 `attachments[].type`은 현재 `image`만 지원합니다.
 
+식단 목표와 조리 가능 시간은 별도 JSON 필드가 아닌 `message`의 자연어로 전달합니다. 예를 들어
+`"다이어트 식단으로 20분 안에 만들고 싶어요."`처럼 이미지와 함께 보낼 수 있습니다. 서버는 Jev
+판정과 보수적 fallback 규칙으로 조건이 충분한지 판단합니다. 이미지와 자연어 조건이 모두 부족한
+첫 요청에는 `INPUT_REQUIREMENTS` 응답이 반환됩니다.
+
 ## Response
 
 `status`와 `step`은 FE 분기 처리에 사용하는 고정 코드입니다. 사용자에게 표시하는 문구는 `response`, 추가 입력 항목은 `questions`·`ingredients`·`data`를 사용합니다.
@@ -50,11 +55,31 @@ Content-Type: application/json
 | `status` | `step` | FE 처리 |
 |---|---|---|
 | `SUCCESS` | `COMPLETED` | `data.recipe_sets`를 표시합니다. |
+| `NEED_MORE_INFO` | `INPUT_REQUIREMENTS` | 이미지 첨부와 자연어 식단 목표·조리 시간을 한 화면에서 수집합니다. |
 | `NEED_MORE_INFO` | `IMAGE_INPUT` | `questions`를 표시하고 이미지 첨부를 요청합니다. |
 | `NEED_MORE_INFO` | `CONDITION_INPUT` | `questions`를 표시하고 추가 조건을 입력받습니다. |
 | `NEED_MORE_INFO` | `INGREDIENT_CONFIRM` | `ingredients`를 표시하고 인식 재료를 확인받습니다. |
 
 `ERROR` 응답에는 `step`을 포함하지 않습니다.
+
+### 이미지와 조건 동시 입력 필요: `200 NEED_MORE_INFO`
+
+첫 요청에서 이미지와 자연어 조건이 모두 부족할 때 반환합니다. FE는 이미지 업로드와 메시지 입력을
+함께 보여 주고, 다음 `POST /chat`에서 이미지와 식단 목표·조리 시간을 포함한 자연어 `message`를
+보냅니다. 별도의 `conditions` JSON 필드는 사용하지 않습니다.
+
+```json
+{
+  "status": "NEED_MORE_INFO",
+  "step": "INPUT_REQUIREMENTS",
+  "response": "추천에 필요한 이미지와 조건을 자연어로 함께 알려주세요.",
+  "questions": [
+    "냉장고, 냉동실 또는 영수증 이미지를 첨부해주세요.",
+    "메시지에 식단 목표를 알려주세요. 예: 다이어트, 고단백, 채식",
+    "메시지에 조리 가능한 시간을 알려주세요. 예: 20분 이내"
+  ]
+}
+```
 
 ### 이미지 첨부 필요: `200 NEED_MORE_INFO`
 
@@ -127,6 +152,31 @@ FE에서 사용할 수 있는 전체 성공 응답은 [`mocks/chat/response-succ
     { "name": "양배추", "amount": "반 통" },
     { "name": "계란", "amount": "4개" }
   ]
+}
+```
+
+FE는 별도 확인 DTO를 보내지 않고 사용자의 자연어 답변을 `message`로 다시 전송합니다.
+BE1은 Jev의 `choice` 판정으로 답변 의도를 분류합니다.
+
+| 내부 판정 | 처리 | 외부 응답 |
+|---|---|---|
+| `confirmed` | 후보를 확정 재료로 이동하고, 조건이 있으면 ToolRequest를 준비합니다. | `COMPLETED` 또는 `CONDITION_INPUT` |
+| `edited` | 추가·삭제·수량 변경을 후보에 반영하고 다시 확인받습니다. | `INGREDIENT_CONFIRM` |
+| `rejected` | 후보를 폐기하고 이미지를 다시 요청합니다. | `IMAGE_INPUT` |
+| `unclear` | 후보를 유지하고 확인 답변을 다시 요청합니다. | `INGREDIENT_CONFIRM` |
+
+예를 들어 `"계란은 빼고 양파 1개 추가해줘"`는 `edited`로 분류되어 수정된 후보 목록이
+다시 반환됩니다. `"네, 모두 맞아요"`는 `confirmed`로 분류됩니다.
+
+재료가 확정되고 식단 조건도 준비되면 내부적으로 아래 요청을 생성합니다. 이 DTO는 FE에
+노출되지 않으며, 현재는 fake provider가 BE2 호출 경계를 검증합니다.
+
+```text
+ToolRequest = {
+  session_id,
+  tool_name: "recipe_recommendation",
+  confirmed_ingredients,
+  user_conditions
 }
 ```
 
@@ -207,6 +257,11 @@ FE에서 사용할 수 있는 전체 성공 응답은 [`mocks/chat/response-succ
 ## 처리 규칙
 
 - `session_id`로 LangGraph State를 유지합니다.
+- 이미지와 자연어 조건이 모두 없는 경우 `INPUT_REQUIREMENTS`로 두 입력을 한 번에 요청합니다.
+- 이미지와 식단 목적·조리 시간이 담긴 자연어 메시지를 함께 받은 뒤에는 재료 확인만 거치고 추천 단계로 진행합니다.
+- 사용자 확인 전 재료 후보는 추천 Tool에 전달하지 않습니다.
+- `confirmed` 판정 이후에만 확정 재료를 ToolRequest에 포함합니다.
+- `edited`·`rejected`·`unclear` 판정은 각각 후보 수정·이미지 재요청·재확인 응답으로 처리합니다.
 - Tool Hub 연동 전에는 이미지 인식 재료와 추천 결과를 API·FE 통합 검증용 임시 데이터로 반환합니다.
 - `COMPLETED` 단계의 `response` 문구는 `OPENAI_MODEL`(기본값 `gpt-4o-mini`)로 생성합니다.
 - OpenAI API 키가 없거나 LLM 호출에 실패하면 `500 ERROR`를 반환합니다.

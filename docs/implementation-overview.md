@@ -14,12 +14,12 @@ FastAPI Router
   ▼
 ChatService ── 세션별 현재 단계 저장
   │
-  ├── Jev 조건 판정 (선택 사항, CONDITION_INPUT에서만)
+  ├── Jev 자연어 조건·재료 확인 판정 (선택 사항)
   ▼
 LangGraph route_chat
   ▼
 응답 변환
-  ├── IMAGE_INPUT / INGREDIENT_CONFIRM / CONDITION_INPUT
+  ├── INPUT_REQUIREMENTS / IMAGE_INPUT / INGREDIENT_CONFIRM / CONDITION_INPUT
   └── COMPLETED → 임시 레시피 데이터 + OpenAI 완료 안내 문구
   ▼
 ChatResponse JSON
@@ -33,7 +33,8 @@ ChatResponse JSON
 | 상태 전이 | `app/agent/graph.py` | LangGraph `ChatState`와 단계별 분기 규칙 |
 | 세션·응답 조립 | `app/services/chat_service.py` | 세션 상태 저장, Graph 실행, fixture 레시피·응답 변환 |
 | 최종 안내 문구 | `app/integrations/llm/openai_responder.py` | OpenAI Responses API 호출 및 출력 안전성 검사 |
-| 선택적 조건 판정 | `app/integrations/decision_engine/typesafe_jev.py` | TypeSafe Jev 호출, confidence 검증, fallback |
+| 자연어 조건·확인 판정 | `app/integrations/decision_engine/typesafe_jev.py` | 식단 조건 충분성 및 재료 확인 의도에 대한 Jev choice, confidence 검증, fallback |
+| 재료 확인·Tool 준비 | `app/services/chat_service.py` | 후보 수정·확정, 세션 반영, `ToolRequest` 생성과 provider 전달 |
 | 안전성 검사 | `app/core/safety.py` | 사용자 입력·LLM 출력의 위험한 패턴 검사 |
 
 ## 2. Chat API 계약
@@ -45,7 +46,7 @@ ChatResponse JSON
 ```json
 {
   "session_id": "session-001",
-  "message": "냉장고 재료로 저녁 메뉴를 추천해줘.",
+  "message": "다이어트 식단으로 20분 안에 만들고 싶어요.",
   "attachments": [
     { "type": "image", "data": "<base64-image-or-url>" }
   ]
@@ -57,6 +58,7 @@ ChatResponse JSON
 | `session_id` | 빈 문자열 불가. 동일 세션의 워크플로우 단계를 이어 간다. |
 | `message` | 1~2,000자. 안전성 검사를 통과해야 한다. |
 | `attachments` | 선택 사항이며 최대 5개. 현재 `image` 타입만 허용한다. |
+| 식단 목적·시간 | 별도 필드 없이 `message`에서 자연어로 전달한다. Jev 또는 fallback이 충분성을 판정한다. |
 
 ### 응답 공통 규칙
 
@@ -64,6 +66,7 @@ FE는 `status`, `step`만으로 화면 흐름을 분기한다.
 
 | HTTP | `status` | `step` | 의미 |
 | --- | --- | --- | --- |
+| 200 | `NEED_MORE_INFO` | `INPUT_REQUIREMENTS` | 이미지와 자연어 조건을 한 번에 수집한다. |
 | 200 | `NEED_MORE_INFO` | `IMAGE_INPUT` | 이미지 첨부가 필요하다. |
 | 200 | `NEED_MORE_INFO` | `INGREDIENT_CONFIRM` | 인식된 재료 후보의 확인이 필요하다. |
 | 200 | `NEED_MORE_INFO` | `CONDITION_INPUT` | 식단 목표·조리 시간 등의 조건이 필요하다. |
@@ -88,35 +91,48 @@ FastAPI 기본 검증 오류인 `422 {"detail": ...}`는 `app/main.py`에서 `40
 
 ```text
 WAITING_IMAGE
-  ├── 이미지 없음 ───────────────→ IMAGE_INPUT (WAITING_IMAGE 유지)
+  ├── 이미지·자연어 조건 없음 ────→ INPUT_REQUIREMENTS (WAITING_IMAGE 유지)
+  ├── 자연어 조건만 있음 ─────────→ IMAGE_INPUT (WAITING_IMAGE 유지)
   └── 이미지 있음 ───────────────→ INGREDIENT_CONFIRM
                                       │
 WAITING_INGREDIENT_CONFIRM ────────────┘
-  └──────────────────────────────────→ CONDITION_INPUT
+  ├── confirmed + 조건 있음 ─────────→ COMPLETED + ToolRequest
+  ├── confirmed + 조건 없음 ─────────→ CONDITION_INPUT
+  ├── edited ───────────────────────→ INGREDIENT_CONFIRM
+  ├── rejected ─────────────────────→ IMAGE_INPUT
+  └── unclear ──────────────────────→ INGREDIENT_CONFIRM
                                        (WAITING_CONDITIONS)
 
 WAITING_CONDITIONS
-  ├── Jev: needs_more_info, 신뢰도 충족 → CONDITION_INPUT 유지
-  └── 그 외(ready·비활성·실패·저신뢰) → COMPLETED
+  ├── 자연어 조건 부족 ────────────→ CONDITION_INPUT 유지
+  └── 자연어 조건 충족 ────────────→ COMPLETED
 ```
 
 | 내부 상태 | 외부 응답 | 다음 내부 상태 |
 | --- | --- | --- |
+| `WAITING_IMAGE`, 이미지·자연어 조건 없음 | `INPUT_REQUIREMENTS` | `WAITING_IMAGE` |
 | `WAITING_IMAGE`, 이미지 없음 | `IMAGE_INPUT` | `WAITING_IMAGE` |
 | `WAITING_IMAGE`, 이미지 있음 | `INGREDIENT_CONFIRM` | `WAITING_INGREDIENT_CONFIRM` |
-| `WAITING_INGREDIENT_CONFIRM` | `CONDITION_INPUT` | `WAITING_CONDITIONS` |
+| `WAITING_INGREDIENT_CONFIRM`, `confirmed`·조건 있음 | `COMPLETED` | `COMPLETED` |
+| `WAITING_INGREDIENT_CONFIRM`, `confirmed`·조건 없음 | `CONDITION_INPUT` | `WAITING_CONDITIONS` |
+| `WAITING_INGREDIENT_CONFIRM`, `edited` | `INGREDIENT_CONFIRM` | `WAITING_INGREDIENT_CONFIRM` |
+| `WAITING_INGREDIENT_CONFIRM`, `rejected` | `IMAGE_INPUT` | `WAITING_IMAGE` |
+| `WAITING_INGREDIENT_CONFIRM`, `unclear` | `INGREDIENT_CONFIRM` | `WAITING_INGREDIENT_CONFIRM` |
 | `WAITING_CONDITIONS`, 조건 부족 | `CONDITION_INPUT` | `WAITING_CONDITIONS` |
-| `WAITING_CONDITIONS`, 조건 충족 또는 fallback | `COMPLETED` | `COMPLETED` |
+| `WAITING_CONDITIONS`, 조건 충족·확정 재료 존재 | `COMPLETED` | `COMPLETED` |
 | `COMPLETED` | `COMPLETED` | `COMPLETED` |
 
 세션 상태는 `ChatSessionRepository` 뒤의 프로세스 메모리에 저장된다. 현재는 단계뿐 아니라
-재료 후보, 확정 재료, 마지막 조건 메시지를 보관할 수 있다. 서버를 재시작하면 상태가 초기화되고,
+재료 후보, 확정 재료, 충분성이 판별된 자연어 사용자 조건 원문을 보관할 수 있다. 서버를 재시작하면 상태가 초기화되고,
 멀티 인스턴스 배포 시에는 같은 인터페이스의 Redis·DB 구현체로 교체해야 한다.
 
 ## 4. 완료 응답의 데이터 구성
 
-`COMPLETED`에서는 `_demo_recipe_sets()`가 임시 레시피 데이터를 만든다. 이는 BE1 Tool Hub가
-준비되기 전 계약·FE 통합을 검증하기 위한 것이며, 실제 검색·추천 결과가 아니다.
+`COMPLETED`에서는 `_demo_recipe_sets()`가 임시 레시피 데이터를 만든다. 이는 BE2 Tool Hub가
+준비되기 전 계약·FE 통합을 검증하기 위한 것이며, 실제 검색·추천 결과가 아니다. 현재도 확정
+재료·조건으로 `ToolRequest`를 fake provider에 전달하지만, fake 결과를 실제 레시피 데이터로
+변환하지는 않는다. 실제 연동에서는 BE1이 이미지를 직접 인식하지 않고, BE2 Vision Function Call이
+반환한 후보를 FE가 확정한 뒤 Recipe·Nutrition·Shopping·RAG Function Call을 요청한다.
 
 ```json
 {
@@ -142,15 +158,33 @@ WAITING_CONDITIONS
 최종 `response` 문구는 `OpenAIResponder`가 생성한다. OpenAI API 키가 없거나 호출·출력
 검증에 실패하면 `500 ERROR`를 반환한다. 레시피 데이터 자체는 LLM이 만들거나 변경하지 않는다.
 
-## 5. TypeSafe Jev 조건 판정
+## 5. TypeSafe Jev 자연어 판정
 
-Jev는 `CONDITION_INPUT`에서 현재 사용자 메시지의 식단 목표·조리 시간 충족 여부를 판단한다.
+Jev는 사용자 메시지의 식단 조건 충분성과 재료 확인 의도를 판단한다. 외부 `/chat` 요청에는
+구조화된 조건·확인 필드가 없으며, 충분하다고 판정된 메시지 원문과 사용자 확인 결과만
+세션의 내부 Tool 입력으로 보관한다.
 자세한 설치와 환경변수는 [Jev 연동 가이드](jev.md)를 참고한다.
 
-1. `ChatService`가 현재 상태가 `WAITING_CONDITIONS`인지 확인한다.
-2. 활성화된 경우 Jev API에 고정된 `choice` 질문을 보낸다.
-3. `choice`가 `needs_more_info`이고 confidence가 기준 이상이면 조건 입력을 반복한다.
-4. `ready`, API 실패, timeout, 응답 구조 오류, confidence 미달은 기존 Graph 흐름으로 fallback한다.
+### 5.1 조건 충분성 판정
+
+1. `ChatService`가 자연어 `message`를 Jev의 고정된 `choice` 질문으로 평가한다.
+2. `ready`가 confidence 기준 이상이면 메시지 원문을 조건으로 보관한다.
+3. `needs_more_info`가 confidence 기준 이상이면 조건 입력을 반복한다.
+4. API 실패, timeout, 응답 구조 오류, confidence 미달은 목표 키워드와 시간 표현을 함께 확인하는 보수적 fallback으로 처리한다.
+
+### 5.2 재료 확인 의도 판정
+
+재료 후보를 반환한 다음 요청에서는 `ingredient_confirmation` choice를 사용한다.
+
+| 결과 | 세션·Graph 처리 |
+|---|---|
+| `confirmed` | `ingredient_candidates`를 비우고 `confirmed_ingredients`로 이동한다. 조건이 있으면 ToolRequest를 생성한다. |
+| `edited` | 제한적인 추가·삭제·수량 변경 parser를 적용하고 `INGREDIENT_CONFIRM`을 다시 반환한다. |
+| `rejected` | 후보·확정 재료를 비우고 `IMAGE_INPUT`으로 재촬영을 요청한다. |
+| `unclear` | 후보를 유지하고 `INGREDIENT_CONFIRM` 재확인을 요청한다. |
+
+Jev가 비활성화·실패·저신뢰이면 `ChatService`의 확인 표현 fallback을 사용한다. `edited`의
+복잡한 식재료명·수량 추출은 현재 범위가 아니며 BE2 정규화 DTO 합의 후 교체한다.
 
 외부 API 호출은 세션 잠금 밖에서 수행해, 한 세션의 네트워크 지연이 다른 세션의 처리를
 막지 않게 한다. API 키·사용자 메시지 원문은 애플리케이션 로그에 기록하지 않는다.
@@ -188,7 +222,7 @@ uv run uvicorn app.main:app --reload
 | --- | --- | --- |
 | `OPENAI_API_KEY` | 완료 안내 문구 생성 | 완료 단계에서 `500 ERROR` |
 | `OPENAI_MODEL` | OpenAI 모델 선택 | `gpt-4o-mini` 사용 |
-| `TYPESAFE_JEV_ENABLED` | Jev 조건 판정 사용 여부 | `false`가 기본값 |
+| `TYPESAFE_JEV_ENABLED` | Jev 자연어 조건·재료 확인 판정 사용 여부 | `false`가 기본값 |
 | `TYPESAFE_API_KEY` | Jev 인증 | Jev를 호출하지 않고 fallback |
 | `TYPESAFE_MODEL` | Jev 모델 선택 | `jev-latest` 사용 |
 | `TYPESAFE_TIMEOUT_SECONDS` | Jev 호출 제한 시간 | `2.0`초 |
@@ -201,7 +235,7 @@ uv run uvicorn app.main:app --reload
 | 위치 | 검증 대상 |
 | --- | --- |
 | `tests/unit/test_chat_schema.py` | 요청 DTO 제약, 응답 DTO, 모든 응답 fixture의 계약 적합성 |
-| `tests/unit/test_chat_service.py` | 상태 전이, 안전 오류, 요청 형식 오류, Jev low-confidence fallback, OpenAPI 응답 코드 |
+| `tests/unit/test_chat_service.py` | 상태 전이, Jev 확인 의도, 후보 수정·확정, ToolRequest 전달, 안전 오류, OpenAPI 응답 코드 |
 | `tests/unit/test_prompt_management.py` | 프롬프트 조합과 비신뢰 입력 분리 |
 | `tests/unit/test_safety.py` | 입력·출력 안전성 검사 |
 | `mocks/chat/` | FE가 사용할 상태별 요청·응답 예시 |
@@ -217,11 +251,11 @@ git diff --check
 
 | 현재 임시 구현 | 향후 교체 지점 |
 | --- | --- |
-| `_INGREDIENTS`의 고정 재료 후보 | Vision 또는 BE1 Tool Hub의 이미지 인식 결과 |
-| `_demo_recipe_sets()`의 고정 레시피 10개 | BE1 Recipe·Nutrition·Shopping 결과 |
+| `_INGREDIENTS`의 고정 재료 후보 | Vision 또는 BE2 Tool Hub의 이미지 인식 결과 |
+| `_demo_recipe_sets()`의 고정 레시피 10개 | BE2 Recipe·Nutrition·Shopping 결과 |
 | 프로세스 메모리 세션 | DB 또는 Redis 세션 저장소 |
-| Jev의 단일 조건 충분성 판단 | 합의된 정책에 따른 추가 라우팅·점수화 판단 |
-| Tool Hub fake provider·호출 전 검증 | BE1 URL·timeout·재시도 정책을 반영한 실제 비동기 어댑터 |
+| Jev 조건 판정과 제한적인 확인 의도 parser | 합의된 정책에 따른 조건 추출·재료 수정 DTO |
+| Tool Hub fake provider·호출 전 검증 | BE2 URL·timeout·재시도 정책을 반영한 실제 비동기 어댑터 |
 
 Tool Hub·RAG가 연결되더라도 외부 `/chat` DTO, `status`, `step`, 레시피 2세트·세트당 5개라는
 FE 계약은 유지해야 한다.

@@ -1,6 +1,6 @@
 {
   "session_id": "session-001",
-  "message": "냉장고 재료로 만들 수 있는 메뉴 추천해줘.",
+  "message": "다이어트 식단으로 20분 안에 만들고 싶어요.",
   "attachments": [
     {
       "type": "image",

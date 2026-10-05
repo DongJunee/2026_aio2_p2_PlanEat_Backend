@@ -15,12 +15,15 @@ FastAPI Router
 ChatService ── 세션별 현재 단계 저장
   │
   ├── Jev 자연어 조건·재료 확인 판정 (선택 사항)
+  ├── app.core.safety + NeMo Guardrails 입력 검사
   ▼
 LangGraph route_chat
   ▼
 응답 변환
   ├── INPUT_REQUIREMENTS / IMAGE_INPUT / INGREDIENT_CONFIRM / CONDITION_INPUT
   └── COMPLETED → 임시 레시피 데이터 + OpenAI 완료 안내 문구
+                         │
+                         └── NeMo Guardrails 출력·Tool 결과 검사
   ▼
 ChatResponse JSON
 ```
@@ -36,6 +39,7 @@ ChatResponse JSON
 | 자연어 조건·확인 판정 | `app/integrations/decision_engine/typesafe_jev.py` | 식단 조건 충분성 및 재료 확인 의도에 대한 Jev choice, confidence 검증, fallback |
 | 재료 확인·Tool 준비 | `app/services/chat_service.py` | 후보 수정·확정, 세션 반영, `ToolRequest` 생성과 provider 전달 |
 | 안전성 검사 | `app/core/safety.py` | 사용자 입력·LLM 출력의 위험한 패턴 검사 |
+| NeMo Guardrails | `app/integrations/guardrails/nemo.py`, `guardrails/config.yml` | 입력·출력·Tool 결과의 NeMo IORails 정규식 검사 및 장애 시 기존 안전성 검사 fallback |
 
 ## 2. Chat API 계약
 
@@ -204,6 +208,7 @@ Jev가 비활성화·실패·저신뢰이면 `ChatService`의 확인 표현 fall
 - `input`: `<untrusted_user_message>`, `<trusted_recipe_sets>` 블록으로 데이터 출처를 분리
 - `store=False`: OpenAI 요청 저장을 비활성화
 - 출력: 최종 응답으로 보내기 전에 `validate_completion_output()`으로 재검사
+- NeMo `regex check output`: 최종 응답을 FE에 반환하기 전 내부 지시·API 키 패턴을 추가 검사
 
 가격·비용·예산처럼 API 계약에 없는 정보는 최종 안내 문구에 추측해 넣지 않도록 프롬프트에서
 제한한다.
@@ -227,6 +232,8 @@ uv run uvicorn app.main:app --reload
 | `TYPESAFE_MODEL` | Jev 모델 선택 | `jev-latest` 사용 |
 | `TYPESAFE_TIMEOUT_SECONDS` | Jev 호출 제한 시간 | `2.0`초 |
 | `TYPESAFE_JEV_MIN_CONFIDENCE` | Jev 판단 반영 기준 | `0.8` |
+| `NEMO_GUARDRAILS_ENABLED` | NeMo 입력·출력·Tool 결과 rail 사용 여부 | `true` |
+| `NEMO_GUARDRAILS_CONFIG_PATH` | NeMo `config.yml` 디렉터리 | `guardrails` |
 
 실제 키는 `.env`에만 보관하고 Git에 추가하지 않는다.
 
@@ -238,6 +245,7 @@ uv run uvicorn app.main:app --reload
 | `tests/unit/test_chat_service.py` | 상태 전이, Jev 확인 의도, 후보 수정·확정, ToolRequest 전달, 안전 오류, OpenAPI 응답 코드 |
 | `tests/unit/test_prompt_management.py` | 프롬프트 조합과 비신뢰 입력 분리 |
 | `tests/unit/test_safety.py` | 입력·출력 안전성 검사 |
+| `tests/unit/test_guardrails.py` | NeMo 입력·출력 rail과 ChatService 차단·fallback 경계 |
 | `mocks/chat/` | FE가 사용할 상태별 요청·응답 예시 |
 
 검증 명령은 다음과 같다.

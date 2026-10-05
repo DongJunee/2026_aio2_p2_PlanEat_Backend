@@ -28,6 +28,10 @@ uv run uvicorn app.main:app --reload --port 8000
 cp .env.example .env
 ```
 
+NeMo Guardrails는 기본 활성화되며 `guardrails/config.yml`을 읽습니다. 로컬 사고 대응이나
+호환성 확인 때문에 일시적으로 끄려면 `NEMO_GUARDRAILS_ENABLED=false`를 설정합니다.
+설정 상세와 BE2 연동 시 확장 지점은 [Guardrails 연동 가이드](guardrails.md)를 참고합니다.
+
 ## 3. API 작업 기준
 
 - 진입점: `POST /chat`
@@ -36,6 +40,7 @@ cp .env.example .env
 - 상태: `SUCCESS`, `NEED_MORE_INFO`, `ERROR`
 - 이미지와 자연어 조건이 모두 없으면 `INPUT_REQUIREMENTS` 단계로 한 번에 요청
 - 성공 응답: `recipe_sets` 2개, 각 세트의 레시피 5개
+- NeMo Guardrails: 입력·LLM 출력·Tool 결과의 결정적 안전성 검사
 - 상세 계약: [Chat API](api/chat.md)
 
 ## 4. 코드 위치

@@ -1,0 +1,40 @@
+rails:
+  config:
+    # 기존 app.core.safety와 같은 금지 패턴을 NeMo rail에서도 검사한다.
+    # 사용자 메시지 전체는 로그나 설정에 저장하지 않고, 검사 결과만 사용한다.
+    regex_detection:
+      input:
+        case_insensitive: true
+        patterns:
+          - "ignore[\\s_.:/\\\\'\"-]*previous[\\s_.:/\\\\'\"-]*instructions"
+          - "ignore[\\s_.:/\\\\'\"-]*all[\\s_.:/\\\\'\"-]*previous[\\s_.:/\\\\'\"-]*instructions"
+          - "disregard[\\s_.:/\\\\'\"-]*previous[\\s_.:/\\\\'\"-]*instructions"
+          - "forget[\\s_.:/\\\\'\"-]*previous[\\s_.:/\\\\'\"-]*instructions"
+          - "system[\\s_.:/\\\\'\"-]*prompt"
+          - "developer[\\s_.:/\\\\'\"-]*prompt"
+          - "reveal[\\s_.:/\\\\'\"-]*prompt"
+          - "prompt[\\s_.:/\\\\'\"-]*injection"
+          - "\\bjailbreak\\b"
+          - "\\bdan[\\s_.:/\\\\'\"-]*mode\\b"
+          - "이\\s*전\\s*(지\\s*시|지\\s*시\\s*사\\s*항)\\s*(무\\s*시|무\\s*시\\s*해)"
+          - "이\\s*전\\s*지\\s*시\\s*를\\s*무\\s*시"
+          - "(시스템|개발자)\\s*프롬프트"
+          - "프롬프트\\s*인젝션"
+          - "탈옥"
+      output:
+        case_insensitive: true
+        patterns:
+          - "system[\\s_.:/\\\\'\"-]*prompt"
+          - "developer[\\s_.:/\\\\'\"-]*prompt"
+          - "(system|developer)\\s*prompt"
+          - "\\bsk-[A-Za-z0-9_-]{16,}\\b"
+          - "openai[\\s_.:/\\\\'\"-]*api[\\s_.:/\\\\'\"-]*key"
+          - "api[\\s_.:/\\\\'\"-]*key"
+          - "(시스템|개발자)\\s*프롬프트"
+          - "(오픈ai\\s*)?api\\s*키"
+  input:
+    flows:
+      - regex check input
+  output:
+    flows:
+      - regex check output

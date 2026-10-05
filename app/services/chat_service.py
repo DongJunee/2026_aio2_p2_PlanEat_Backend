@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 from collections.abc import Mapping, Sequence
+import json
 import re
 from typing import Protocol
 
@@ -21,6 +22,7 @@ from app.integrations.decision_engine.typesafe_jev import (
     JevConditionReadinessEvaluator,
     JevIngredientConfirmationEvaluator,
 )
+from app.integrations.guardrails.nemo import GuardrailValidator, NemoGuardrailService
 from app.integrations.llm.openai_responder import LLMResponseError, OpenAIResponder
 from app.repositories.chat_session import (
     ChatSessionRepository,
@@ -83,6 +85,7 @@ class ChatService:
         ingredient_confirmation_evaluator: IngredientConfirmationEvaluator | None = None,
         tool_provider: ToolHubProvider | None = None,
         session_repository: ChatSessionRepository | None = None,
+        guardrail_validator: GuardrailValidator | None = None,
     ) -> None:
         settings = get_settings()
         self._llm_responder = llm_responder or OpenAIResponder(settings)
@@ -96,6 +99,7 @@ class ChatService:
         # BE2 endpoint가 합의되기 전까지는 fake가 같은 계약의 호출 경계를 검증한다.
         self._tool_provider = tool_provider or FakeToolHubProvider()
         self._session_repository = session_repository or InMemoryChatSessionRepository()
+        self._guardrail_validator = guardrail_validator or NemoGuardrailService(settings)
 
     async def handle(self, request: ChatRequest) -> tuple[dict[str, object], int]:
         """요청을 한 단계 진행시키고, LLM 실패를 안전한 API 오류로 변환합니다."""
@@ -103,6 +107,8 @@ class ChatService:
         try:
             validate_user_message(request.message)
         except SafetyViolationError:
+            return {"status": "ERROR", "response": "요청을 처리할 수 없습니다."}, 400
+        if not await self._guardrail_validator.validate_input(request.message):
             return {"status": "ERROR", "response": "요청을 처리할 수 없습니다."}, 400
 
         session = await self._session_repository.get(request.session_id)
@@ -222,6 +228,8 @@ class ChatService:
         completion_message = await self._llm_responder.generate_completion_message(
             user_message, recipe_sets
         )
+        if not await self._guardrail_validator.validate_output(completion_message):
+            raise LLMResponseError("NeMo Guardrails가 최종 응답을 차단했습니다.")
         return {
             "status": "SUCCESS",
             "step": "COMPLETED",
@@ -258,6 +266,16 @@ class ChatService:
             }
         if result.error:
             return {"status": "ERROR", "response": "추천 도구 실행 중 오류가 발생했습니다."}
+        tool_result_payload = json.dumps(
+            {
+                "result": result.result,
+                "source_metadata": result.source_metadata,
+            },
+            ensure_ascii=False,
+            default=str,
+        )
+        if not await self._guardrail_validator.validate_tool_result(tool_result_payload):
+            return {"status": "ERROR", "response": "추천 도구 결과를 검증할 수 없습니다."}
         return None
 
     async def _read_conditions_from_message(

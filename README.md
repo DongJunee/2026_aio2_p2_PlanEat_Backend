@@ -14,6 +14,7 @@ FastAPI와 LangGraph 기반의 대화형 식단 추천 백엔드입니다. 사�
 - 성공 응답은 레시피 2세트, 세트당 5개 레시피
 - Nutrition·Shopping Tool 호출
 - ChromaDB 기반 재료 활용법·대체재·보관법 검색
+- NeMo Guardrails 기반 입력·출력·Tool 결과 안전성 검사
 
 ## API
 
@@ -22,6 +23,7 @@ FastAPI와 LangGraph 기반의 대화형 식단 추천 백엔드입니다. 사�
 상세 요청·응답 형식은 [Chat API 명세](docs/api/chat.md)를 참고합니다.
 역할별 데이터 교환은 [데이터 흐름도](docs/data-flow.md)를 참고합니다.
 프롬프트 관리·보안 원칙은 [Prompt 관리](docs/prompt-management.md)를 참고합니다.
+NeMo Guardrails 설정·적용 범위는 [Guardrails 연동 가이드](docs/guardrails.md)를 참고합니다.
 TypeSafe Jev 자연어 판정 설정은 [Jev 연동 가이드](docs/jev.md)를 참고합니다.
 소스 구조와 실행 흐름은 [구현 개요](docs/implementation-overview.md)를 참고합니다.
 Tool Hub 연결 전 준비 상태는 [Tool Hub 연동 준비](docs/tool-hub-readiness.md)를 참고합니다.
@@ -61,6 +63,7 @@ Tool Hub 연결 전 준비 상태는 [Tool Hub 연동 준비](docs/tool-hub-read
 │   │   └── vector_store/               # ChromaDB
 │   └── db/                             # DB 설정
 ├── prompts/                            # LLM 운영 프롬프트
+├── guardrails/                          # NeMo Guardrails 설정
 ├── tests/                              # 단위·통합 테스트
 ├── docs/                               # 프로젝트 관련 문서
 ├── data/                               # 로컬 DB·ChromaDB(커밋하지 않음)
@@ -95,6 +98,10 @@ git diff --check
 현재 `/chat`은 LangGraph 기반의 세션 단계 전이를 제공합니다. Tool Hub·RAG 연동 전에는 API·FE 통합 검증을 위한 임시 재료·추천 데이터를 반환합니다.
 
 LLM 최종 응답을 사용하려면 `.env`에 `OPENAI_API_KEY`를 설정합니다. 기본 모델은 `gpt-4o-mini`이며, 필요하면 `OPENAI_MODEL`로 변경할 수 있습니다.
+
+NeMo Guardrails는 기본 활성화되며 `guardrails/config.yml`의 정규식 입력·출력 rail을
+사용합니다. 장애가 발생하면 기존 `app/core/safety.py` 검사로 안전하게 fallback합니다.
+긴급하게 비활성화해야 할 때만 `.env`에서 `NEMO_GUARDRAILS_ENABLED=false`로 설정합니다.
 
 ### 선택 사항: TypeSafe Jev 자연어 판정
 

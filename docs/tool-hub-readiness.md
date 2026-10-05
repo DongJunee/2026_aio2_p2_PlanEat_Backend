@@ -14,6 +14,7 @@
 | 사용자 확인 보호 | `build_tool_request()` | `confirmed_ingredients`가 비어 있으면 Tool 요청 생성을 거부한다. 이미지 후보 재료는 전달하지 않는다. |
 | 확인 의도 분류 | `JevIngredientConfirmationEvaluator` | `confirmed`·`rejected`·`edited`·`unclear`에 따라 후보 상태와 다음 단계를 결정한다. |
 | 완료 단계 호출 경계 | `ChatService._execute_tool_request()` | 확정 재료와 조건으로 `ToolRequest`를 만들고 현재는 fake provider에 전달한다. |
+| Tool 결과 안전성 경계 | `NemoGuardrailService.validate_tool_result()` | 현재 `ToolResult`를 NeMo output rail로 검사하며, 구조적 tool-call DTO 합의 후 `tool result validation` rail로 교체한다. |
 | fake provider | `app/agent/tools/fake_provider.py` | 실 네트워크 없이 BE1 호출 경계를 테스트하는 결정적 결과를 반환한다. |
 | 테스트 | `tests/unit/test_chat_service.py` | 미확정 재료 차단과 유효한 요청·fake 결과를 검증한다. |
 

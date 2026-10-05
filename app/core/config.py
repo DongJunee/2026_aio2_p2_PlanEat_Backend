@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     typesafe_model: str = "jev-latest"
     typesafe_timeout_seconds: float = 2.0
     typesafe_jev_min_confidence: float = 0.8
+    nemo_guardrails_enabled: bool = True
+    nemo_guardrails_config_path: str = "guardrails"
 
 
 @lru_cache

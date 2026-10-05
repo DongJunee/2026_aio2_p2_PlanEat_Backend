@@ -47,6 +47,8 @@ prompts/
   제공하지 않는다.
 - `message`는 최대 2,000자로 제한하고, 최종 출력은 최대 120 토큰으로 제한한다.
 - OpenAI Responses 요청에는 `store=False`를 지정한다.
+- NeMo Guardrails의 `regex check input`·`regex check output`은 모델 호출 전후에
+  내부 지시·비밀값 패턴을 다시 검사한다. 설정은 [`guardrails/config.yml`](../guardrails/config.yml)에만 둔다.
 - 프롬프트 변경 시 정상 요청과 "이전 지시를 무시해" 같은 인젝션 시나리오를 테스트한다.
 - 공통 프롬프트 조각은 항상 앞에, 사용자·세션별 데이터는 뒤에 둔다. 고정 접두어가
   유지되어야 프롬프트 캐시를 재사용할 수 있다.

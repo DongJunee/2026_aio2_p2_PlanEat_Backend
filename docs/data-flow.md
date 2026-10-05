@@ -120,3 +120,15 @@ flowchart LR
     FE <-->|ChatRequest · ChatResponse| BE1
     BE1 <-->|VisionRequest · ToolRequest · ToolResult| BE2
 ```
+
+## 3. 안전성 경계
+
+BE1은 Graph 전이에 들어가기 전에 기존 정규화 검사와 NeMo Guardrails `regex check input`을
+차례로 적용한다. 완료 단계에서는 BE2 `ToolResult`와 OpenAI 최종 안내 문구를 NeMo output
+rail로 검사한 뒤에만 FE 응답으로 변환한다. NeMo 설정·엔진 장애 시 기존 결정적 검사가
+fallback으로 동작하며, 입력 차단은 `400 ERROR`, 출력·도구 결과 차단은 `500 ERROR`의 기존
+Chat API 계약을 유지한다.
+
+현재 BE2가 OpenAI tool-call 대화 이력을 제공하지 않으므로 구조적 `tool result validation`
+rail은 아직 사용하지 않는다. BE2 tool loop 합의 후 `app/integrations/guardrails/nemo.py`의
+`validate_tool_result()` 교체 지점에서 도구 이름·인자 스키마·호출 ID를 검증한다.

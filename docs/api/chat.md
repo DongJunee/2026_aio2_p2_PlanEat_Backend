@@ -193,6 +193,11 @@ ToolRequest = {
 `422` 검증 오류 객체를 반환하지 않으므로, FE는 모든 오류를 같은 `ERROR` 형태로 처리할 수
 있습니다.
 
+서버는 `app/core/safety.py`의 정규화 검사와 NeMo Guardrails 입력 rail을 순서대로 적용합니다.
+둘 중 하나가 프롬프트 인젝션·내부 정보 요청을 차단해도 같은 `400 ERROR` 형식을 반환합니다.
+최종 LLM 문구와 ToolResult의 NeMo 출력 rail 검사가 실패하면 원문을 반환하지 않고 `500 ERROR`로
+처리합니다. 이 검사는 외부 요청·응답 필드나 `status`·`step` 계약을 변경하지 않습니다.
+
 ```json
 {
   "status": "ERROR",

@@ -63,7 +63,7 @@ Tool Hub 연결 전 준비 상태는 [Tool Hub 연동 준비](docs/tool-hub-read
 │   │   └── vector_store/               # ChromaDB
 │   └── db/                             # DB 설정
 ├── prompts/                            # LLM 운영 프롬프트
-├── guardrails/                          # NeMo Guardrails 설정
+├── guardrails/                         # NeMo Guardrails 설정
 ├── tests/                              # 단위·통합 테스트
 ├── docs/                               # 프로젝트 관련 문서
 ├── data/                               # 로컬 DB·ChromaDB(커밋하지 않음)

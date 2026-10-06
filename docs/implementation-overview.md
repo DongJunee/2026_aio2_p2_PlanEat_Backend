@@ -17,7 +17,7 @@ ChatService ── 세션별 현재 단계 저장
   ├── Jev 자연어 조건·재료 확인 판정 (선택 사항)
   ├── app.core.safety + NeMo Guardrails 입력 검사
   ▼
-LangGraph route_chat
+LangGraph summarize_conversation (> 10 messages) -> route_chat
   ▼
 응답 변환
   ├── INPUT_REQUIREMENTS / IMAGE_INPUT / INGREDIENT_CONFIRM / CONDITION_INPUT

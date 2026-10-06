@@ -56,6 +56,13 @@ BE1은 사용자에게 확인받기 전의 재료 후보를 추천·RAG 입력�
 `confirmed`로 답한 뒤에만 `confirmed_ingredients`를 ToolRequest에 넣는다. BE2는 Vision과
 Tool Hub 실행 결과만 반환하며, FE용 JSON으로 바꾸는 책임은 BE1에 있다.
 
+### 대화 요약 전이
+
+LangGraph State는 사용자·어시스턴트 메시지를 세션별로 보관한다. 메시지가 10개를 초과하면
+`summarize_conversation` 노드가 오래된 메시지를 결정적으로 요약하고 최근 2개만 남긴 뒤
+기존 `route_chat` 노드로 전이한다. 현재 BE1은 외부 LLM을 기본 테스트에 연결하지 않기 위해
+로컬 요약을 사용하며, 실제 요약 모델은 해당 노드의 교체 지점으로 연결할 수 있다.
+
 ```mermaid
 sequenceDiagram
     participant BE1 as BE1 LangGraph Orchestrator

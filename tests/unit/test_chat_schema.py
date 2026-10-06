@@ -128,4 +128,6 @@ def test_response_fixtures_match_chat_response_contract() -> None:
         "response-ingredient-confirm.json",
         "response-success.json",
     ):
-        adapter.validate_python(json.loads((_MOCK_DIRECTORY / filename).read_text()))
+        adapter.validate_python(
+            json.loads((_MOCK_DIRECTORY / filename).read_text(encoding="utf-8"))
+        )

@@ -21,40 +21,66 @@ sequenceDiagram
     participant BE1 as BE1 API Server and LangGraph
 
     FE->>BE1: POST /chat (이미지·자연어 조건 없음)
-    BE1-->>FE: 200 NEED_MORE_INFO / INPUT_REQUIREMENTS
+    BE1-->>FE: 200 NEED_MORE_INFO / IMAGE_INPUT (사진 우선 요청)
 
-    FE->>BE1: POST /chat (이미지·자연어 message 함께 전송)
-    BE1->>BE1: 재료 후보를 세션 상태에 반영
-    BE1-->>FE: 200 NEED_MORE_INFO / INGREDIENT_CONFIRM
+    alt 이미지 첨부
+        FE->>BE1: POST /chat (이미지·자연어 message 함께 전송)
+        BE1->>BE1: 이미지 재료 후보를 세션 상태에 반영
+        BE1-->>FE: 200 NEED_MORE_INFO / INGREDIENT_CONFIRM
 
-    FE->>BE1: POST /chat (재료 확인 자연어 답변)
-    alt confirmed
-        BE1->>BE1: 후보를 confirmed_ingredients로 이동
-        BE1->>BE2: ToolRequest (확정 재료·조건)
-        BE2-->>BE1: ToolResult
-        BE1-->>FE: 200 SUCCESS / COMPLETED
-    else edited
-        BE1->>BE1: 후보를 수정
-        BE1-->>FE: 200 NEED_MORE_INFO / INGREDIENT_CONFIRM
-    else rejected
-        BE1->>BE1: 후보 폐기
-        BE1-->>FE: 200 NEED_MORE_INFO / IMAGE_INPUT
-    else unclear
-        BE1-->>FE: 200 NEED_MORE_INFO / INGREDIENT_CONFIRM
+        FE->>BE1: POST /chat (재료 확인 자연어 답변)
+        alt confirmed
+            BE1->>BE1: 후보를 confirmed_ingredients로 이동
+            BE1->>BE2: ToolRequest (확정 재료·조건)
+            BE2-->>BE1: ToolResult
+            BE1-->>FE: 200 SUCCESS / COMPLETED
+        else edited
+            BE1->>BE1: 후보를 수정
+            BE1-->>FE: 200 NEED_MORE_INFO / INGREDIENT_CONFIRM
+        else rejected
+            BE1->>BE1: 후보 폐기
+            BE1-->>FE: 200 NEED_MORE_INFO / IMAGE_INPUT
+        else unclear
+            BE1-->>FE: 200 NEED_MORE_INFO / INGREDIENT_CONFIRM
+        end
+    else 사진 없음
+        FE->>BE1: POST /chat (사진 없음·message에 직접 재료 입력)
+        BE1->>BE1: LLM이 추출한 재료명·수량을 confirmed_ingredients로 저장
+        alt 조건 있음
+            BE1->>BE2: ToolRequest (확정 재료·조건)
+            BE2-->>BE1: ToolResult
+            BE1-->>FE: 200 SUCCESS / COMPLETED
+        else 조건 없음
+            BE1-->>FE: 200 NEED_MORE_INFO / CONDITION_INPUT
+        end
     end
 ```
 
 입력 형식 오류·안전성 검사 실패는 `400 ERROR`, 처리 실패는 `500 ERROR`로 반환한다. `ERROR`에는
-`step`이 없다. 이미지와 자연어 조건이 모두 없으면 BE1은 `INPUT_REQUIREMENTS`로 두 입력을 함께
-요청한다. FE는 별도 조건 JSON이 아닌 `message`에 식단 목적·조리 시간을 적어 보낸다. 한쪽만 있으면
-기존 `IMAGE_INPUT` 또는 `CONDITION_INPUT`을 반환한다. BE1은 이미지를
+`step`이 없다. 이미지가 없는 첫 요청은 BE1이 `IMAGE_INPUT`으로 사진을 먼저 요청한다. FE는
+별도 조건 JSON이 아닌 `message`에 식단 목적·조리 시간을 적어 보낸다. 사용자가 같은 세션에서
+사진이 없다고 다시 답하면 BE1은 자연어 재료 입력을 안내한다. 한쪽만 있으면 기존 `IMAGE_INPUT`
+또는 `CONDITION_INPUT`을 반환한다. BE1은 이미지를
 직접 인식하지 않으며, 2절의 BE2 Vision 결과를 `INGREDIENT_CONFIRM` 응답으로 변환한다.
+이미지 요청 후에도 사진이 없으면 사용자가 `message`에 직접 입력한 지원 재료를 사용자 확정
+입력으로 처리해 이미지 단계를 우회할 수 있다. 조건이 부족하면 `CONDITION_INPUT`만 반환한 뒤,
+조건 입력 후 동일한 추천 흐름으로 이어진다.
+
+`INPUT_REQUIREMENTS`, `IMAGE_INPUT`, `CONDITION_INPUT`의 `response`·`questions`는 마지막
+사용자 메시지와 세션 상태를 입력으로 하는 OpenAI Structured Outputs 결과다. 따라서
+`냉장고 사진은 없는데`처럼 이미지가 없다는 의사만 전달된 경우에도 이미지 첨부를 반복하는
+대신 자연어 재료 입력을 안내할 수 있다. 이 LLM 호출이 실패하거나 안전성 검증을 통과하지
+못하면 단계별 고정 fallback을 사용하고, `status`·`step` 전이는 변경하지 않는다.
 
 ## 2. 내부 도구 흐름: BE1 ↔ BE2
 
 BE1은 사용자에게 확인받기 전의 재료 후보를 추천·RAG 입력으로 보내지 않는다. 사용자가
 `confirmed`로 답한 뒤에만 `confirmed_ingredients`를 ToolRequest에 넣는다. BE2는 Vision과
 Tool Hub 실행 결과만 반환하며, FE용 JSON으로 바꾸는 책임은 BE1에 있다.
+
+단, 이미지가 아닌 `message`로 사용자가 직접 적은 재료는 이미지 인식 후보가 아니므로 별도
+확인 없이 `confirmed_ingredients`로 취급한다. BE2 정규화가 준비되기 전까지는 BE1의 제한적인
+OpenAI 구조화 추출기를 사용한다.
 
 ### 대화 요약 전이
 
@@ -94,8 +120,8 @@ sequenceDiagram
 
 BE1은 재료 확인 단계에서 Jev Choice 질문으로 `confirmed`, `rejected`, `edited`, `unclear`를
 분류한다. Jev가 비활성화되거나 실패하면 제한적인 로컬 자연어 fallback을 사용한다. `edited`의
-간단한 추가·삭제·수량 변경은 BE1 fallback parser에 반영하고, 복잡한 식재료 추출은 BE2 DTO
-합의 후 교체한다.
+추가·삭제·수량 변경과 복잡한 식재료 추출은 모두 LLM 구조화 결과로 반영하고, BE2 Vision·재료
+정규화 DTO가 합의되면 해당 어댑터로 교체한다.
 
 ### Vision Function Call 입력 계약
 

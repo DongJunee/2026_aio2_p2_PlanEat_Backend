@@ -5,7 +5,7 @@ FastAPI와 LangGraph 기반의 대화형 식단 추천 백엔드입니다. 사�
 ## 핵심 기능
 
 - 첨부 이미지 최대 5장 처리
-- 이미지가 없으면 이미지 첨부 요청 단계로 전환
+- 이미지와 직접 입력한 재료가 모두 없으면 이미지 첨부 요청 단계로 전환
 - 이미지별 식재료 추출 및 중복 병합
 - 사용자 재료 확인·수정
 - `session_id` 기반 LangGraph 상태 관리
@@ -38,6 +38,7 @@ Tool Hub 연결 전 준비 상태는 [Tool Hub 연동 준비](docs/integrations/
 ## 처리 원칙
 
 - 이미지 인식 결과는 후보이며, 사용자가 확인한 재료만 추천에 사용합니다.
+- 이미지를 사용할 수 없는 경우 `message`에 직접 입력한 지원 재료로도 추천을 진행합니다.
 - `session_id`로 대화와 LangGraph State를 이어갑니다.
 - Recipe Tool은 내부 레시피 DB를 조회합니다.
 - 식품안전나라 API는 레시피 초기 적재·갱신에만 사용합니다.
@@ -101,9 +102,12 @@ uv run pytest
 git diff --check
 ```
 
-현재 `/chat`은 LangGraph 기반의 세션 단계 전이를 제공합니다. Tool Hub·RAG 연동 전에는 API·FE 통합 검증을 위한 임시 재료·추천 데이터를 반환합니다.
+현재 `/chat`은 LangGraph 기반의 세션 단계 전이를 제공합니다. 이미지 재료와 자연어 재료는
+OpenAI 구조화 추출로 처리하고, Tool Hub·RAG 연동 전에는 OpenAI가 생성한 임시 레시피·영양·
+장보기 데이터를 반환합니다. BE2 연동 후 해당 LLM 임시 경로를 실제 Tool 결과로 교체합니다.
 
-LLM 최종 응답을 사용하려면 `.env`에 `OPENAI_API_KEY`를 설정합니다. 기본 모델은 `gpt-4o-mini`이며, 필요하면 `OPENAI_MODEL`로 변경할 수 있습니다.
+LLM 추천·완료 응답을 사용하려면 `.env`에 `OPENAI_API_KEY`를 설정합니다. 기본 모델은
+`gpt-4o-mini`이며, 필요하면 `OPENAI_MODEL`로 변경할 수 있습니다.
 
 ### 선택 사항: LangSmith tracing
 

@@ -114,8 +114,16 @@ def route_chat(state: ChatState) -> ChatState:
                 "step": "WAITING_INGREDIENT_CONFIRM",
                 "response_kind": "INGREDIENT_CONFIRM",
             }
-        if not state.get("has_conditions"):
-            return {"step": "WAITING_IMAGE", "response_kind": "INPUT_REQUIREMENTS"}
+        # 이미지를 사용할 수 없는 사용자가 message에 직접 입력한 재료는
+        # 이미지 인식 후보가 아니라 명시적인 사용자 입력이므로 확정 재료로 취급한다.
+        # 이 분기를 두면 이미지 요청 이후에도 자연어 재료만으로 추천 흐름을 이어갈 수 있다.
+        if state.get("has_confirmed_ingredients"):
+            if state.get("has_conditions"):
+                return {"step": "COMPLETED", "response_kind": "COMPLETED"}
+            return {"step": "WAITING_CONDITIONS", "response_kind": "CONDITION_INPUT"}
+        # 첫 입력에서는 이미지가 식단 조건보다 우선이다. 이미지가 없으면
+        # WAITING_IMAGE에 머물러 다음 메시지에서 자연어 재료를 받을 수 있게 한다.
+        # 조건은 이미지 또는 자연어 재료가 확보된 뒤 CONDITION_INPUT에서 보완한다.
         return {"step": "WAITING_IMAGE", "response_kind": "IMAGE_INPUT"}
 
     if step == "WAITING_INGREDIENT_CONFIRM":

@@ -43,7 +43,8 @@ LangGraph 실행을 LangSmith에서 확인하려면 `.env`에 `LANGSMITH_TRACING
 - 요청: `session_id`, `message`, 선택적 `attachments` (`message`에서 식단 목적·조리 시간을 판별)
 - 첨부파일: 현재 `image`, 최대 5개
 - 상태: `SUCCESS`, `NEED_MORE_INFO`, `ERROR`
-- 이미지와 자연어 조건이 모두 없으면 `INPUT_REQUIREMENTS` 단계로 한 번에 요청
+- 이미지가 없는 첫 요청은 `IMAGE_INPUT` 단계로 사진을 먼저 요청하고, 사진이 없다는 후속 답변에는
+  자연어 재료 입력을 안내
 - 성공 응답: `recipe_sets` 2개, 각 세트의 레시피 5개
 - NeMo Guardrails: 입력·LLM 출력·Tool 결과의 결정적 안전성 검사
 - 상세 계약: [Chat API](../api/chat.md)

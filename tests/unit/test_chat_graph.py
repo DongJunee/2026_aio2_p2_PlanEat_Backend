@@ -45,4 +45,34 @@ def test_summary_node_compacts_messages_after_threshold() -> None:
     assert "message-0" in result["summary"]
     assert len(result["messages"]) == SUMMARY_KEEP_MESSAGE_COUNT
     assert result["messages"][-1]["content"] == "message-10"
-    assert result["response_kind"] == "INPUT_REQUIREMENTS"
+    assert result["response_kind"] == "IMAGE_INPUT"
+
+
+def test_waiting_image_can_complete_with_user_confirmed_ingredients() -> None:
+    state: ChatState = {
+        "step": "WAITING_IMAGE",
+        "messages": _messages(1),
+        "has_image": False,
+        "has_conditions": True,
+        "has_confirmed_ingredients": True,
+    }
+
+    result = asyncio.run(chat_graph.ainvoke(state))
+
+    assert result["step"] == "COMPLETED"
+    assert result["response_kind"] == "COMPLETED"
+
+
+def test_waiting_image_with_text_ingredients_requests_only_missing_conditions() -> None:
+    state: ChatState = {
+        "step": "WAITING_IMAGE",
+        "messages": _messages(1),
+        "has_image": False,
+        "has_conditions": False,
+        "has_confirmed_ingredients": True,
+    }
+
+    result = asyncio.run(chat_graph.ainvoke(state))
+
+    assert result["step"] == "WAITING_CONDITIONS"
+    assert result["response_kind"] == "CONDITION_INPUT"

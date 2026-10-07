@@ -28,6 +28,10 @@ Content-Type: application/json
 }
 ```
 
+실제 테스트용 냉장고 이미지 3장을 Base64 Data URL로 포함한 완성 요청은
+[`mocks/chat/request-image-base64.json`](../../mocks/chat/request-image-base64.json)에서 확인할
+수 있습니다. Swagger의 `/chat` Request body에 파일 내용을 그대로 붙여넣어 테스트할 수 있습니다.
+
 `attachments[].type`은 현재 `image`만 지원합니다.
 
 `attachments`는 생략해도 됩니다. 이미지 없이 시작하거나 이미지 요청 후에도 사용자가

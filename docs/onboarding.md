@@ -34,7 +34,8 @@ NeMo Guardrails는 기본 활성화되며 `guardrails/config.yml`을 읽습니�
 
 LangGraph 실행을 LangSmith에서 확인하려면 `.env`에 `LANGSMITH_TRACING=true`,
 `LANGSMITH_API_KEY`, `LANGSMITH_PROJECT`를 설정합니다. tracing은 선택 사항이며,
-사용자 메시지와 이미지 원문은 trace payload에 기록하지 않습니다.
+사용자 메시지와 이미지 원문은 trace payload에 기록하지 않습니다. 자세한 설정과 확인 방법은
+[LangSmith 연동 가이드](langsmith.md)를 참고합니다.
 
 ## 3. API 작업 기준
 

@@ -105,6 +105,7 @@ LangGraph 실행을 LangSmith에서 확인하려면 `.env`에 `LANGSMITH_TRACING
 `LANGSMITH_API_KEY`, `LANGSMITH_PROJECT`를 설정합니다. `/chat` 요청의 상태 전이와
 첨부 개수 등 비식별 metadata만 전송하며, 사용자 메시지와 이미지 원문은 trace payload에서
 숨깁니다. API 키가 없거나 tracing을 `false`로 두면 LangSmith 호출 없이 동작합니다.
+상세 설정과 trace 범위는 [LangSmith 연동 가이드](docs/langsmith.md)를 참고하세요.
 
 NeMo Guardrails는 기본 활성화되며 `guardrails/config.yml`의 정규식 입력·출력 rail을
 사용합니다. 장애가 발생하면 기존 `app/core/safety.py` 검사로 안전하게 fallback합니다.

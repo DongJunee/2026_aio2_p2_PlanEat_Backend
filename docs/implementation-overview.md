@@ -242,6 +242,7 @@ uv run uvicorn app.main:app --reload
 | `LANGSMITH_ENDPOINT` | LangSmith endpoint 또는 self-hosted 주소 | SDK 기본 endpoint |
 
 실제 키는 `.env`에만 보관하고 Git에 추가하지 않는다.
+LangSmith의 trace 범위·metadata·개인정보 보호 기준은 [LangSmith 연동 가이드](langsmith.md)를 따른다.
 
 ## 8. 테스트와 fixture
 

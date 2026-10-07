@@ -16,6 +16,7 @@ ChatService ── 세션별 현재 단계 저장
   │
   ├── Jev 자연어 조건·재료 확인 판정 (선택 사항)
   ├── app.core.safety + NeMo Guardrails 입력 검사
+  ├── LangSmith callback (선택 사항, 비식별 metadata만 전송)
   ▼
 LangGraph summarize_conversation (> 10 messages) -> route_chat
   ▼
@@ -40,6 +41,7 @@ ChatResponse JSON
 | 재료 확인·Tool 준비 | `app/services/chat_service.py` | 후보 수정·확정, 세션 반영, `ToolRequest` 생성과 provider 전달 |
 | 안전성 검사 | `app/core/safety.py` | 사용자 입력·LLM 출력의 위험한 패턴 검사 |
 | NeMo Guardrails | `app/integrations/guardrails/nemo.py`, `guardrails/config.yml` | 입력·출력·Tool 결과의 NeMo IORails 정규식 검사 및 장애 시 기존 안전성 검사 fallback |
+| LangSmith observability | `app/core/observability.py` | LangGraph 실행 trace와 비식별 상태 metadata 전송. 사용자 입력·이미지 원문은 숨김 |
 
 ## 2. Chat API 계약
 
@@ -234,6 +236,10 @@ uv run uvicorn app.main:app --reload
 | `TYPESAFE_JEV_MIN_CONFIDENCE` | Jev 판단 반영 기준 | `0.8` |
 | `NEMO_GUARDRAILS_ENABLED` | NeMo 입력·출력·Tool 결과 rail 사용 여부 | `true` |
 | `NEMO_GUARDRAILS_CONFIG_PATH` | NeMo `config.yml` 디렉터리 | `guardrails` |
+| `LANGSMITH_TRACING` | LangGraph 실행 trace 사용 여부 | `false` |
+| `LANGSMITH_API_KEY` | LangSmith 인증 | tracing을 전송하지 않음 |
+| `LANGSMITH_PROJECT` | trace 프로젝트 이름 | `planeat-backend` |
+| `LANGSMITH_ENDPOINT` | LangSmith endpoint 또는 self-hosted 주소 | SDK 기본 endpoint |
 
 실제 키는 `.env`에만 보관하고 Git에 추가하지 않는다.
 

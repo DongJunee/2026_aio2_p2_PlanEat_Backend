@@ -99,6 +99,13 @@ git diff --check
 
 LLM 최종 응답을 사용하려면 `.env`에 `OPENAI_API_KEY`를 설정합니다. 기본 모델은 `gpt-4o-mini`이며, 필요하면 `OPENAI_MODEL`로 변경할 수 있습니다.
 
+### 선택 사항: LangSmith tracing
+
+LangGraph 실행을 LangSmith에서 확인하려면 `.env`에 `LANGSMITH_TRACING=true`,
+`LANGSMITH_API_KEY`, `LANGSMITH_PROJECT`를 설정합니다. `/chat` 요청의 상태 전이와
+첨부 개수 등 비식별 metadata만 전송하며, 사용자 메시지와 이미지 원문은 trace payload에서
+숨깁니다. API 키가 없거나 tracing을 `false`로 두면 LangSmith 호출 없이 동작합니다.
+
 NeMo Guardrails는 기본 활성화되며 `guardrails/config.yml`의 정규식 입력·출력 rail을
 사용합니다. 장애가 발생하면 기존 `app/core/safety.py` 검사로 안전하게 fallback합니다.
 긴급하게 비활성화해야 할 때만 `.env`에서 `NEMO_GUARDRAILS_ENABLED=false`로 설정합니다.

@@ -32,6 +32,10 @@ NeMo Guardrails는 기본 활성화되며 `guardrails/config.yml`을 읽습니�
 호환성 확인 때문에 일시적으로 끄려면 `NEMO_GUARDRAILS_ENABLED=false`를 설정합니다.
 설정 상세와 BE2 연동 시 확장 지점은 [Guardrails 연동 가이드](guardrails.md)를 참고합니다.
 
+LangGraph 실행을 LangSmith에서 확인하려면 `.env`에 `LANGSMITH_TRACING=true`,
+`LANGSMITH_API_KEY`, `LANGSMITH_PROJECT`를 설정합니다. tracing은 선택 사항이며,
+사용자 메시지와 이미지 원문은 trace payload에 기록하지 않습니다.
+
 ## 3. API 작업 기준
 
 - 진입점: `POST /chat`

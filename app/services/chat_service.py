@@ -15,6 +15,7 @@ from app.agent.tools.contracts import (
 )
 from app.agent.tools.fake_provider import FakeToolHubProvider
 from app.core.config import get_settings
+from app.core.observability import build_langsmith_run_config
 from app.core.safety import SafetyViolationError, validate_user_message
 from app.integrations.decision_engine.typesafe_jev import (
     ConditionReadinessDecision,
@@ -89,6 +90,7 @@ class ChatService:
         guardrail_validator: GuardrailValidator | None = None,
     ) -> None:
         settings = get_settings()
+        self._settings = settings
         self._llm_responder = llm_responder or OpenAIResponder(settings)
         self._condition_evaluator = condition_evaluator or JevConditionReadinessEvaluator(
             settings
@@ -146,7 +148,19 @@ class ChatService:
         if previous_step == "WAITING_CONDITIONS":
             state["condition_ready"] = effective_conditions is not None
 
-        result = await chat_graph.ainvoke(state)
+        trace_config = build_langsmith_run_config(
+            self._settings,
+            session_id=request.session_id,
+            workflow_step=previous_step,
+            has_image=bool(request.attachments),
+            has_conditions=effective_conditions is not None,
+            has_confirmed_ingredients=bool(confirmed_ingredients),
+            attachment_count=len(request.attachments or []),
+        )
+        if trace_config is None:
+            result = await chat_graph.ainvoke(state)
+        else:
+            result = await chat_graph.ainvoke(state, config=trace_config)
         next_session = _next_session_state(
             session=session,
             next_step=result["step"],

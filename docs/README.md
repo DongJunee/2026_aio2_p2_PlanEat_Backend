@@ -35,4 +35,3 @@ BE1의 구성, LangGraph 단계, FE·BE1·BE2 사이의 흐름을 설명한다.
 2. [구현 개요](architecture/implementation-overview.md)
 3. [Chat API 명세](api/chat.md)
 4. [데이터 흐름](architecture/data-flow.md)
-5. 필요한 외부 연동 문서

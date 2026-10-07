@@ -7,7 +7,14 @@
 import asyncio
 from collections.abc import Awaitable, Mapping
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Literal, Protocol, TypedDict
+
+
+class ConversationMessage(TypedDict):
+    """세션에 저장하는 사용자·어시스턴트 메시지입니다."""
+
+    role: Literal["user", "assistant"]
+    content: str
 
 
 @dataclass(frozen=True)
@@ -23,6 +30,8 @@ class ChatSessionState:
     """Tool 요청 준비에 필요한 세션별 대화 상태입니다."""
 
     step: str = "WAITING_IMAGE"
+    messages: tuple[ConversationMessage, ...] = field(default_factory=tuple)
+    summary: str = ""
     ingredient_candidates: tuple[IngredientCandidate, ...] = field(default_factory=tuple)
     confirmed_ingredients: tuple[IngredientCandidate, ...] = field(default_factory=tuple)
     user_conditions: Mapping[str, object] | None = None

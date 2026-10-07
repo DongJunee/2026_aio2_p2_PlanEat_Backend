@@ -30,12 +30,12 @@ cp .env.example .env
 
 NeMo Guardrails는 기본 활성화되며 `guardrails/config.yml`을 읽습니다. 로컬 사고 대응이나
 호환성 확인 때문에 일시적으로 끄려면 `NEMO_GUARDRAILS_ENABLED=false`를 설정합니다.
-설정 상세와 BE2 연동 시 확장 지점은 [Guardrails 연동 가이드](guardrails.md)를 참고합니다.
+설정 상세와 BE2 연동 시 확장 지점은 [Guardrails 연동 가이드](../integrations/guardrails.md)를 참고합니다.
 
 LangGraph 실행을 LangSmith에서 확인하려면 `.env`에 `LANGSMITH_TRACING=true`,
 `LANGSMITH_API_KEY`, `LANGSMITH_PROJECT`를 설정합니다. tracing은 선택 사항이며,
 사용자 메시지와 이미지 원문은 trace payload에 기록하지 않습니다. 자세한 설정과 확인 방법은
-[LangSmith 연동 가이드](langsmith.md)를 참고합니다.
+[LangSmith 연동 가이드](../integrations/langsmith.md)를 참고합니다.
 
 ## 3. API 작업 기준
 
@@ -46,7 +46,7 @@ LangGraph 실행을 LangSmith에서 확인하려면 `.env`에 `LANGSMITH_TRACING
 - 이미지와 자연어 조건이 모두 없으면 `INPUT_REQUIREMENTS` 단계로 한 번에 요청
 - 성공 응답: `recipe_sets` 2개, 각 세트의 레시피 5개
 - NeMo Guardrails: 입력·LLM 출력·Tool 결과의 결정적 안전성 검사
-- 상세 계약: [Chat API](api/chat.md)
+- 상세 계약: [Chat API](../api/chat.md)
 
 ## 4. 코드 위치
 

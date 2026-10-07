@@ -45,7 +45,7 @@ ChatResponse JSON
 
 ## 2. Chat API 계약
 
-진입점은 `POST /chat`이며, 상세 명세는 [Chat API](api/chat.md)를 기준으로 한다.
+진입점은 `POST /chat`이며, 상세 명세는 [Chat API](../api/chat.md)를 기준으로 한다.
 
 ### 요청
 
@@ -169,7 +169,7 @@ WAITING_CONDITIONS
 Jev는 사용자 메시지의 식단 조건 충분성과 재료 확인 의도를 판단한다. 외부 `/chat` 요청에는
 구조화된 조건·확인 필드가 없으며, 충분하다고 판정된 메시지 원문과 사용자 확인 결과만
 세션의 내부 Tool 입력으로 보관한다.
-자세한 설치와 환경변수는 [Jev 연동 가이드](jev.md)를 참고한다.
+자세한 설치와 환경변수는 [Jev 연동 가이드](../integrations/jev.md)를 참고한다.
 
 ### 5.1 조건 충분성 판정
 
@@ -242,7 +242,7 @@ uv run uvicorn app.main:app --reload
 | `LANGSMITH_ENDPOINT` | LangSmith endpoint 또는 self-hosted 주소 | SDK 기본 endpoint |
 
 실제 키는 `.env`에만 보관하고 Git에 추가하지 않는다.
-LangSmith의 trace 범위·metadata·개인정보 보호 기준은 [LangSmith 연동 가이드](langsmith.md)를 따른다.
+LangSmith의 trace 범위·metadata·개인정보 보호 기준은 [LangSmith 연동 가이드](../integrations/langsmith.md)를 따른다.
 
 ## 8. 테스트와 fixture
 

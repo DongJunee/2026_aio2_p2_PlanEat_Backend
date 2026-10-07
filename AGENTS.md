@@ -1,6 +1,6 @@
 # PlanEat Backend 협업 지침
 
-> 최종 수정: 2026-10-03 (v1.1)
+> 최종 수정: 2026-10-07 (v1.2)
 >
 > 이 문서를 수정하면 날짜와 버전을 함께 갱신한다.
 
@@ -15,7 +15,7 @@
 - API 진입점: `POST /chat`, `GET /health`
 - API 계약: `docs/api/chat.md`
 - FE fixture: `mocks/chat/`
-- 데이터 흐름: `docs/data-flow.md`
+- 데이터 흐름: `docs/architecture/data-flow.md`
 - 현재 Tool Hub·RAG는 미연동 상태다. BE1은 API·세션·LangGraph 단계 전이만 담당하며,
   BE2가 준비되기 전에는 결정적인 임시 데이터로 FE 통합을 검증한다.
 
@@ -24,9 +24,9 @@
 | 변경 영역 | 먼저 확인할 문서·코드 |
 | --- | --- |
 | Chat API 계약 | `docs/api/chat.md`, `app/schemas/chat.py`, `mocks/chat/`, `tests/` |
-| LangGraph 워크플로우 | `app/agent/graph.py`, `app/services/chat_service.py`, `docs/data-flow.md` |
+| LangGraph 워크플로우 | `app/agent/graph.py`, `app/services/chat_service.py`, `docs/architecture/data-flow.md` |
 | API 라우팅 | `app/api/v1/endpoints/chat/router.py`, `app/main.py` |
-| 로컬 실행·온보딩 | `README.md`, `docs/onboarding.md` |
+| 로컬 실행·온보딩 | `README.md`, `docs/operations/onboarding.md` |
 
 문서의 구현 상태와 실제 라우터·테스트를 일치시킨다. 구현되지 않은 Tool Hub·RAG 기능을
 구현 완료로 표현하지 않는다.
@@ -46,7 +46,7 @@ app/
 ├── core/                   설정·공통 인프라
 └── main.py                 앱 생성과 router 등록만 담당
 
-docs/                       API 계약·데이터 흐름·온보딩 문서
+docs/                       API 계약·구조·연동·운영 문서
 mocks/chat/                 FE 개발용 요청·응답 fixture
 prompts/                    버전 관리되는 LLM 운영 프롬프트
 tests/                      pytest 단위·API 통합 테스트

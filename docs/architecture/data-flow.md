@@ -8,7 +8,7 @@
 | BE1 | 최경락 | API Server, LangGraph Orchestrator, 세션 상태 관리, 워크플로우 분기 |
 | BE2 | 박동준 | Tool Hub, RAG 검색, 도구 실행 결과 반환 |
 
-`POST /chat`의 외부 계약은 [Chat API 명세](api/chat.md)를 따릅니다. BE1과 BE2 사이의 호출 경로와 세부 payload 형식은 아직 구현 전이므로, 아래의 BE2 인터페이스는 역할 기반의 논리적 데이터 흐름입니다.
+`POST /chat`의 외부 계약은 [Chat API 명세](../api/chat.md)를 따릅니다. BE1과 BE2 사이의 호출 경로와 세부 payload 형식은 아직 구현 전이므로, 아래의 BE2 인터페이스는 역할 기반의 논리적 데이터 흐름입니다.
 
 ## 1. 외부 대화 흐름: FE ↔ BE1
 

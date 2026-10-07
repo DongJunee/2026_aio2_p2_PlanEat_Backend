@@ -13,10 +13,9 @@
 | Vision 호출 경계 | `docs/architecture/data-flow.md` | BE1이 첨부 이미지를 BE2 Vision Function Call로 전달하고 후보를 받는 목표 흐름을 정의했다. 상세 DTO는 팀 합의 전이다. |
 | 사용자 확인 보호 | `build_tool_request()` | `confirmed_ingredients`가 비어 있으면 Tool 요청 생성을 거부한다. 이미지 후보 재료는 전달하지 않는다. |
 | 확인 의도 분류 | `JevIngredientConfirmationEvaluator` | `confirmed`·`rejected`·`edited`·`unclear`에 따라 후보 상태와 다음 단계를 결정한다. |
-| 완료 단계 호출 경계 | `ChatService._execute_tool_request()` | 확정 재료와 조건으로 `ToolRequest`를 만들고 현재는 fake provider에 전달한다. |
+| 완료 단계 호출 경계 | `ChatService._execute_tool_request()` | 확정 재료와 조건으로 `ToolRequest`를 만들며, BE2 provider가 주입된 경우에만 전달한다. |
 | Tool 결과 안전성 경계 | `NemoGuardrailService.validate_tool_result()` | 현재 `ToolResult`를 NeMo output rail로 검사하며, 구조적 tool-call DTO 합의 후 `tool result validation` rail로 교체한다. |
-| fake provider | `app/agent/tools/fake_provider.py` | 실 네트워크 없이 BE1 호출 경계를 테스트하는 결정적 결과를 반환한다. |
-| 테스트 | `tests/unit/test_chat_service.py` | 미확정 재료 차단과 유효한 요청·fake 결과를 검증한다. |
+| 테스트 provider | `tests/unit/test_chat_service.py` | 실 네트워크 없이 BE1의 `ToolRequest` 전달 경계를 검증한다. |
 
 ## 현재 상태 흐름
 
@@ -29,7 +28,7 @@
   → rejected: 후보 폐기 후 이미지 재요청
   → unclear: 후보 유지 후 재확인
   → confirmed_ingredients와 조건이 모두 있으면 ToolRequest 생성
-  → fake provider 실행 (BE2 endpoint 합의 전)
+  → provider가 설정된 경우에만 BE2 전달
 ```
 
 이 제약은 사용자 확인 전 이미지 인식 후보를 추천·RAG 입력으로 사용하지 않는다는 프로젝트
@@ -39,8 +38,8 @@
 
 다음은 BE1만으로 안전하게 결정할 수 없으므로, FE·BE2와 합의한 뒤 구현한다.
 
-1. **재료 수정 추출 계약**: 현재는 BE1 fallback parser가 제한적인 추가·삭제·수량 변경만 처리한다.
-   복잡한 식재료명·수량 추출 DTO는 BE2와 합의해 교체한다.
+1. **재료 추출 계약**: 현재는 OpenAI 구조화 추출기가 이미지·자연어 재료와 수량을 처리한다.
+   BE2 Vision·재료 정규화 DTO는 합의 후 해당 어댑터로 교체한다.
 2. **사용자 조건 DTO**: 현재 식단 목표·조리 시간을 자연어 원문으로 수집한다. 알레르기 등 추가
    필드의 필수 여부·정규화 규칙은 FE·BE2와 합의해 확장한다.
 3. **BE2 endpoint와 인증**: URL, 인증 방식, tool 이름의 허용 목록, 요청·응답의 상세 DTO를
@@ -54,7 +53,7 @@
 1. 합의된 요청·응답 DTO로 `ToolRequest`와 `ToolResult`의 하위 필드를 구체화한다.
 2. `app/agent/tools/`에 BE2용 async HTTP adapter를 추가한다.
 3. timeout·재시도·오류 변환을 adapter 안에 제한한다.
-4. fake provider와 실제 adapter를 설정으로 선택할 수 있게 한다.
+4. 실제 adapter를 설정으로 주입하고, 미설정 시 임시 Tool 결과를 만들지 않도록 한다.
 5. 성공·timeout·BE2 오류·불완전 결과의 API 통합 테스트를 추가한다.
 
 이 과정에서도 `/chat`의 `status`, `step`, 레시피 2세트와 세트당 5개라는 FE 계약은 유지한다.

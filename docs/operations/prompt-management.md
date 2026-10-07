@@ -9,11 +9,16 @@ PlanEat의 운영 프롬프트는 최상단 [`prompts/`](../prompts/)에서 관�
 prompts/
 ├── shared/security.md       # 모든 LLM 단계의 비신뢰 입력·인젝션 방어
 ├── shared/output-korean.md  # 모든 LLM 단계의 공통 출력 규칙
+├── chat/clarification.md    # 추가 입력 안내 단계 전용 지시
 └── chat/completion.md       # COMPLETED 단계 전용 지시
 ```
 
 다른 단계는 공통 조각을 재사용하고 그 단계에 필요한 전용 파일만 더한다. 파일을 나누는
 것만으로는 입력 토큰이 줄지 않으며, 필요한 조각만 선택할 때 토큰 절감 효과가 생긴다.
+
+`INPUT_REQUIREMENTS`, `IMAGE_INPUT`, `CONDITION_INPUT`은 `clarification.md`를 사용해
+현재 메시지와 세션 상태에 맞는 `response`·`questions`를 생성한다. `status`·`step`은
+LangGraph와 서비스가 결정하며, 안내 LLM 장애 시 단계별 fallback을 반환한다.
 
 `app/integrations/llm/openai_responder.py`는 이 파일을 OpenAI Responses API의
 `instructions`로 전달한다. 동적 값은 템플릿 치환하지 않고 다음처럼 출처별 블록으로

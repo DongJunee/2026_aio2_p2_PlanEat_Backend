@@ -34,7 +34,7 @@ LangGraph의 요약·단계 전이 실행을 `planeat.chat` run으로 확인할 
 - 조건 입력 여부
 - 확정 재료 보유 여부
 
-현재 raw OpenAI·TypeSafe HTTP 호출과 fake Tool Hub 결과를 별도 LangSmith run으로
+현재 raw OpenAI·TypeSafe HTTP 호출과 주입된 Tool provider 결과를 별도 LangSmith run으로
 분리하지는 않는다. BE2 Tool Hub가 연결되면 필요에 따라 provider 단위 tracing을 확장한다.
 
 ## 3. 개인정보 보호
@@ -54,4 +54,4 @@ uv run uvicorn app.main:app --reload --port 8000
 
 같은 `session_id`로 `/chat`을 호출한 뒤 LangSmith의 `planeat-backend` 프로젝트에서
 `planeat.chat` run을 확인한다. `LANGSMITH_TRACING=false`이거나 API 키가 없으면
-LangSmith 호출 없이 기존 fake 기반 동작을 유지한다.
+LangSmith 호출 없이도 Tool provider가 없는 임시 LLM 기반 동작을 유지한다.

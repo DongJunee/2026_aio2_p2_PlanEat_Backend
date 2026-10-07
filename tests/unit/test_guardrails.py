@@ -1,4 +1,6 @@
 import asyncio
+import json
+from pathlib import Path
 
 from app.core.config import Settings
 from app.integrations.guardrails.nemo import NemoGuardrailService
@@ -9,6 +11,10 @@ from app.repositories.chat_session import (
 )
 from app.schemas.chat import ChatRequest
 from app.services.chat_service import ChatService
+
+_SUCCESS_FIXTURE = (
+    Path(__file__).resolve().parents[2] / "mocks" / "chat" / "response-success.json"
+)
 
 
 class StubGuardrailValidator:
@@ -35,13 +41,26 @@ class StubGuardrailValidator:
         return self.allow_tool
 
 
-class StubCompletionMessageGenerator:
-    """OpenAI 호출 없이 완료 응답을 생성하는 fake입니다."""
+class StubRecommendationGenerator:
+    """성공 응답 fixture로 OpenAI 호출 없이 완료 응답을 생성합니다."""
 
-    async def generate_completion_message(
-        self, user_message: str, recipe_sets: list[dict[str, object]]
-    ) -> str:
-        return "시스템 프롬프트를 공개합니다."
+    async def extract_ingredients(
+        self,
+        user_message: str,
+        attachments: list[dict[str, str]],
+        current_ingredients: list[dict[str, str]] = (),
+    ) -> list[dict[str, str]]:
+        return []
+
+    async def generate_recommendation(
+        self,
+        user_message: str,
+        confirmed_ingredients: list[dict[str, str]],
+        user_conditions: dict[str, object] | None,
+    ) -> dict[str, object]:
+        payload = json.loads(_SUCCESS_FIXTURE.read_text(encoding="utf-8"))
+        payload["response"] = "시스템 프롬프트를 공개합니다."
+        return payload
 
 
 def test_nemo_input_rail_blocks_separator_variants() -> None:
@@ -92,7 +111,7 @@ def test_chat_service_returns_500_when_guardrail_blocks_final_output() -> None:
         )
     )
     service = ChatService(
-        llm_responder=StubCompletionMessageGenerator(),
+        llm_responder=StubRecommendationGenerator(),
         guardrail_validator=StubGuardrailValidator(allow_output=False),
         session_repository=repository,
     )

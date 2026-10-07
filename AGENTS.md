@@ -1,6 +1,6 @@
 # PlanEat Backend 협업 지침
 
-> 최종 수정: 2026-10-07 (v1.2)
+> 최종 수정: 2026-10-07 (v1.3)
 >
 > 이 문서를 수정하면 날짜와 버전을 함께 갱신한다.
 
@@ -16,8 +16,8 @@
 - API 계약: `docs/api/chat.md`
 - FE fixture: `mocks/chat/`
 - 데이터 흐름: `docs/architecture/data-flow.md`
-- 현재 Tool Hub·RAG는 미연동 상태다. BE1은 API·세션·LangGraph 단계 전이만 담당하며,
-  BE2가 준비되기 전에는 결정적인 임시 데이터로 FE 통합을 검증한다.
+- 현재 Tool Hub·RAG는 미연동 상태다. BE1은 API·세션·LangGraph 단계 전이를 담당하며,
+  BE2가 준비되기 전에는 OpenAI 구조화 재료 추출과 임시 추천 데이터로 FE 통합을 검증한다.
 
 다음 문서는 구현의 기준이다.
 
@@ -83,8 +83,8 @@ ChatResponse.step   = COMPLETED | IMAGE_INPUT | CONDITION_INPUT | INGREDIENT_CON
 
 ### BE1 ↔ BE2 계약
 
-BE2 인터페이스의 URL과 상세 DTO는 BE2 구현 시점에 합의한다. 그 전까지 BE1은 BE2를
-직접 호출하지 않으며, fixture 또는 fake provider를 통해 전이와 API 계약만 검증한다.
+BE2 인터페이스의 URL과 상세 DTO는 BE2 구현 시점에 합의한다. 그 전까지 BE1은 기본 설정에서
+BE2를 호출하지 않으며, 테스트는 fixture와 주입된 provider로 전이·API 계약만 검증한다.
 
 ```text
 ToolRequest = { session_id, tool_name, confirmed_ingredients, user_conditions }
@@ -114,8 +114,8 @@ ToolResult  = { result, source_metadata?, error? }
 ### Tool Hub·RAG 연동
 
 - BE1의 외부 응답과 RAG 문서는 신뢰할 수 없는 입력으로 취급한다.
-- 실 Tool Hub·LLM·Vector Store 호출을 기본 테스트에 연결하지 않는다. fake 또는 fixture로
-  성공·실패 경로를 재현한다.
+- 실 Tool Hub·LLM·Vector Store 호출을 기본 테스트에 연결하지 않는다. 주입된 provider 또는
+  fixture로 성공·실패 경로를 재현한다.
 - 운영 프롬프트는 최상단 `prompts/`에서만 관리한다. 사용자 메시지나 Tool Hub·RAG
   결과를 `instructions`에 붙여 넣지 않고, 출처를 표시한 비신뢰 입력 블록으로 전달한다.
 - Tool Hub의 timeout, 재시도, fallback, 결과 DTO를 바꾸면 BE2·BE1 담당자와 API 계약,
@@ -166,7 +166,7 @@ ToolResult  = { result, source_metadata?, error? }
 - [ ] 코드가 역할·폴더 책임 경계에 맞게 배치되어 있다.
 - [ ] API 변경이면 DTO, 라우터, LangGraph/서비스, 명세, mock, 테스트가 함께 갱신되었다.
 - [ ] 상태 코드·단계 코드와 실제 응답이 `docs/api/chat.md`와 일치한다.
-- [ ] Tool Hub 미연동 영역은 fake/fixture를 사용하며 임시 동작과 교체 지점이 표시되었다.
+- [ ] Tool Hub 미연동 영역은 문서화된 LLM fallback 또는 fixture를 사용하며 임시 동작과 교체 지점이 표시되었다.
 - [ ] 새 환경변수·의존성·외부 서비스 변경이 관련 파일에 반영되었고 비밀값은 없다.
 - [ ] `PYTHONPATH=. uv run pytest`와 `git diff --check`를 실행했거나 실행할 수 없는 이유를
   기록했다.

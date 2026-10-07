@@ -8,9 +8,21 @@ PlanEat의 운영 프롬프트는 이 폴더에서 Git으로 버전 관리한다
 | `shared/security.md` | 비신뢰 입력 경계와 프롬프트 인젝션 방어 | 모든 LLM 단계 |
 | `shared/output-korean.md` | 한국어·간결한 출력 공통 규칙 | 모든 LLM 단계 |
 | `chat/completion.md` | 추천 완료 단계의 역할·맥락·출력 규칙 | `COMPLETED` |
+| `chat/ingredient-extraction.md` | 이미지·자연어 재료 구조화 추출 | 재료 입력 단계 |
+| `chat/clarification.md` | 부족한 입력에 맞는 안내 문구·질문 생성 | `INPUT_REQUIREMENTS`, `IMAGE_INPUT`, `CONDITION_INPUT` |
+| `chat/recommendation.md` | BE2 연결 전 임시 레시피 생성과 JSON 출력 규칙 | `COMPLETED` |
 
-`COMPLETED` 단계는 위 세 파일을 표의 순서대로만 조합합니다. 파일을 나누는 것 자체가
+`COMPLETED`의 임시 LLM 추천 단계는 `security.md`, `output-korean.md`,
+`recommendation.md`를 표의 순서대로 조합합니다. 기존 안내 문구 fallback은
+`security.md`, `output-korean.md`, `completion.md`를 조합합니다. 파일을 나누는 것 자체가
 토큰을 줄이지는 않으며, 단계에 필요한 조각만 선택할 때 입력 토큰이 줄어듭니다.
+
+재료 입력 단계는 `security.md`, `ingredient-extraction.md`를 조합해 이미지 또는 자연어에서
+사용자가 명시한 재료만 구조화합니다. 재료명 목록은 코드에 내장하지 않습니다.
+
+추가 입력 안내 단계는 `security.md`, `output-korean.md`, `clarification.md`를 조합해 현재
+세션에 부족한 정보만 질문합니다. LLM 호출이 실패하면 서비스의 단계별 고정 fallback이
+사용되므로 FE의 `status`·`step` 계약은 유지됩니다.
 
 ## 다층 방어
 

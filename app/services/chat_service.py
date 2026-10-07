@@ -13,10 +13,13 @@ from app.agent.tools.contracts import (
     ToolResult,
     build_tool_request,
 )
-from app.agent.tools.fake_provider import FakeToolHubProvider
 from app.core.config import get_settings
 from app.core.observability import build_langsmith_run_config
-from app.core.safety import SafetyViolationError, validate_user_message
+from app.core.safety import (
+    SafetyViolationError,
+    validate_completion_output,
+    validate_user_message,
+)
 from app.integrations.decision_engine.typesafe_jev import (
     ConditionReadinessDecision,
     IngredientConfirmationDecision,
@@ -32,28 +35,35 @@ from app.repositories.chat_session import (
     InMemoryChatSessionRepository,
     IngredientCandidate,
 )
-from app.schemas.chat import ChatRequest
-
-_INGREDIENTS = [
-    {"name": "두부", "amount": "1모"},
-    {"name": "양배추", "amount": "반 통"},
-    {"name": "계란", "amount": "4개"},
-]
-_INGREDIENT_CANDIDATES = tuple(
-    IngredientCandidate(name=ingredient["name"], amount=ingredient["amount"])
-    for ingredient in _INGREDIENTS
-)
+from app.schemas.chat import ChatRequest, RecommendationData
 
 
-class CompletionMessageGenerator(Protocol):
-    """최종 추천 안내 문구를 생성하는 LLM 어댑터의 인터페이스입니다."""
+class LLMResponder(Protocol):
+    """재료 추출·추가 질문·최종 구조화 추천을 제공하는 LLM 어댑터입니다."""
 
-    async def generate_completion_message(
+    async def generate_clarification_response(
+        self,
+        response_kind: str,
+        user_message: str,
+        context: Mapping[str, object],
+    ) -> Mapping[str, object]:
+        """현재 누락된 입력에 맞는 사용자 안내를 생성합니다."""
+
+    async def extract_ingredients(
         self,
         user_message: str,
-        recipe_sets: Sequence[dict[str, object]],
-    ) -> str:
-        """추천 데이터에 대한 사용자용 안내 문구를 반환합니다."""
+        attachments: Sequence[Mapping[str, str]],
+        current_ingredients: Sequence[Mapping[str, str]] = (),
+    ) -> list[dict[str, str]]:
+        """이미지 또는 자연어에서 사용자가 제공한 재료만 추출합니다."""
+
+    async def generate_recommendation(
+        self,
+        user_message: str,
+        confirmed_ingredients: Sequence[Mapping[str, str]],
+        user_conditions: Mapping[str, object] | None,
+    ) -> Mapping[str, object]:
+        """확정 재료와 조건을 구조화된 추천 응답으로 변환합니다."""
 
 
 class ConditionReadinessEvaluator(Protocol):
@@ -78,11 +88,11 @@ class ToolHubProvider(Protocol):
 
 
 class ChatService:
-    """세션 상태, LangGraph 전이, 최종 LLM 응답 생성을 연결합니다."""
+    """세션 상태, LangGraph 전이, LLM 임시 추천 응답 생성을 연결합니다."""
 
     def __init__(
         self,
-        llm_responder: CompletionMessageGenerator | None = None,
+        llm_responder: LLMResponder | None = None,
         condition_evaluator: ConditionReadinessEvaluator | None = None,
         ingredient_confirmation_evaluator: IngredientConfirmationEvaluator | None = None,
         tool_provider: ToolHubProvider | None = None,
@@ -99,8 +109,9 @@ class ChatService:
             ingredient_confirmation_evaluator
             or JevIngredientConfirmationEvaluator(settings)
         )
-        # BE2 endpoint가 합의되기 전까지는 fake가 같은 계약의 호출 경계를 검증한다.
-        self._tool_provider = tool_provider or FakeToolHubProvider()
+        # BE2 endpoint가 합의되기 전에는 provider를 호출하지 않는다. 테스트나 실제
+        # 어댑터를 주입한 경우에만 ToolRequest를 전달해 임시 결과를 강제로 만들지 않는다.
+        self._tool_provider = tool_provider
         self._session_repository = session_repository or InMemoryChatSessionRepository()
         self._guardrail_validator = guardrail_validator or NemoGuardrailService(settings)
 
@@ -121,6 +132,7 @@ class ChatService:
         confirmation_decision: IngredientConfirmationDecision | None = None
         candidate_ingredients = session.ingredient_candidates
         confirmed_ingredients = session.confirmed_ingredients
+        extracted_ingredients: tuple[IngredientCandidate, ...] | None = None
         if previous_step == "WAITING_INGREDIENT_CONFIRM":
             confirmation_decision = await self._read_ingredient_confirmation(request.message)
             candidate_ingredients, confirmed_ingredients = _apply_confirmation_decision(
@@ -133,6 +145,62 @@ class ChatService:
                 confirmation_decision = IngredientConfirmationDecision(
                     intent="rejected", confidence=confirmation_decision.confidence
                 )
+            if confirmation_decision.intent == "edited":
+                try:
+                    extracted_ingredients = await self._extract_ingredients(
+                        user_message=request.message,
+                        attachments=(),
+                        current_ingredients=session.ingredient_candidates,
+                    )
+                except LLMResponseError:
+                    return {
+                        "status": "ERROR",
+                        "response": "재료 입력을 해석하는 중 오류가 발생했습니다.",
+                    }, 500
+                # 빈 결과는 사용자가 전체 후보를 삭제한 경우가 아니라 모델이 수정 내용을
+                # 해석하지 못한 경우일 수 있으므로, 기존 후보를 보존해 빈 확인 응답을 막는다.
+                if extracted_ingredients:
+                    candidate_ingredients = extracted_ingredients
+        elif previous_step == "WAITING_IMAGE" and not request.attachments:
+            # 새 세션의 첫 요청에서는 이미지 우선 UX를 지킨다. 첫 응답으로 이미지
+            # 요청을 보낸 뒤 같은 세션에서 사진이 없다고 답한 경우에만 자연어 재료를
+            # LLM으로 추출해 확정 재료로 저장한다.
+            if session.messages:
+                try:
+                    extracted_ingredients = await self._extract_ingredients(
+                        user_message=request.message,
+                        attachments=(),
+                    )
+                except LLMResponseError:
+                    return {
+                        "status": "ERROR",
+                        "response": "재료 입력을 해석하는 중 오류가 발생했습니다.",
+                    }, 500
+                if extracted_ingredients:
+                    # 이미지 인식 후보가 아니라 사용자 명시 입력이므로 별도 확인 없이
+                    # 확정 재료로 보관한다.
+                    candidate_ingredients = tuple()
+                    confirmed_ingredients = extracted_ingredients
+        elif previous_step == "WAITING_IMAGE" and request.attachments:
+            try:
+                extracted_ingredients = await self._extract_ingredients(
+                    user_message=request.message,
+                    attachments=tuple(
+                        {"type": attachment.type, "data": attachment.data}
+                        for attachment in request.attachments
+                    ),
+                )
+            except LLMResponseError:
+                return {
+                    "status": "ERROR",
+                    "response": "이미지에서 재료를 인식하는 중 오류가 발생했습니다.",
+                }, 500
+            if not extracted_ingredients:
+                return {
+                    "status": "ERROR",
+                    "response": "이미지에서 재료를 확인할 수 없습니다.",
+                }, 500
+            candidate_ingredients = extracted_ingredients
         messages = [*session.messages, {"role": "user", "content": request.message}]
         state: ChatState = {
             "step": previous_step,
@@ -166,10 +234,15 @@ class ChatService:
             next_step=result["step"],
             user_conditions=request_conditions,
             ingredient_candidates=(
-                candidate_ingredients if confirmation_decision is not None else None
+                candidate_ingredients
+                if confirmation_decision is not None or extracted_ingredients is not None
+                else None
             ),
             confirmed_ingredients=(
-                confirmed_ingredients if confirmation_decision is not None else None
+                confirmed_ingredients
+                if confirmation_decision is not None
+                or (extracted_ingredients is not None and not request.attachments)
+                else None
             ),
             messages=tuple(result.get("messages", messages)),
             summary=str(result.get("summary", session.summary)),
@@ -209,29 +282,67 @@ class ChatService:
         response_kind = state["response_kind"]
 
         if response_kind == "IMAGE_INPUT":
+            image_request_already_sent = bool(session.messages)
+            if image_request_already_sent:
+                fallback_response = (
+                    "사진이 없어도 괜찮아요. 냉장고에 있는 재료를 텍스트로 알려주시면 "
+                    "그 재료를 기준으로 추천해드릴게요."
+                )
+                fallback_questions = [
+                    "사용 가능한 재료와 수량을 알려주세요.",
+                    "식단 목표는 무엇인가요? 예: 다이어트, 고단백, 채식",
+                    "조리 가능한 시간은 얼마나 되나요? 예: 20분 이내",
+                ]
+            else:
+                fallback_response = "정확한 재료 확인을 위해 냉장고 또는 영수증 이미지를 첨부해주세요."
+                fallback_questions = ["냉장고, 냉동실 또는 영수증 이미지를 첨부해주세요."]
+            message, questions = await self._clarification_response(
+                response_kind=response_kind,
+                user_message=user_message,
+                state=state,
+                session=session,
+                fallback_response=fallback_response,
+                fallback_questions=fallback_questions,
+            )
             return {
                 "status": "NEED_MORE_INFO",
                 "step": "IMAGE_INPUT",
-                "response": "정확한 재료 확인을 위해 냉장고 또는 영수증 이미지를 첨부해주세요.",
-                "questions": ["냉장고, 냉동실 또는 영수증 이미지를 첨부해주세요."],
+                "response": message,
+                "questions": questions,
             }
         if response_kind == "INGREDIENT_RETRY":
+            message, questions = await self._clarification_response(
+                response_kind=response_kind,
+                user_message=user_message,
+                state=state,
+                session=session,
+                fallback_response="인식된 재료가 맞지 않습니다. 재료가 보이는 이미지를 다시 첨부해주세요.",
+                fallback_questions=["재료가 잘 보이는 냉장고 또는 영수증 이미지를 다시 첨부해주세요."],
+            )
             return {
                 "status": "NEED_MORE_INFO",
                 "step": "IMAGE_INPUT",
-                "response": "인식된 재료가 맞지 않습니다. 재료가 보이는 이미지를 다시 첨부해주세요.",
-                "questions": ["재료가 잘 보이는 냉장고 또는 영수증 이미지를 다시 첨부해주세요."],
+                "response": message,
+                "questions": questions,
             }
         if response_kind == "INPUT_REQUIREMENTS":
-            return {
-                "status": "NEED_MORE_INFO",
-                "step": "INPUT_REQUIREMENTS",
-                "response": "추천에 필요한 이미지와 조건을 자연어로 함께 알려주세요.",
-                "questions": [
+            message, questions = await self._clarification_response(
+                response_kind=response_kind,
+                user_message=user_message,
+                state=state,
+                session=session,
+                fallback_response="추천에 필요한 이미지와 조건을 자연어로 함께 알려주세요.",
+                fallback_questions=[
                     "냉장고, 냉동실 또는 영수증 이미지를 첨부해주세요.",
                     "메시지에 식단 목표를 알려주세요. 예: 다이어트, 고단백, 채식",
                     "메시지에 조리 가능한 시간을 알려주세요. 예: 20분 이내",
                 ],
+            )
+            return {
+                "status": "NEED_MORE_INFO",
+                "step": "INPUT_REQUIREMENTS",
+                "response": message,
+                "questions": questions,
             }
         if response_kind == "INGREDIENT_CONFIRM":
             confirmation = state.get("ingredient_confirmation")
@@ -248,16 +359,25 @@ class ChatService:
                 "ingredients": _ingredient_payload(session.ingredient_candidates),
             }
         if response_kind == "CONDITION_INPUT":
+            message, questions = await self._clarification_response(
+                response_kind=response_kind,
+                user_message=user_message,
+                state=state,
+                session=session,
+                fallback_response="추천을 위해 몇 가지 정보를 더 알려주세요.",
+                fallback_questions=["식단 목표가 무엇인가요?", "조리 가능한 시간은 얼마나 되나요?"],
+            )
             return {
                 "status": "NEED_MORE_INFO",
                 "step": "CONDITION_INPUT",
-                "response": "추천을 위해 몇 가지 정보를 더 알려주세요.",
-                "questions": ["식단 목표가 무엇인가요?", "조리 가능한 시간은 얼마나 되나요?"],
+                "response": message,
+                "questions": questions,
             }
-        recipe_sets = _demo_recipe_sets()
-        completion_message = await self._llm_responder.generate_completion_message(
-            user_message, recipe_sets
+        generated_recommendation = await self._generate_recommendation(
+            user_message=user_message,
+            session=session,
         )
+        completion_message, recipe_sets = generated_recommendation
         if not await self._guardrail_validator.validate_output(completion_message):
             raise LLMResponseError("NeMo Guardrails가 최종 응답을 차단했습니다.")
         return {
@@ -266,6 +386,141 @@ class ChatService:
             "response": completion_message,
             "data": {"recipe_sets": recipe_sets},
         }
+
+    async def _clarification_response(
+        self,
+        *,
+        response_kind: str,
+        user_message: str,
+        state: Mapping[str, object],
+        session: ChatSessionState,
+        fallback_response: str,
+        fallback_questions: list[str],
+    ) -> tuple[str, list[str]]:
+        """LLM 안내를 검증하고, 실패하면 단계별 고정 fallback을 반환합니다.
+
+        모델은 표시 문구만 생성한다. 호출 실패·잘못된 JSON·안전성 검증 실패가 발생해도
+        FE가 사용하는 상태 전이와 응답 구조는 결정적인 fallback으로 유지한다.
+        """
+
+        generator = getattr(self._llm_responder, "generate_clarification_response", None)
+        if not callable(generator):
+            return fallback_response, fallback_questions
+
+        context = {
+            "has_image": bool(state.get("has_image")),
+            "has_conditions": bool(state.get("has_conditions")),
+            "has_confirmed_ingredients": bool(state.get("has_confirmed_ingredients")),
+            "ingredient_confirmation": state.get("ingredient_confirmation"),
+            "ingredient_candidates": _ingredient_payload(session.ingredient_candidates),
+            "image_request_already_sent": bool(session.messages),
+        }
+        try:
+            generated = await generator(response_kind, user_message, context)
+            if not isinstance(generated, Mapping):
+                raise ValueError("추가 입력 안내 응답 형식이 올바르지 않습니다.")
+            message = generated.get("response")
+            questions = generated.get("questions")
+            if (
+                not isinstance(message, str)
+                or not message.strip()
+                or isinstance(questions, (str, bytes))
+                or not isinstance(questions, Sequence)
+                or not questions
+                or any(
+                    not isinstance(question, str) or not question.strip()
+                    for question in questions
+                )
+            ):
+                raise ValueError("추가 입력 안내 응답 형식이 올바르지 않습니다.")
+            message = message.strip()
+            normalized_questions = [question.strip() for question in questions]
+            validate_completion_output(message)
+            for question in normalized_questions:
+                validate_completion_output(question)
+            if not await self._guardrail_validator.validate_output(
+                "\n".join((message, *normalized_questions))
+            ):
+                return fallback_response, fallback_questions
+            return message, normalized_questions
+        except (LLMResponseError, SafetyViolationError, TypeError, ValueError):
+            return fallback_response, fallback_questions
+
+    async def _generate_recommendation(
+        self,
+        *,
+        user_message: str,
+        session: ChatSessionState,
+    ) -> tuple[str, list[dict[str, object]]]:
+        """기본 LLM 응답기가 제공하는 구조화 추천을 API 응답 데이터로 검증합니다.
+
+        BE2가 준비되면 이 메서드의 호출 경계를 Recipe·Nutrition·Shopping·RAG 결과
+        어댑터로 교체한다. 추천 데이터는 코드에 내장하지 않고 LLM 또는 BE2 결과에서
+        받아 서버 DTO로 검증한다.
+        """
+
+        generator = getattr(self._llm_responder, "generate_recommendation", None)
+        if not callable(generator):
+            raise LLMResponseError("추천 생성기가 설정되지 않았습니다.")
+
+        confirmed_ingredients = [
+            {"name": ingredient.name, "amount": ingredient.amount}
+            for ingredient in session.confirmed_ingredients
+        ]
+        generated = await generator(
+            user_message,
+            confirmed_ingredients,
+            session.user_conditions,
+        )
+        if not isinstance(generated, Mapping):
+            raise LLMResponseError("LLM 추천 응답 형식이 올바르지 않습니다.")
+
+        message = generated.get("response")
+        raw_data = generated.get("data")
+        if not isinstance(message, str) or not isinstance(raw_data, Mapping):
+            raise LLMResponseError("LLM 추천 응답 형식이 올바르지 않습니다.")
+        try:
+            validate_completion_output(message)
+            recommendation = RecommendationData.model_validate(raw_data)
+        except (SafetyViolationError, ValueError) as error:
+            raise LLMResponseError("LLM 추천 응답 검증에 실패했습니다.") from error
+
+        recipe_sets = recommendation.model_dump().get("recipe_sets")
+        if not isinstance(recipe_sets, list):
+            raise LLMResponseError("LLM 추천 레시피 세트가 없습니다.")
+        return message, recipe_sets
+
+    async def _extract_ingredients(
+        self,
+        *,
+        user_message: str,
+        attachments: Sequence[Mapping[str, str]],
+        current_ingredients: Sequence[IngredientCandidate] = (),
+    ) -> tuple[IngredientCandidate, ...]:
+        """LLM 재료 추출 결과를 내부 세션 DTO로 검증합니다."""
+
+        extractor = getattr(self._llm_responder, "extract_ingredients", None)
+        if not callable(extractor):
+            raise LLMResponseError("재료 추출기가 설정되지 않았습니다.")
+        current_payload = [
+            {"name": ingredient.name, "amount": ingredient.amount}
+            for ingredient in current_ingredients
+        ]
+        extracted = await extractor(user_message, attachments, current_payload)
+        if isinstance(extracted, (str, bytes)) or not isinstance(extracted, Sequence):
+            raise LLMResponseError("재료 추출 응답 형식이 올바르지 않습니다.")
+        normalized: list[IngredientCandidate] = []
+        for item in extracted:
+            if not isinstance(item, Mapping):
+                raise LLMResponseError("재료 추출 응답 형식이 올바르지 않습니다.")
+            name = item.get("name")
+            amount = item.get("amount")
+            if not isinstance(name, str) or not name.strip():
+                raise LLMResponseError("재료 추출 응답 형식이 올바르지 않습니다.")
+            if not isinstance(amount, str) or not amount.strip():
+                raise LLMResponseError("재료 추출 응답 형식이 올바르지 않습니다.")
+            normalized.append(IngredientCandidate(name=name, amount=amount))
+        return tuple(normalized)
 
     async def _read_ingredient_confirmation(
         self, user_message: str
@@ -281,6 +536,11 @@ class ChatService:
         self, *, session_id: str, session: ChatSessionState
     ) -> dict[str, str] | None:
         """확정 재료와 조건을 BE2 계약으로 만들어 provider에 전달합니다."""
+
+        if self._tool_provider is None:
+            # BE2 endpoint가 아직 없을 때는 임의의 fake 결과를 만들지 않고, 추천 생성기가
+            # 확정 재료·조건을 직접 처리하도록 둔다.
+            return None
 
         try:
             request = build_tool_request(
@@ -348,12 +608,6 @@ def _next_session_state(
         next_session = replace(next_session, messages=messages)
     if summary is not None:
         next_session = replace(next_session, summary=summary)
-    if (
-        next_step == "WAITING_INGREDIENT_CONFIRM"
-        and ingredient_candidates is None
-        and not session.ingredient_candidates
-    ):
-        next_session = replace(next_session, ingredient_candidates=_INGREDIENT_CANDIDATES)
     if ingredient_candidates is not None:
         next_session = replace(next_session, ingredient_candidates=ingredient_candidates)
     if confirmed_ingredients is not None:
@@ -407,60 +661,19 @@ def _fallback_ingredient_confirmation(user_message: str) -> IngredientConfirmati
     return IngredientConfirmationDecision(intent="unclear", confidence=1.0)
 
 
-_EDITABLE_INGREDIENT_AMOUNTS = {
-    "양파": "수량 미정",
-    "당근": "수량 미정",
-    "마늘": "수량 미정",
-    "버섯": "수량 미정",
-    "토마토": "수량 미정",
-    "감자": "수량 미정",
-    "대파": "수량 미정",
-    "파프리카": "수량 미정",
-    "닭가슴살": "수량 미정",
-    "오이": "수량 미정",
-    "애호박": "수량 미정",
-}
-_AMOUNT_PATTERN = r"\d+(?:\.\d+)?\s*(?:개|모|쪽|팩|g|그램|봉|캔|통|장|마리|인분)"
-
-
 def _apply_ingredient_edit(
     candidates: tuple[IngredientCandidate, ...], user_message: str
 ) -> tuple[IngredientCandidate, ...]:
-    """자주 쓰는 한국어 수정 표현을 후보 목록에 반영합니다.
-
-    이 parser는 임시 BE2 계약 전 fallback이다. 인식·수량 추출을 BE2가 제공하면 이 지점을
-    해당 정규화 결과로 교체하며, 해석되지 않은 문장은 기존 후보를 보존해 재확인한다.
-    """
+    """LLM 추출 실패 시에도 기존 후보의 삭제·수량 변경만 제한적으로 반영합니다."""
 
     updated = list(candidates)
-    remove_markers = r"없|빼|삭제|제외"
     for candidate in tuple(updated):
         name = re.escape(candidate.name)
         if re.search(
-            rf"(?:{name}).{{0,12}}(?:{remove_markers})|(?:{remove_markers}).{{0,12}}(?:{name})",
+            rf"(?:{name}).{{0,12}}(?:없|빼|삭제|제외)|(?:없|빼|삭제|제외).{{0,12}}(?:{name})",
             user_message,
         ):
             updated = [item for item in updated if item.name != candidate.name]
-            continue
-        amount_match = re.search(rf"{name}.{{0,8}}({_AMOUNT_PATTERN})", user_message)
-        if amount_match:
-            replacement = IngredientCandidate(
-                name=candidate.name, amount=amount_match.group(1)
-            )
-            updated = [replacement if item.name == candidate.name else item for item in updated]
-
-    for name, default_amount in _EDITABLE_INGREDIENT_AMOUNTS.items():
-        if any(item.name == name for item in updated):
-            continue
-        if not re.search(rf"{re.escape(name)}.{{0,12}}(?:추가|넣|있)", user_message):
-            continue
-        amount_match = re.search(rf"{re.escape(name)}.{{0,8}}({_AMOUNT_PATTERN})", user_message)
-        updated.append(
-            IngredientCandidate(
-                name=name,
-                amount=amount_match.group(1) if amount_match else default_amount,
-            )
-        )
     return tuple(updated)
 
 
@@ -487,28 +700,6 @@ def _has_fallback_conditions(user_message: str) -> bool:
         re.search(r"\d+\s*분(?:\s*(?:안|이내|내))?|\d+\s*시간", user_message)
     )
     return has_goal and has_time
-
-
-def _demo_recipe_sets() -> list[dict[str, object]]:
-    """BE2 연결 전 API·FE 통합 검증에 사용할 최소 유효 응답입니다."""
-
-    recipes = [
-        {
-            "recipe_id": f"DEMO-{index:03d}",
-            "title": f"추천 레시피 {index}",
-            "image": None,
-            "cook_time": 20,
-            "owned_ingredients": ["두부"],
-            "missing_ingredients": [],
-            "shopping_list": [],
-            "nutrition": {"calories": 400, "protein": 20, "carbohydrate": 30, "fat": 12},
-        }
-        for index in range(1, 11)
-    ]
-    return [
-        {"set_id": "DEMO-SET-001", "recipes": recipes[:5]},
-        {"set_id": "DEMO-SET-002", "recipes": recipes[5:]},
-    ]
 
 
 chat_service = ChatService()

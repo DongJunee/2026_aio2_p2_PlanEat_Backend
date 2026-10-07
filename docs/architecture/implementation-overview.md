@@ -2,7 +2,7 @@
 
 이 문서는 현재 저장소에 구현된 Chat API의 구성, 요청 흐름, 상태 전이, 응답 계약과
 외부 AI 연동 지점을 한눈에 설명한다. Tool Hub·RAG·실제 Vision 연동은 아직 구현 범위가
-아니며, 해당 부분은 FE 통합 검증을 위한 결정적 임시 데이터로 동작한다.
+아니며, 해당 부분은 OpenAI 구조화 재료 추출과 임시 추천 데이터로 FE 통합을 검증한다.
 
 ## 1. 전체 구조
 
@@ -22,7 +22,8 @@ LangGraph summarize_conversation (> 10 messages) -> route_chat
   ▼
 응답 변환
   ├── INPUT_REQUIREMENTS / IMAGE_INPUT / INGREDIENT_CONFIRM / CONDITION_INPUT
-  └── COMPLETED → 임시 레시피 데이터 + OpenAI 완료 안내 문구
+  │      └── message 직접 입력 재료가 있으면 이미지 없이 조건 확인·추천으로 우회
+  └── COMPLETED → OpenAI 임시 추천 데이터·완료 안내 문구
                          │
                          └── NeMo Guardrails 출력·Tool 결과 검사
   ▼
@@ -35,8 +36,9 @@ ChatResponse JSON
 | HTTP 진입점 | `app/api/v1/endpoints/chat/router.py` | `POST /chat` 요청 수신, 서비스 호출, HTTP 상태 설정 |
 | DTO·API 계약 | `app/schemas/chat.py` | 요청·응답 Pydantic 모델 및 필드 제약 |
 | 상태 전이 | `app/agent/graph.py` | LangGraph `ChatState`와 단계별 분기 규칙 |
-| 세션·응답 조립 | `app/services/chat_service.py` | 세션 상태 저장, Graph 실행, fixture 레시피·응답 변환 |
-| 최종 안내 문구 | `app/integrations/llm/openai_responder.py` | OpenAI Responses API 호출 및 출력 안전성 검사 |
+| 세션·응답 조립 | `app/services/chat_service.py` | 세션 상태 저장, Graph 실행, LLM 추천·응답 변환 |
+| 재료 추출 | `app/integrations/llm/openai_responder.py` | 이미지·자연어 입력에서 재료와 수량을 Structured Outputs로 추출·검증 |
+| LLM 추가 안내·추천 | `app/integrations/llm/openai_responder.py` | OpenAI Structured Outputs 기반 부족 정보 질문·임시 추천 생성과 응답 검증 |
 | 자연어 조건·확인 판정 | `app/integrations/decision_engine/typesafe_jev.py` | 식단 조건 충분성 및 재료 확인 의도에 대한 Jev choice, confidence 검증, fallback |
 | 재료 확인·Tool 준비 | `app/services/chat_service.py` | 후보 수정·확정, 세션 반영, `ToolRequest` 생성과 provider 전달 |
 | 안전성 검사 | `app/core/safety.py` | 사용자 입력·LLM 출력의 위험한 패턴 검사 |
@@ -63,7 +65,7 @@ ChatResponse JSON
 | --- | --- |
 | `session_id` | 빈 문자열 불가. 동일 세션의 워크플로우 단계를 이어 간다. |
 | `message` | 1~2,000자. 안전성 검사를 통과해야 한다. |
-| `attachments` | 선택 사항이며 최대 5개. 현재 `image` 타입만 허용한다. |
+| `attachments` | 선택 사항이며 최대 5개. 생략하면 빈 목록으로 처리하고, 현재 `image` 타입만 허용한다. |
 | 식단 목적·시간 | 별도 필드 없이 `message`에서 자연어로 전달한다. Jev 또는 fallback이 충분성을 판정한다. |
 
 ### 응답 공통 규칙
@@ -72,8 +74,8 @@ FE는 `status`, `step`만으로 화면 흐름을 분기한다.
 
 | HTTP | `status` | `step` | 의미 |
 | --- | --- | --- | --- |
-| 200 | `NEED_MORE_INFO` | `INPUT_REQUIREMENTS` | 이미지와 자연어 조건을 한 번에 수집한다. |
-| 200 | `NEED_MORE_INFO` | `IMAGE_INPUT` | 이미지 첨부가 필요하다. |
+| 200 | `NEED_MORE_INFO` | `INPUT_REQUIREMENTS` | 이미지와 조건을 동시에 수집하는 호환 응답이다. |
+| 200 | `NEED_MORE_INFO` | `IMAGE_INPUT` | 첫 요청에서는 이미지를 요청하고, 후속 요청에서는 자연어 재료도 받을 수 있다. |
 | 200 | `NEED_MORE_INFO` | `INGREDIENT_CONFIRM` | 인식된 재료 후보의 확인이 필요하다. |
 | 200 | `NEED_MORE_INFO` | `CONDITION_INPUT` | 식단 목표·조리 시간 등의 조건이 필요하다. |
 | 200 | `SUCCESS` | `COMPLETED` | 레시피 2세트(각 5개)가 준비됐다. |
@@ -97,8 +99,8 @@ FastAPI 기본 검증 오류인 `422 {"detail": ...}`는 `app/main.py`에서 `40
 
 ```text
 WAITING_IMAGE
-  ├── 이미지·자연어 조건 없음 ────→ INPUT_REQUIREMENTS (WAITING_IMAGE 유지)
-  ├── 자연어 조건만 있음 ─────────→ IMAGE_INPUT (WAITING_IMAGE 유지)
+  ├── 이미지 없음 ───────────────→ IMAGE_INPUT (WAITING_IMAGE 유지)
+  ├── message에 직접 재료 있음 ───→ 조건 있음: COMPLETED / 없음: CONDITION_INPUT
   └── 이미지 있음 ───────────────→ INGREDIENT_CONFIRM
                                       │
 WAITING_INGREDIENT_CONFIRM ────────────┘
@@ -116,8 +118,9 @@ WAITING_CONDITIONS
 
 | 내부 상태 | 외부 응답 | 다음 내부 상태 |
 | --- | --- | --- |
-| `WAITING_IMAGE`, 이미지·자연어 조건 없음 | `INPUT_REQUIREMENTS` | `WAITING_IMAGE` |
 | `WAITING_IMAGE`, 이미지 없음 | `IMAGE_INPUT` | `WAITING_IMAGE` |
+| `WAITING_IMAGE`, 이미지 요청 후 message 직접 재료·조건 있음 | `COMPLETED` | `COMPLETED` |
+| `WAITING_IMAGE`, 이미지 요청 후 message 직접 재료·조건 없음 | `CONDITION_INPUT` | `WAITING_CONDITIONS` |
 | `WAITING_IMAGE`, 이미지 있음 | `INGREDIENT_CONFIRM` | `WAITING_INGREDIENT_CONFIRM` |
 | `WAITING_INGREDIENT_CONFIRM`, `confirmed`·조건 있음 | `COMPLETED` | `COMPLETED` |
 | `WAITING_INGREDIENT_CONFIRM`, `confirmed`·조건 없음 | `CONDITION_INPUT` | `WAITING_CONDITIONS` |
@@ -134,11 +137,14 @@ WAITING_CONDITIONS
 
 ## 4. 완료 응답의 데이터 구성
 
-`COMPLETED`에서는 `_demo_recipe_sets()`가 임시 레시피 데이터를 만든다. 이는 BE2 Tool Hub가
-준비되기 전 계약·FE 통합을 검증하기 위한 것이며, 실제 검색·추천 결과가 아니다. 현재도 확정
-재료·조건으로 `ToolRequest`를 fake provider에 전달하지만, fake 결과를 실제 레시피 데이터로
-변환하지는 않는다. 실제 연동에서는 BE1이 이미지를 직접 인식하지 않고, BE2 Vision Function Call이
-반환한 후보를 FE가 확정한 뒤 Recipe·Nutrition·Shopping·RAG Function Call을 요청한다.
+`COMPLETED`에서는 `OpenAIResponder.generate_recommendation()`이 확정 재료와 사용자 조건을
+입력으로 받아 Structured Outputs JSON을 생성한다. 서버는 결과를 `RecommendationData`로
+검증한 뒤 FE 계약에 맞는 임시 레시피 2세트(세트당 5개)를 반환한다. 이 데이터는 BE2가
+준비되기 전 FE 통합 검증을 위한 provisional 결과이며, 실제 레시피 DB·영양·장보기·RAG
+검색 결과가 아니다. BE2 provider가 주입된 경우에만 같은 확정 재료·조건으로 `ToolRequest`를
+전달한다. 실제 연동에서는 BE1이 이미지를
+직접 인식하지 않고, BE2 Vision Function Call이 반환한 후보를 FE가 확정한 뒤
+Recipe·Nutrition·Shopping·RAG Function Call 결과를 사용한다.
 
 ```json
 {
@@ -161,8 +167,10 @@ WAITING_CONDITIONS
 - `shopping_list` 항목: `ingredient`, `amount`만 허용
 - nutrition: `calories`, `protein`, `carbohydrate`, `fat`이며 음수를 허용하지 않음
 
-최종 `response` 문구는 `OpenAIResponder`가 생성한다. OpenAI API 키가 없거나 호출·출력
-검증에 실패하면 `500 ERROR`를 반환한다. 레시피 데이터 자체는 LLM이 만들거나 변경하지 않는다.
+`response`와 `data.recipe_sets`는 `OpenAIResponder`가 생성한다. Structured Outputs와
+`RecommendationData` 검증, 안전성 검사를 모두 통과한 경우에만 반환하며, OpenAI API 키가
+없거나 호출·출력 검증에 실패하면 `500 ERROR`를 반환한다. BE2 Tool Hub가 연결되면 이
+LLM 임시 추천 경로를 실제 Tool 결과 어댑터로 교체한다.
 
 ## 5. TypeSafe Jev 자연어 판정
 
@@ -170,6 +178,11 @@ Jev는 사용자 메시지의 식단 조건 충분성과 재료 확인 의도를
 구조화된 조건·확인 필드가 없으며, 충분하다고 판정된 메시지 원문과 사용자 확인 결과만
 세션의 내부 Tool 입력으로 보관한다.
 자세한 설치와 환경변수는 [Jev 연동 가이드](../integrations/jev.md)를 참고한다.
+
+이미지 요청 이후 사용자가 재료를 자연어로 직접 입력하는 경우에는 Jev의 이미지 후보 확인
+판정을 거치지 않는다. `OpenAIResponder.extract_ingredients()`로 지원 재료를 사전 없이
+추출하고, 사용자가 명시한 값이므로 `confirmed_ingredients`로 저장한다. 이 메서드는 BE2의
+Vision·재료 정규화 결과가 준비되면 해당 결과 어댑터로 교체한다.
 
 ### 5.1 조건 충분성 판정
 
@@ -207,7 +220,7 @@ Jev가 비활성화·실패·저신뢰이면 `ChatService`의 확인 표현 fall
 운영 프롬프트는 `prompts/`에서만 조합한다.
 
 - `instructions`: 보안·언어·완료 단계 지시만 포함
-- `input`: `<untrusted_user_message>`, `<trusted_recipe_sets>` 블록으로 데이터 출처를 분리
+- `input`: 사용자 메시지·확정 재료·조건·기존 추천 데이터를 출처별 비신뢰/신뢰 블록으로 분리
 - `store=False`: OpenAI 요청 저장을 비활성화
 - 출력: 최종 응답으로 보내기 전에 `validate_completion_output()`으로 재검사
 - NeMo `regex check output`: 최종 응답을 FE에 반환하기 전 내부 지시·API 키 패턴을 추가 검사
@@ -227,7 +240,7 @@ uv run uvicorn app.main:app --reload
 
 | 설정 | 용도 | 없을 때 동작 |
 | --- | --- | --- |
-| `OPENAI_API_KEY` | 완료 안내 문구 생성 | 완료 단계에서 `500 ERROR` |
+| `OPENAI_API_KEY` | 임시 추천 데이터·완료 안내 문구 생성 | 완료 단계에서 `500 ERROR` |
 | `OPENAI_MODEL` | OpenAI 모델 선택 | `gpt-4o-mini` 사용 |
 | `TYPESAFE_JEV_ENABLED` | Jev 자연어 조건·재료 확인 판정 사용 여부 | `false`가 기본값 |
 | `TYPESAFE_API_KEY` | Jev 인증 | Jev를 호출하지 않고 fallback |
@@ -266,11 +279,12 @@ git diff --check
 
 | 현재 임시 구현 | 향후 교체 지점 |
 | --- | --- |
-| `_INGREDIENTS`의 고정 재료 후보 | Vision 또는 BE2 Tool Hub의 이미지 인식 결과 |
-| `_demo_recipe_sets()`의 고정 레시피 10개 | BE2 Recipe·Nutrition·Shopping 결과 |
+| `OpenAIResponder.extract_ingredients()`의 LLM 재료 추출 | BE2 Vision·재료 정규화 결과 |
+| `OpenAIResponder.generate_clarification_response()`의 추가 입력 안내 | 상태별 FE 안내 정책 또는 향후 대화형 오케스트레이터 |
+| `OpenAIResponder.generate_recommendation()`의 LLM 임시 추천 | BE2 Recipe·Nutrition·Shopping·RAG 결과 |
 | 프로세스 메모리 세션 | DB 또는 Redis 세션 저장소 |
 | Jev 조건 판정과 제한적인 확인 의도 parser | 합의된 정책에 따른 조건 추출·재료 수정 DTO |
-| Tool Hub fake provider·호출 전 검증 | BE2 URL·timeout·재시도 정책을 반영한 실제 비동기 어댑터 |
+| ToolRequest 호출 전 검증 | BE2 URL·timeout·재시도 정책을 반영한 실제 비동기 어댑터 |
 
 Tool Hub·RAG가 연결되더라도 외부 `/chat` DTO, `status`, `step`, 레시피 2세트·세트당 5개라는
 FE 계약은 유지해야 한다.

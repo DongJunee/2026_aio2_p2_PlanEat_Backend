@@ -12,6 +12,10 @@ class Settings(BaseSettings):
 
     openai_api_key: str | None = None
     openai_model: str = "gpt-4o-mini"
+    langsmith_tracing: bool = False
+    langsmith_api_key: str | None = None
+    langsmith_project: str = "planeat-backend"
+    langsmith_endpoint: str | None = None
     typesafe_jev_enabled: bool = False
     typesafe_api_key: str | None = None
     typesafe_model: str = "jev-latest"

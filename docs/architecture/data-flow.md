@@ -8,7 +8,7 @@
 | BE1 | 최경락 | API Server, LangGraph Orchestrator, 세션 상태 관리, 워크플로우 분기 |
 | BE2 | 박동준 | Tool Hub, RAG 검색, 도구 실행 결과 반환 |
 
-`POST /chat`의 외부 계약은 [Chat API 명세](api/chat.md)를 따릅니다. BE1과 BE2 사이의 호출 경로와 세부 payload 형식은 아직 구현 전이므로, 아래의 BE2 인터페이스는 역할 기반의 논리적 데이터 흐름입니다.
+`POST /chat`의 외부 계약은 [Chat API 명세](../api/chat.md)를 따릅니다. BE1과 BE2 사이의 호출 경로와 세부 payload 형식은 아직 구현 전이므로, 아래의 BE2 인터페이스는 역할 기반의 논리적 데이터 흐름입니다.
 
 ## 1. 외부 대화 흐름: FE ↔ BE1
 
@@ -55,6 +55,13 @@ sequenceDiagram
 BE1은 사용자에게 확인받기 전의 재료 후보를 추천·RAG 입력으로 보내지 않는다. 사용자가
 `confirmed`로 답한 뒤에만 `confirmed_ingredients`를 ToolRequest에 넣는다. BE2는 Vision과
 Tool Hub 실행 결과만 반환하며, FE용 JSON으로 바꾸는 책임은 BE1에 있다.
+
+### 대화 요약 전이
+
+LangGraph State는 사용자·어시스턴트 메시지를 세션별로 보관한다. 메시지가 10개를 초과하면
+`summarize_conversation` 노드가 오래된 메시지를 결정적으로 요약하고 최근 2개만 남긴 뒤
+기존 `route_chat` 노드로 전이한다. 현재 BE1은 외부 LLM을 기본 테스트에 연결하지 않기 위해
+로컬 요약을 사용하며, 실제 요약 모델은 해당 노드의 교체 지점으로 연결할 수 있다.
 
 ```mermaid
 sequenceDiagram

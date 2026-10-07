@@ -4,7 +4,7 @@ from dataclasses import replace
 from collections.abc import Mapping, Sequence
 import json
 import re
-from typing import Protocol
+from typing import Literal, Protocol
 
 from app.agent.graph import ChatState, WorkflowStep, chat_graph
 from app.agent.tools.contracts import (
@@ -15,6 +15,7 @@ from app.agent.tools.contracts import (
 )
 from app.agent.tools.fake_provider import FakeToolHubProvider
 from app.core.config import get_settings
+from app.core.observability import build_langsmith_run_config
 from app.core.safety import SafetyViolationError, validate_user_message
 from app.integrations.decision_engine.typesafe_jev import (
     ConditionReadinessDecision,
@@ -27,6 +28,7 @@ from app.integrations.llm.openai_responder import LLMResponseError, OpenAIRespon
 from app.repositories.chat_session import (
     ChatSessionRepository,
     ChatSessionState,
+    ConversationMessage,
     InMemoryChatSessionRepository,
     IngredientCandidate,
 )
@@ -88,6 +90,7 @@ class ChatService:
         guardrail_validator: GuardrailValidator | None = None,
     ) -> None:
         settings = get_settings()
+        self._settings = settings
         self._llm_responder = llm_responder or OpenAIResponder(settings)
         self._condition_evaluator = condition_evaluator or JevConditionReadinessEvaluator(
             settings
@@ -130,8 +133,11 @@ class ChatService:
                 confirmation_decision = IngredientConfirmationDecision(
                     intent="rejected", confidence=confirmation_decision.confidence
                 )
+        messages = [*session.messages, {"role": "user", "content": request.message}]
         state: ChatState = {
             "step": previous_step,
+            "messages": messages,
+            "summary": session.summary,
             "has_image": bool(request.attachments),
             "has_conditions": effective_conditions is not None,
             "has_confirmed_ingredients": bool(confirmed_ingredients),
@@ -142,7 +148,19 @@ class ChatService:
         if previous_step == "WAITING_CONDITIONS":
             state["condition_ready"] = effective_conditions is not None
 
-        result = await chat_graph.ainvoke(state)
+        trace_config = build_langsmith_run_config(
+            self._settings,
+            session_id=request.session_id,
+            workflow_step=previous_step,
+            has_image=bool(request.attachments),
+            has_conditions=effective_conditions is not None,
+            has_confirmed_ingredients=bool(confirmed_ingredients),
+            attachment_count=len(request.attachments or []),
+        )
+        if trace_config is None:
+            result = await chat_graph.ainvoke(state)
+        else:
+            result = await chat_graph.ainvoke(state, config=trace_config)
         next_session = _next_session_state(
             session=session,
             next_step=result["step"],
@@ -153,6 +171,8 @@ class ChatService:
             confirmed_ingredients=(
                 confirmed_ingredients if confirmation_decision is not None else None
             ),
+            messages=tuple(result.get("messages", messages)),
+            summary=str(result.get("summary", session.summary)),
         )
         await self._session_repository.save(request.session_id, next_session)
 
@@ -164,9 +184,19 @@ class ChatService:
                 )
                 if tool_error is not None:
                     return tool_error, 500
-            return await self._to_response(result, request.message, next_session), 200
+            response = await self._to_response(result, request.message, next_session)
         except LLMResponseError:
             return {"status": "ERROR", "response": "추천 응답 생성 중 오류가 발생했습니다."}, 500
+
+        next_session = replace(
+            next_session,
+            messages=(
+                *next_session.messages,
+                _conversation_message("assistant", response["response"]),
+            ),
+        )
+        await self._session_repository.save(request.session_id, next_session)
+        return response, 200
 
     async def _to_response(
         self,
@@ -308,10 +338,16 @@ def _next_session_state(
     user_conditions: Mapping[str, object] | None,
     ingredient_candidates: tuple[IngredientCandidate, ...] | None = None,
     confirmed_ingredients: tuple[IngredientCandidate, ...] | None = None,
+    messages: tuple[ConversationMessage, ...] | None = None,
+    summary: str | None = None,
 ) -> ChatSessionState:
     """단계 전이 중 얻은 데이터를 Tool 호출용 세션 상태에 안전하게 보존합니다."""
 
     next_session = replace(session, step=next_step)
+    if messages is not None:
+        next_session = replace(next_session, messages=messages)
+    if summary is not None:
+        next_session = replace(next_session, summary=summary)
     if (
         next_step == "WAITING_INGREDIENT_CONFIRM"
         and ingredient_candidates is None
@@ -331,6 +367,14 @@ def _next_session_state(
     if user_conditions is not None:
         return replace(next_session, user_conditions=user_conditions)
     return next_session
+
+
+def _conversation_message(
+    role: Literal["user", "assistant"], content: object
+) -> ConversationMessage:
+    """응답을 세션 이력에 저장할 메시지 DTO로 정규화합니다."""
+
+    return {"role": role, "content": str(content)}
 
 
 def _apply_confirmation_decision(

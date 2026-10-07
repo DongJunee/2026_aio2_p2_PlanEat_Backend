@@ -100,6 +100,36 @@ def test_chat_api_advances_one_session_through_langgraph(monkeypatch) -> None:
     assert len(body["data"]["recipe_sets"]) == 2
 
 
+def test_chat_service_persists_summary_when_session_messages_exceed_threshold() -> None:
+    repository = InMemoryChatSessionRepository()
+    asyncio.run(
+        repository.save(
+            "summary-session",
+            ChatSessionState(
+                messages=tuple(
+                    {"role": "user", "content": f"message-{index}"}
+                    for index in range(10)
+                )
+            ),
+        )
+    )
+    service = ChatService(
+        llm_responder=FakeCompletionMessageGenerator(),
+        session_repository=repository,
+    )
+
+    payload, status_code = asyncio.run(
+        service.handle(ChatRequest(session_id="summary-session", message="message-10"))
+    )
+    session = asyncio.run(repository.get("summary-session"))
+
+    assert status_code == 200
+    assert payload["step"] == "INPUT_REQUIREMENTS"
+    assert "message-0" in session.summary
+    assert len(session.messages) == 3
+    assert session.messages[-1]["role"] == "assistant"
+
+
 def test_chat_api_rejects_normalized_prompt_injection() -> None:
     client = TestClient(app)
 

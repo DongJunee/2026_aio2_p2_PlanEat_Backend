@@ -10,7 +10,7 @@
 | 세션 저장소 경계 | `app/repositories/chat_session.py` | `ChatSessionRepository`와 메모리 구현체를 분리했다. 이후 Redis·DB 구현체로 교체할 수 있다. |
 | Tool 호출 전 상태 | `ChatSessionState` | 재료 후보, 확정 재료, 충분성이 판별된 자연어 사용자 조건 원문을 보관할 수 있다. |
 | Tool 계약 경계 | `app/agent/tools/contracts.py` | `ToolRequest`, `ToolResult`, 요청 준비 오류를 정의했다. |
-| Vision 호출 경계 | `docs/data-flow.md` | BE1이 첨부 이미지를 BE2 Vision Function Call로 전달하고 후보를 받는 목표 흐름을 정의했다. 상세 DTO는 팀 합의 전이다. |
+| Vision 호출 경계 | `docs/architecture/data-flow.md` | BE1이 첨부 이미지를 BE2 Vision Function Call로 전달하고 후보를 받는 목표 흐름을 정의했다. 상세 DTO는 팀 합의 전이다. |
 | 사용자 확인 보호 | `build_tool_request()` | `confirmed_ingredients`가 비어 있으면 Tool 요청 생성을 거부한다. 이미지 후보 재료는 전달하지 않는다. |
 | 확인 의도 분류 | `JevIngredientConfirmationEvaluator` | `confirmed`·`rejected`·`edited`·`unclear`에 따라 후보 상태와 다음 단계를 결정한다. |
 | 완료 단계 호출 경계 | `ChatService._execute_tool_request()` | 확정 재료와 조건으로 `ToolRequest`를 만들고 현재는 fake provider에 전달한다. |

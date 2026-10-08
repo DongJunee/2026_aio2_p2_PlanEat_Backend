@@ -15,13 +15,13 @@ from app.integrations.decision_engine.typesafe_jev import (
     JevFeedbackPlanner,
     JevIngredientConfirmationEvaluator,
 )
-from app.schemas.chat import ChatRequest
+from app.schemas.chat import ChatRequest, RecommendationData
 from app.repositories.chat_session import (
     ChatSessionState,
     InMemoryChatSessionRepository,
     IngredientCandidate,
 )
-from app.services.chat_service import ChatService, chat_service
+from app.services.chat_service import ChatService, _parse_selected_set_id, chat_service
 
 _MOCK_DIRECTORY = Path(__file__).resolve().parents[2] / "mocks" / "chat"
 
@@ -348,6 +348,122 @@ def test_selected_set_generates_pdf_url_and_saves_selection() -> None:
     assert pdf_service.calls == [("pdf-session", "SET001")]
     assert session.selected_set_id == "SET001"
     assert session.pdf_url == "/pdfs/pdf-session-SET001.pdf"
+
+
+def test_korean_best_match_selection_generates_pdf_url() -> None:
+    """한글 표시명으로 선택해도 BEST_MATCH PDF 생성 경로를 사용합니다."""
+
+    repository = InMemoryChatSessionRepository()
+    pdf_service = RecordingPdfService()
+    recommendation_data = _mock_recommendation_data()
+    recommendation_data["recipe_sets"][0]["set_id"] = "BEST_MATCH"
+    asyncio.run(
+        repository.save(
+            "best-match-session",
+            ChatSessionState(
+                step="COMPLETED",
+                confirmed_ingredients=(IngredientCandidate(name="두부", amount="1모"),),
+                user_conditions={"message": "다이어트 식단"},
+                recommendation_data=recommendation_data,
+            ),
+        )
+    )
+    service = ChatService(
+        llm_responder=FakeCompletionMessageGenerator(),
+        session_repository=repository,
+        pdf_service=pdf_service,
+    )
+
+    payload, status_code = asyncio.run(
+        service.handle(
+            ChatRequest(session_id="best-match-session", message="베스트 매치 선택")
+        )
+    )
+
+    assert status_code == 200
+    assert payload["next_action"] == "PDF_READY"
+    assert payload["selected_set_id"] == "BEST_MATCH"
+    assert payload["response"] == "BEST_MATCH 식단의 상세 PDF를 생성했습니다."
+    assert payload["pdf_url"] == "/pdfs/best-match-session-BEST_MATCH.pdf"
+    assert pdf_service.calls == [("best-match-session", "BEST_MATCH")]
+
+
+@pytest.mark.parametrize(
+    "message, expected_set_id",
+    [
+        ("베스트 매치로 진행할게", "BEST_MATCH"),
+        ("가장 잘 맞는 걸로 해줘", "BEST_MATCH"),
+        ("1번으로 발급해줘", "BEST_MATCH"),
+        ("두 번째 걸로 PDF 보내줘", "SET002"),
+    ],
+)
+def test_natural_language_set_selection_resolves_target_set(
+    message: str, expected_set_id: str
+) -> None:
+    """선택 의도와 대상이 함께 있는 자연어 요청을 세트 ID로 변환합니다."""
+
+    recommendation_data = _mock_recommendation_data()
+    recommendation_data["recipe_sets"][0]["set_id"] = "BEST_MATCH"
+    recommendation = RecommendationData.model_validate(recommendation_data)
+
+    assert _parse_selected_set_id(message, recommendation) == expected_set_id
+
+
+def test_ambiguous_selection_phrase_does_not_choose_a_set() -> None:
+    """대상이 없는 표현은 임의 세트 PDF 발급으로 이어지지 않습니다."""
+
+    recommendation = RecommendationData.model_validate(_mock_recommendation_data())
+
+    assert _parse_selected_set_id("그걸로 해줘", recommendation) is None
+
+
+def test_regeneration_excludes_previous_recipes_and_uses_new_response_message() -> None:
+    """마음에 들지 않는다는 재추천은 기존 레시피 ID를 제외해 Tool Hub에 전달합니다."""
+
+    repository = InMemoryChatSessionRepository()
+    provider = RecordingToolHubProvider()
+    previous_data = _mock_recommendation_data()
+    previous_recipe_ids: list[str] = []
+    for set_index, recipe_set in enumerate(previous_data["recipe_sets"]):
+        for recipe_index, recipe in enumerate(recipe_set["recipes"]):
+            recipe_id = f"old-{set_index}-{recipe_index}"
+            recipe["recipe_id"] = recipe_id
+            previous_recipe_ids.append(recipe_id)
+    asyncio.run(
+        repository.save(
+            "regeneration-session",
+            ChatSessionState(
+                step="COMPLETED",
+                confirmed_ingredients=(IngredientCandidate(name="두부", amount="1모"),),
+                user_conditions={"message": "다이어트 식단"},
+                recommendation_data=previous_data,
+            ),
+        )
+    )
+    service = ChatService(
+        llm_responder=FakeCompletionMessageGenerator(),
+        tool_provider=provider,
+        session_repository=repository,
+    )
+
+    payload, status_code = asyncio.run(
+        service.handle(
+            ChatRequest(
+                session_id="regeneration-session",
+                message="식단이 맘에 안들어서 다시 만들어줘",
+            )
+        )
+    )
+
+    assert status_code == 200
+    assert provider.requests[0].user_conditions["excluded_recipe_ids"] == previous_recipe_ids
+    assert payload["response"].startswith("기존 추천과 다른 레시피로 식단을 다시 추천했습니다.")
+    returned_recipe_ids = {
+        recipe["recipe_id"]
+        for recipe_set in payload["data"]["recipe_sets"]
+        for recipe in recipe_set["recipes"]
+    }
+    assert returned_recipe_ids.isdisjoint(previous_recipe_ids)
 
 
 def test_missing_image_after_first_request_uses_natural_language_fallback() -> None:

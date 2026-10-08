@@ -181,6 +181,25 @@ def test_recipe_tool_prioritizes_recipes_that_use_confirmed_ingredients() -> Non
     assert results[0].owned_ingredients[0].name == "두부"
 
 
+def test_recipe_tool_excludes_previously_recommended_recipe_ids() -> None:
+    """재추천 후보에서는 직전 추천에 포함된 레시피를 다시 반환하지 않습니다."""
+
+    results = asyncio.run(
+        RecipeTool(StaticRecipeRepository(_catalog_recipes())).recommend(
+            RecipeSearchQuery(
+                confirmed_ingredients=[ToolIngredient(name="두부", amount="1모")],
+                user_conditions={"message": "다이어트 식단"},
+                excluded_recipe_ids=["recipe-0", "recipe-1"],
+            ),
+            limit=10,
+        )
+    )
+
+    assert {result.recipe.recipe_id for result in results}.isdisjoint(
+        {"recipe-0", "recipe-1"}
+    )
+
+
 def test_recipe_score_gives_stronger_bonus_to_each_owned_ingredient() -> None:
     recipe = _catalog_recipes(1)[0]
 
@@ -372,6 +391,32 @@ def test_internal_csv_repository_preserves_enriched_ingredient_importance(tmp_pa
         ("생크림", "대체 가능"),
         ("간장", "대체 가능"),
         ("후추", "생략 가능"),
+    ]
+    assert recipes[0].ingredients[0].amount == "1모"
+
+
+def test_internal_csv_repository_extracts_recipe_amounts_from_detail_text(tmp_path) -> None:
+    catalog_path = tmp_path / "recipe-catalog.csv"
+    catalog_path.write_text(
+        "RCP_SEQ,RCP_NM,RCP_PAT2,RCP_PARTS_DTLS,REQUIRED_INGREDIENTS,"
+        "OPTIONAL_INGREDIENTS,SUBSTITUTABLE_INGREDIENTS,SUBSTITUTABLE_SEASONINGS,"
+        "INFO_ENG,INFO_PRO,INFO_CAR,INFO_FAT\n"
+        "1,두부 요리,반찬,\"연두부 75g(3/4모), 다진 대파 5g(1작은술), 참깨 약간\","
+        "연두부|대파|참깨,,,,320,20,18,15\n",
+        encoding="utf-8",
+    )
+    repository = CsvRecipeRepository(catalog_path)
+    query = RecipeSearchQuery(
+        confirmed_ingredients=[ToolIngredient(name="연두부", amount="1모")],
+        user_conditions={"message": "간단한 메뉴"},
+    )
+
+    recipes = asyncio.run(repository.search(query, limit=1))
+
+    assert [(item.name, item.amount) for item in recipes[0].ingredients] == [
+        ("연두부", "75g(3/4모)"),
+        ("대파", "5g(1작은술)"),
+        ("참깨", "약간"),
     ]
 
 

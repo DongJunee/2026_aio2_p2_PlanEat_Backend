@@ -415,6 +415,7 @@ class MealPlanningSubgraph:
             "query": RecipeSearchQuery(
                 confirmed_ingredients=request.confirmed_ingredients,
                 user_conditions=request.user_conditions,
+                excluded_recipe_ids=_excluded_recipe_ids(request.user_conditions),
             ),
             "excluded_ingredients": _unique_names(request.excluded_ingredients),
             "exclusion_actions": [],
@@ -432,7 +433,6 @@ class MealPlanningSubgraph:
             replanned=bool(graph_state.get("replanned")),
             exclusion_actions=graph_state.get("exclusion_actions", []),
         )
-
     def _build_graph(self):
         graph = StateGraph(MealPlanningGraphState)
         graph.add_node("search_recipe_candidates", self._search_recipe_candidates)
@@ -721,6 +721,13 @@ class MealPlanningSubgraph:
             missing_replacements=tuple(missing_replacements),
             actions=actions,
         )
+
+
+def _excluded_recipe_ids(conditions: Mapping[str, object]) -> list[str]:
+    """Orchestrator가 재추천에 넣은 기존 레시피 ID만 안전하게 읽습니다."""
+
+    raw_ids = conditions.get("excluded_recipe_ids", [])
+    return [item for item in raw_ids if isinstance(item, str) and item] if isinstance(raw_ids, list) else []
 
 
 def _unique_matches(candidates: Sequence[RecipeMatch]) -> list[RecipeMatch]:

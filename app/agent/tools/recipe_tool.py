@@ -37,12 +37,15 @@ class RecipeTool:
 
         # Source가 조건 검색을 지원하지 않는 경우도 있어 넉넉히 받은 뒤 서버에서 재정렬한다.
         candidates = await self._repository.search(query, limit=max(limit * 3, limit))
+        excluded_recipe_ids = set(query.excluded_recipe_ids)
         max_cook_time = _max_cook_time(query.user_conditions)
         normalized_conditions = _condition_text(query.user_conditions)
         owned_names = {_normalize_name(item.name) for item in query.confirmed_ingredients}
 
         matches: list[RecipeMatch] = []
         for recipe in candidates:
+            if recipe.recipe_id in excluded_recipe_ids:
+                continue
             if max_cook_time is not None and recipe.cook_time > max_cook_time:
                 continue
             if _violates_dietary_condition(recipe, normalized_conditions):
@@ -78,9 +81,16 @@ def query_from_tool_request(
 ) -> RecipeSearchQuery:
     """기존 Orchestrator ``ToolRequest``의 느슨한 Mapping을 Tool Hub 검색 모델로 검증합니다."""
 
+    raw_excluded_recipe_ids = user_conditions.get("excluded_recipe_ids", [])
+    excluded_recipe_ids = (
+        [item for item in raw_excluded_recipe_ids if isinstance(item, str) and item]
+        if isinstance(raw_excluded_recipe_ids, list)
+        else []
+    )
     return RecipeSearchQuery(
         confirmed_ingredients=[ToolIngredient.model_validate(item) for item in confirmed_ingredients],
         user_conditions=user_conditions,
+        excluded_recipe_ids=excluded_recipe_ids,
     )
 
 

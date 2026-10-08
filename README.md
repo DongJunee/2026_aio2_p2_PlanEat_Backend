@@ -108,8 +108,9 @@ Shopping·RAG Tool 결과를 반환합니다. `TOOL_HUB_ENABLED=false`이면 Ope
 임시 추천 경로로 fallback합니다.
 
 완료 응답의 `response`는 두 추천 세트 중 하나를 선택해 상세 PDF를 발급받도록 안내하는
-고정 문구이며, 실제 추천 차이는 `data.recipe_sets`에서 확인합니다. 기본 Tool Hub는
-프로젝트 내부 CSV를 결정적으로 검색하므로 동일한 확정 재료·조건에는 같은 추천이 나올 수 있습니다.
+서버 템플릿이며, 실제 추천 차이는 `data.recipe_sets`에서 확인합니다. 현재 추천이 마음에
+들지 않아 재생성을 요청하면 직전 레시피 ID를 후보에서 제외해 새 레시피를 찾습니다. 기본 Tool Hub는
+프로젝트 내부 CSV를 결정적으로 검색합니다.
 `mocks/chat/response-success.json`은 FE fixture와 테스트 전용이며 런타임 응답 source가 아닙니다.
 
 ### 로컬 레시피 CSV

@@ -7,6 +7,7 @@
 import asyncio
 import csv
 import json
+import re
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -34,6 +35,31 @@ _NORMALIZED_REQUIRED_COLUMNS = frozenset(
     }
 )
 _INTERNAL_RAW_REQUIRED_COLUMNS = frozenset({"RCP_SEQ", "RCP_NM", "RCP_PARTS_DTLS"})
+_UNKNOWN_AMOUNT = "수량 미상"
+_AMOUNT_UNITS = (
+    r"kg|mg|ml|g|l|개|마리|장|대|모|봉|팩|캔|컵|큰술|작은술|쪽|줄기|알|"
+    r"뿌리|cm|인분|포기|단|통|송이"
+)
+_AMOUNT_RE = re.compile(
+    rf"(?P<amount>"
+    rf"(?:\d+\s*[×x]\s*\d+\s*cm|"
+    rf"\d+(?:\.\d+)?\s*[½⅓⅔¼¾⅛⅜⅝⅞]|"
+    rf"\d+\s*[/⁄]\s*\d+|"
+    rf"\d+(?:\.\d+)?|"
+    rf"[½⅓⅔¼¾⅛⅜⅝⅞])\s*(?:{_AMOUNT_UNITS})"
+    rf"(?:\s*\([^)]*\))?"
+    rf"|(?P<qualitative>약간|적당량|한줌|한 줌)"
+    rf")",
+    re.IGNORECASE,
+)
+_INGREDIENT_ALIASES: dict[str, tuple[str, ...]] = {
+    "계란": ("달걀",),
+    "달걀": ("계란",),
+    "쇠고기": ("소고기",),
+    "소고기": ("쇠고기",),
+    "배추잎": ("배춧잎",),
+    "배춧잎": ("배추잎",),
+}
 
 
 class LocalRecipeCatalogError(RuntimeError):
@@ -245,7 +271,7 @@ def _source_metadata(row: Mapping[str, str | None]) -> dict[str, str]:
 
 
 def _internal_ingredients(row: Mapping[str, str | None]) -> list[RecipeIngredient]:
-    """보강 CSV의 필수·대체·생략 재료 열을 중요도와 함께 보존합니다."""
+    """보강 CSV의 재료 분류와 원본 조리 설명의 실제 필요량을 함께 보존합니다."""
 
     groups = (
         ("REQUIRED_INGREDIENTS", "필수", True),
@@ -254,6 +280,7 @@ def _internal_ingredients(row: Mapping[str, str | None]) -> list[RecipeIngredien
         ("SUBSTITUTABLE_SEASONINGS", "대체 가능", True),
         ("OPTIONAL_INGREDIENTS", "생략 가능", False),
     )
+    detail_text = _optional_value(row, "RCP_PARTS_DTLS") or ""
     ingredients: list[RecipeIngredient] = []
     seen: set[str] = set()
     for field, importance, required in groups:
@@ -265,7 +292,7 @@ def _internal_ingredients(row: Mapping[str, str | None]) -> list[RecipeIngredien
             ingredients.append(
                 RecipeIngredient(
                     name=name,
-                    amount="필요량",
+                    amount=_find_ingredient_amount(name, detail_text),
                     importance=importance,  # type: ignore[arg-type]
                     required=required,
                 )
@@ -274,17 +301,69 @@ def _internal_ingredients(row: Mapping[str, str | None]) -> list[RecipeIngredien
 
 
 def _fallback_internal_ingredients(row: Mapping[str, str | None]) -> list[RecipeIngredient]:
-    """보강 열이 비어 있는 행은 원본 표시 재료에서 보수적으로 이름만 읽습니다."""
+    """보강 열이 비어 있는 행은 원본 표시 재료에서 이름과 필요량을 읽습니다."""
 
-    import re
-
+    detail_text = _optional_value(row, "RCP_PARTS_DTLS") or ""
     ingredients: list[RecipeIngredient] = []
-    for line in re.split(r"[\n,]", _optional_value(row, "RCP_PARTS_DTLS") or ""):
+    for line in _split_detail_segments(detail_text):
         cleaned = re.sub(r"\[[^\]]+\]", "", line).strip(" -•")
         match = re.match(r"([가-힣A-Za-z]+)", cleaned)
         if match:
-            ingredients.append(RecipeIngredient(name=match.group(1), amount="필요량"))
+            name = match.group(1)
+            ingredients.append(
+                RecipeIngredient(name=name, amount=_find_ingredient_amount(name, detail_text))
+            )
     return ingredients
+
+
+def _find_ingredient_amount(name: str, detail_text: str) -> str:
+    """원본 조리 재료 설명에서 이름에 대응하는 실제 필요량을 추출합니다.
+
+    원본은 ``연두부 75g(3/4모)``처럼 자유 문장으로 저장되어 있어 완전한 수량
+    정규화는 하지 않는다. 조리법에 표시된 표현을 그대로 반환하고, 숫자·단위가
+    없는 재료는 ``약간`` 또는 ``수량 미상``으로 명시한다.
+    """
+
+    variants = (name, *_INGREDIENT_ALIASES.get(_ingredient_key(name), ()))
+    for segment in _split_detail_segments(detail_text):
+        for variant in variants:
+            compact_variant = "".join(variant.split())
+            pattern = re.compile(r"\s*".join(re.escape(char) for char in compact_variant))
+            for match in pattern.finditer(segment):
+                # 짧은 이름이 ``파프리카`` 같은 다른 재료의 접두어에 붙는 오탐을 줄인다.
+                next_character = segment[match.end() : match.end() + 1]
+                if next_character and "가" <= next_character <= "힣":
+                    continue
+                quantity = _AMOUNT_RE.search(segment[match.end() :])
+                if quantity is not None:
+                    return (
+                        quantity.group("amount")
+                        or quantity.group("qualitative")
+                        or _UNKNOWN_AMOUNT
+                    )
+    return _UNKNOWN_AMOUNT
+
+
+def _split_detail_segments(value: str) -> list[str]:
+    """괄호 안 쉼표는 보존하면서 조리 재료 설명을 항목 단위로 나눕니다."""
+
+    segments: list[str] = []
+    start = 0
+    depth = 0
+    for index, character in enumerate(value):
+        if character == "(":
+            depth += 1
+        elif character == ")":
+            depth = max(depth - 1, 0)
+        elif character in ",\n" and depth == 0:
+            segment = value[start:index].strip()
+            if segment:
+                segments.append(segment)
+            start = index + 1
+    tail = value[start:].strip()
+    if tail:
+        segments.append(tail)
+    return segments
 
 
 def _internal_source_metadata(row: Mapping[str, str | None]) -> dict[str, str]:

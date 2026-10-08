@@ -38,6 +38,18 @@ from app.schemas.chat import ChatRequest, RecommendationData, RecipeSet
 from app.services.pdf_service import RecipePdfService, recipe_pdf_service
 
 
+# 추천 결과의 대표 세트 ID는 FE에서 한글 표시명으로 노출될 수 있다. 선택 요청은
+# 서버의 실제 set_id로 다시 변환해야 PDF 생성 경로가 아닌 피드백 경로로 빠지지 않는다.
+_KOREAN_SET_ID_ALIASES: dict[str, tuple[str, ...]] = {
+    "BESTMATCH": ("베스트 매치", "베스트매치", "베스트", "가장 잘 맞는", "가장잘맞는"),
+}
+_SELECTION_INTENT_PATTERN = re.compile(
+    r"선택|고르|골라|정해|결정|진행|발급|보내|pdf|피디에프|파일|"
+    r"할게|할께|해줘|해주세요|주세요|받고\s*싶",
+    flags=re.IGNORECASE,
+)
+
+
 class LLMResponder(Protocol):
     """재료 추출·추가 질문·최종 구조화 추천을 제공하는 LLM 어댑터입니다."""
 
@@ -141,6 +153,11 @@ class ChatService:
         session = await self._session_repository.get(request.session_id)
         previous_step = session.step
         stored_recommendation = _stored_recommendation(session)
+        regenerate_with_new_recipes = (
+            previous_step == "COMPLETED"
+            and stored_recommendation is not None
+            and _is_recipe_regeneration_request(request.message)
+        )
         replace_confirmed_ingredients = (
             previous_step == "COMPLETED"
             and stored_recommendation is not None
@@ -168,6 +185,17 @@ class ChatService:
                 request.message,
                 feedback_plan,
             )
+            if regenerate_with_new_recipes:
+                request_conditions = _exclude_previously_recommended_recipes(
+                    request_conditions,
+                    stored_recommendation,
+                )
+            else:
+                # 이전 재생성 플래그가 다음 일반 피드백 응답의 문구까지 바꾸지 않게 한다.
+                request_conditions = {
+                    **request_conditions,
+                    "regenerated_recipe_request": False,
+                }
             condition_ready = _has_required_condition(request_conditions)
         else:
             request_conditions, condition_ready = await self._read_condition_state(
@@ -501,14 +529,19 @@ class ChatService:
                 "questions": questions,
             }
         if tool_result is not None:
-            return await self._response_from_tool_hub(tool_result)
+            return await self._response_from_tool_hub(
+                tool_result,
+                regenerated=_is_regenerated_recipe_request(session.user_conditions),
+            )
 
         generated_recommendation = await self._generate_recommendation(
             user_message=user_message,
             session=session,
         )
         _generated_message, recipe_sets = generated_recommendation
-        completion_message = _completion_selection_message()
+        completion_message = _completion_selection_message(
+            regenerated=_is_regenerated_recipe_request(session.user_conditions)
+        )
         if not await self._guardrail_validator.validate_output(completion_message):
             raise LLMResponseError("NeMo Guardrails가 최종 응답을 차단했습니다.")
         return {
@@ -520,7 +553,9 @@ class ChatService:
             "available_set_ids": [recipe_set["set_id"] for recipe_set in recipe_sets],
         }
 
-    async def _response_from_tool_hub(self, raw_result: object) -> dict[str, object]:
+    async def _response_from_tool_hub(
+        self, raw_result: object, *, regenerated: bool = False
+    ) -> dict[str, object]:
         """Tool Hub 결과를 기존 ChatResponse 계약으로 검증·변환합니다.
 
         Tool 결과는 외부 입력과 같은 비신뢰 경계로 취급한다. 따라서 FE에 반환하기
@@ -542,7 +577,7 @@ class ChatService:
             recommendation = RecommendationData.model_validate(raw_data)
         except (SafetyViolationError, ValueError) as error:
             raise LLMResponseError("Tool Hub 결과 검증에 실패했습니다.") from error
-        completion_message = _completion_selection_message()
+        completion_message = _completion_selection_message(regenerated=regenerated)
         validate_completion_output(completion_message)
         if not await self._guardrail_validator.validate_output(completion_message):
             raise LLMResponseError("NeMo Guardrails가 Tool Hub 완료 응답을 차단했습니다.")
@@ -858,22 +893,34 @@ def _parse_selected_set_id(
 
     available = [recipe_set.set_id for recipe_set in recommendation.recipe_sets]
     normalized_message = re.sub(r"[\s_-]+", "", user_message).upper()
-    has_selection_intent = bool(
-        re.search(r"선택|고르|골라|정해|pdf|피디에프|파일", user_message, flags=re.IGNORECASE)
-    )
+    has_selection_intent = bool(_SELECTION_INTENT_PATTERN.search(user_message))
     for set_id in available:
         normalized_id = re.sub(r"[\s_-]+", "", set_id).upper()
         if normalized_id in normalized_message and (has_selection_intent or normalized_message == normalized_id):
             return set_id
+        aliases = _KOREAN_SET_ID_ALIASES.get(normalized_id, ())
+        if has_selection_intent and any(
+            re.sub(r"[\s_-]+", "", alias).upper() in normalized_message
+            for alias in aliases
+        ):
+            return set_id
 
-    number_match = re.search(r"(?<!\d)([1-9])\s*(?:번|번째)?\s*세트", user_message)
+    number_match = re.search(
+        r"(?<!\d)([1-9])\s*(?:번|번째)\s*(?:세트|걸|것)?\s*(?:으로|로)?",
+        user_message,
+    )
     if number_match and has_selection_intent:
         index = int(number_match.group(1)) - 1
         if 0 <= index < len(available):
             return available[index]
-    if has_selection_intent and re.search(r"첫\s*(?:번째|번)?\s*세트", user_message):
+    if has_selection_intent and re.search(
+        r"첫\s*(?:번째|번)(?:\s*(?:세트|걸|것))?\s*(?:으로|로)?", user_message
+    ):
         return available[0] if available else None
-    if has_selection_intent and re.search(r"둘째|두\s*(?:번째|번)?\s*세트", user_message):
+    if has_selection_intent and re.search(
+        r"둘째|두\s*(?:번째|번)(?:\s*(?:세트|걸|것))?\s*(?:으로|로)?",
+        user_message,
+    ):
         return available[1] if len(available) > 1 else None
     return None
 
@@ -901,6 +948,44 @@ def _merge_feedback_conditions(
     merged["feedback_history"] = history_values[-10:]
     merged["feedback_plan"] = feedback_plan.intent
     return merged
+
+
+def _is_recipe_regeneration_request(user_message: str) -> bool:
+    """현재 추천이 마음에 들지 않아 새 레시피를 원하는 의도를 제한적으로 찾습니다."""
+
+    return bool(
+        re.search(
+            r"마음에\s*(?:안|들지)|별로|다른\s*(?:레시피|식단|메뉴)|"
+            r"(?:다시|새로)\s*(?:추천|만들|짜|보여)",
+            user_message,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _exclude_previously_recommended_recipes(
+    conditions: Mapping[str, object], recommendation: RecommendationData
+) -> dict[str, object]:
+    """재생성 시 이전 카드의 레시피 ID를 Tool Hub 후보에서 제외합니다."""
+
+    existing = conditions.get("excluded_recipe_ids", [])
+    excluded_ids = [item for item in existing if isinstance(item, str) and item]
+    excluded_ids.extend(
+        recipe.recipe_id
+        for recipe_set in recommendation.recipe_sets
+        for recipe in recipe_set.recipes
+    )
+    return {
+        **conditions,
+        "excluded_recipe_ids": list(dict.fromkeys(excluded_ids)),
+        "regenerated_recipe_request": True,
+    }
+
+
+def _is_regenerated_recipe_request(conditions: Mapping[str, object] | None) -> bool:
+    """현재 완료 응답이 기존 레시피를 제외해 만든 재추천인지 반환합니다."""
+
+    return bool(conditions and conditions.get("regenerated_recipe_request") is True)
 
 
 def _apply_confirmation_decision(
@@ -1029,13 +1114,15 @@ def _has_required_condition(conditions: Mapping[str, object] | None) -> bool:
     return isinstance(message, str) and bool(_PURPOSE_PATTERN.search(message))
 
 
-def _completion_selection_message() -> str:
+def _completion_selection_message(*, regenerated: bool = False) -> str:
     """완료 응답에서 두 추천 세트 중 하나를 선택하도록 안내합니다."""
 
-    return (
-        "확정한 재료와 조건에 맞는 메인·반찬 식단을 추천했습니다. "
-        "두 세트 중 하나를 선택해 주세요. 선택한 레시피의 상세 PDF를 생성해드릴게요."
+    prefix = (
+        "기존 추천과 다른 레시피로 식단을 다시 추천했습니다. "
+        if regenerated
+        else "확정한 재료와 조건에 맞는 메인·반찬 식단을 추천했습니다. "
     )
+    return f"{prefix}두 세트 중 하나를 선택해 주세요. 선택한 레시피의 상세 PDF를 생성해드릴게요."
 
 
 def _is_cooking_time_question(question: str) -> bool:

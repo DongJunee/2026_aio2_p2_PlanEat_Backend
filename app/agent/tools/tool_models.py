@@ -59,6 +59,7 @@ class RecipeSearchQuery(BaseModel):
 
     confirmed_ingredients: list[ToolIngredient] = Field(min_length=1)
     user_conditions: Mapping[str, object] = Field(min_length=1)
+    excluded_recipe_ids: list[str] = Field(default_factory=list)
 
 
 class RecipeMatch(BaseModel):

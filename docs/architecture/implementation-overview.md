@@ -10,9 +10,9 @@
 FE
   │ POST /chat (session_id, message, attachments?)
   ▼
-Plan Agent
+Fast API Server
   ▼
-ChatService ── 세션별 현재 단계 저장
+PlanAgent ── 세션별 현재 단계 저장
   │
   ├── Jev 자연어 조건·재료 확인 판정 (선택 사항)
   ├── app.core.safety + NeMo Guardrails 입력 검사

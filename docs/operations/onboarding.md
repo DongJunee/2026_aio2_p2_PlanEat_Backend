@@ -43,6 +43,10 @@ Shopping Tool을 실행합니다. Chroma Recipe Guide를 사용하려면
 `TOOL_HUB_CATALOG_PATH`를 지정합니다. Tool을 끄고 기존 OpenAI 임시 추천만 확인하려면
 `TOOL_HUB_ENABLED=false`로 설정합니다.
 
+기본 source는 `data/COOKRCP01_FINAL_WITH_INGREDIENT_GROUPS_REVISED_V2.csv`이며, 동일한 확정
+재료·조건에는 결정적인 추천 결과가 반환될 수 있습니다. `mocks/chat/response-success.json`은
+런타임 source가 아니라 FE fixture와 테스트용 예시입니다.
+
 ## 3. API 작업 기준
 
 - 진입점: `POST /chat`

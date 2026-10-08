@@ -138,11 +138,14 @@ flowchart TD
 새로 입력된 값만 갱신
 ```
 
-이미지와 자연어 재료가 함께 입력되면 다음과 같이 처리한다.
+이미지와 자연어 재료가 함께 입력되거나, 이미지 없이 자연어 재료만 입력되면 다음과 같이 처리한다.
 
 ```text
 자연어 재료
 → confirmed_ingredients
+
+수량 미입력
+→ amount = `수량 미정`
 
 Vision 결과
 → ingredient_candidates
@@ -162,7 +165,8 @@ confirmed_ingredients
 Recipe(RAG)
 ```
 
-부족한 조건은 `missing_slots`에 기록하고 한 번에 추가 질문한다.
+부족한 조건은 `missing_slots`에 기록하고 한 번에 추가 질문한다. 수량·조리 시간·끼니 수·선호
+요리·제외 음식은 선택값이므로 `missing_slots`의 필수 항목으로 기록하지 않는다.
 
 ---
 
@@ -194,12 +198,13 @@ Nutrition과 Shopping은 서로 다른 State key를 갱신하므로 병렬 실�
 ## 6. 설계 원칙
 
 1. 재료·목적·선택 조리 시간은 `analyze_input`에서 여러 턴에 걸쳐 병합한다.
-2. Vision Tool은 이미지가 있을 때만 호출한다.
-3. Vision 결과는 확인 전까지 `ingredient_candidates`로 관리한다.
-4. 이미지와 자연어 재료가 함께 있으면 확인 후 병합한다.
-5. 필수 조건 확보 후 Recipe(RAG) 검색을 실행한다.
-6. Recipe 결과가 0건이면 다음 Tool로 진행하지 않는다.
-7. Nutrition·Shopping 결과를 기반으로 Selection Tool이 최종 조합을 결정한다.
-8. Tool 실패는 `tool_errors`에 기록하고 핵심 실패 여부에 따라 종료를 결정한다.
-9. Node는 하나의 책임을 가지며 분기는 Conditional Edge로 처리한다.
-10. 최종 추천은 피드백 재추천 또는 사용자 세트 선택 후 PDF 발급으로 종료한다.
+2. 자연어 재료가 첫 요청에 포함되면 이미지 단계를 건너뛰고, 목적이 있으면 바로 Recipe 검색으로 이동한다.
+3. Vision Tool은 이미지가 있을 때만 호출한다.
+4. Vision 결과는 확인 전까지 `ingredient_candidates`로 관리한다.
+5. 이미지와 자연어 재료가 함께 있으면 확인된 자연어 재료와 후보를 정책에 따라 병합한다.
+6. 필수 조건 확보 후 Recipe(RAG) 검색을 실행한다.
+7. Recipe 결과가 0건이면 다음 Tool로 진행하지 않는다.
+8. Nutrition·Shopping 결과를 기반으로 Selection Tool이 최종 조합을 결정한다.
+9. Tool 실패는 `tool_errors`에 기록하고 핵심 실패 여부에 따라 종료를 결정한다.
+10. Node는 하나의 책임을 가지며 분기는 Conditional Edge로 처리한다.
+11. 최종 추천은 피드백 재추천 또는 사용자 세트 선택 후 PDF 발급으로 종료한다.

@@ -5,7 +5,8 @@ FastAPI와 LangGraph 기반의 대화형 식단 추천 백엔드입니다. 사�
 ## 핵심 기능
 
 - 첨부 이미지 최대 5장 처리
-- 이미지와 직접 입력한 재료가 모두 없으면 이미지 첨부 요청 단계로 전환
+- 이미지와 직접 입력한 재료가 모두 없으면 이미지 또는 자연어 재료 입력 단계로 전환
+- 첫 요청이라도 자연어 재료가 있으면 이미지 단계를 건너뛰고, 목적이 있으면 바로 추천
 - 이미지별 식재료 추출 및 중복 병합
 - 사용자 재료 확인·수정
 - `session_id` 기반 LangGraph 상태 관리
@@ -105,6 +106,11 @@ git diff --check
 OpenAI 구조화 추출로 처리하고, 재료 확인이 끝난 완료 단계에서는 Tool Hub Recipe·Nutrition·
 Shopping·RAG Tool 결과를 반환합니다. `TOOL_HUB_ENABLED=false`이면 OpenAI가 생성한
 임시 추천 경로로 fallback합니다.
+
+완료 응답의 `response`는 두 추천 세트 중 하나를 선택해 상세 PDF를 발급받도록 안내하는
+고정 문구이며, 실제 추천 차이는 `data.recipe_sets`에서 확인합니다. 기본 Tool Hub는
+프로젝트 내부 CSV를 결정적으로 검색하므로 동일한 확정 재료·조건에는 같은 추천이 나올 수 있습니다.
+`mocks/chat/response-success.json`은 FE fixture와 테스트 전용이며 런타임 응답 source가 아닙니다.
 
 ### 로컬 레시피 CSV
 

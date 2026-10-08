@@ -79,7 +79,7 @@ FE는 `status`, `step`만으로 화면 흐름을 분기한다.
 | HTTP | `status` | `step` | 의미 |
 | --- | --- | --- | --- |
 | 200 | `NEED_MORE_INFO` | `INPUT_REQUIREMENTS` | 이미지와 조건을 동시에 수집하는 호환 응답이다. |
-| 200 | `NEED_MORE_INFO` | `IMAGE_INPUT` | 첫 요청에서는 이미지를 요청하고, 후속 요청에서는 자연어 재료도 받을 수 있다. |
+| 200 | `NEED_MORE_INFO` | `IMAGE_INPUT` | 재료가 없을 때 이미지 또는 자연어 재료 입력을 안내한다. 첫 요청의 자연어 재료는 바로 확정한다. |
 | 200 | `NEED_MORE_INFO` | `INGREDIENT_CONFIRM` | 인식된 재료 후보의 확인이 필요하다. |
 | 200 | `NEED_MORE_INFO` | `CONDITION_INPUT` | 필수 식단 목적이 필요하다. 조리 시간은 선택값이다. |
 | 200 | `SUCCESS` | `COMPLETED` | 레시피 2세트(각 5개)가 준비됐다. 이후 피드백 또는 세트 선택을 받는다. |
@@ -151,7 +151,7 @@ WAITING_CONDITIONS
 {
   "status": "SUCCESS",
   "step": "COMPLETED",
-  "response": "OpenAI가 생성한 짧은 한국어 안내 문구",
+  "response": "확정한 재료와 조건에 맞는 메인·반찬 식단을 추천했습니다. 두 세트 중 하나를 선택해 주세요. 선택한 레시피의 상세 PDF를 생성해드릴게요.",
   "data": {
     "recipe_sets": [
       { "set_id": "...", "recipes": ["정확히 5개"] },
@@ -168,15 +168,21 @@ WAITING_CONDITIONS
 - `shopping_list` 항목: `ingredient`, `amount`만 허용
 - nutrition: `calories`, `protein`, `carbohydrate`, `fat`이며 음수를 허용하지 않음
 
-`response`와 `data.recipe_sets`는 Tool Hub 결과 또는 fallback LLM이 생성한다.
-`RecommendationData` 검증과 안전성 검사를 모두 통과한 경우에만 반환하며, Tool Hub 실행·검증에
-실패하면 `500 ERROR`를 반환한다.
+`data.recipe_sets`는 기본 Tool Hub 또는 `TOOL_HUB_ENABLED=false`일 때의 fallback LLM이 생성한다.
+`response`는 두 세트 중 하나를 선택하고 상세 PDF를 발급받도록 안내하는 서버 고정 문구다.
+Tool Hub 또는 fallback LLM의 결과는 `RecommendationData` 검증과 안전성 검사를 모두 통과한 경우에만
+반환하며, Tool Hub 실행·검증에 실패하면 `500 ERROR`를 반환한다.
 
 초기 완료 응답은 `next_action=FEEDBACK_OR_SET_SELECTION`과 `available_set_ids`를 포함하고,
 두 세트 중 하나를 선택하면 상세 PDF를 생성한다는 안내 문구를 반환한다.
 피드백은 Jev Plan과 조건 병합을 거쳐 같은 Tool·DTO·Output Guardrail 경로로 재추천한다.
 세트 선택이 감지되면 검증된 한 세트만 PDF 생성기에 전달하고, 저장 성공 후
 `next_action=PDF_READY`, `selected_set_id`, `pdf_url`을 반환한다.
+
+기본 실행 환경의 추천 source metadata는 `internal:recipe-catalog`이며, 프로젝트 내부 CSV에서
+최대 10개 후보를 조회한 뒤 결정적인 점수·조합 규칙으로 결과를 만든다. 외부 Recipe API나
+`mocks/chat/response-success.json`을 런타임에서 사용하지 않는다. fixture는 FE 예시와 테스트에서만
+사용한다.
 
 ## 5. TypeSafe Jev 자연어 판정
 
@@ -208,8 +214,9 @@ Vision·재료 정규화 결과가 준비되면 해당 결과 어댑터로 교�
 | `rejected` | 후보·확정 재료를 비우고 `IMAGE_INPUT`으로 재촬영을 요청한다. |
 | `unclear` | 후보를 유지하고 `INGREDIENT_CONFIRM` 재확인을 요청한다. |
 
-Jev가 비활성화·실패·저신뢰이면 `ChatService`의 확인 표현 fallback을 사용한다. `edited`의
-복잡한 식재료명·수량 추출은 현재 범위가 아니며 Tool Hub 정규화 DTO 합의 후 교체한다.
+Jev가 비활성화·실패·저신뢰이면 `ChatService`의 확인 표현 fallback을 사용한다. `edited` 요청의
+복잡한 식재료명·수량 변경은 OpenAI 구조화 추출기가 반영하며, 수량이 없는 재료는 `수량 미정`으로
+보정한다. 이미지 후보는 사용자 확인 전까지 Tool 입력에 포함하지 않는다.
 
 외부 API 호출은 세션 잠금 밖에서 수행해, 한 세션의 네트워크 지연이 다른 세션의 처리를
 막지 않게 한다. API 키·사용자 메시지 원문은 애플리케이션 로그에 기록하지 않는다.

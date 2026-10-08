@@ -88,6 +88,11 @@ Input Guardrail 실패는 악성 사용자 입력을 Graph에 전달하지 않�
 이미지에서 추출한 재료 후보는 `confirmed_ingredients`로 바로 이동하지 않는다. 사용자가 확인한
 뒤에만 추천·RAG 입력으로 사용한다.
 
+단, 이미지가 아닌 자연어로 사용자가 직접 입력한 재료는 첫 요청인지와 관계없이 구조화 추출 후
+`confirmed_ingredients`로 저장한다. 수량이 없으면 `수량 미정`으로 보정하며 수량을 필수로 다시
+질문하지 않는다. 재료와 목적이 모두 있으면 바로 `COMPLETED`로 진행하고, 재료만 있으면 목적만
+`CONDITION_INPUT`에서 질문한다.
+
 ## 5. Tool 실행 규칙
 
 ```text
@@ -130,6 +135,11 @@ ToolRequest = {
 
 Vision 후보, 검증되지 않은 RAG 문서, Tool Hub의 내부 지시문은 추천 입력의 `instructions`에
 넣지 않는다. 외부 결과는 출처가 표시된 비신뢰 데이터로 취급한다.
+
+기본 Tool Hub Recipe Source는 프로젝트 내부 CSV이며, `TOOL_HUB_CATALOG_PATH`가 지정된 경우에만
+지정된 CSV를 사용한다. `mocks/chat/response-success.json`은 FE·테스트 fixture다. 완료 응답의
+`response`는 두 추천 세트 중 하나를 선택해 PDF를 발급받도록 안내하는 서버 고정 문구이고,
+실제 추천 결과는 검증된 `data.recipe_sets`다.
 
 ## 6. Output Guardrail 실패 처리
 

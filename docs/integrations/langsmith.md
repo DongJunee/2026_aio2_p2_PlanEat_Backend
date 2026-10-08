@@ -39,6 +39,12 @@ raw OpenAI·TypeSafe HTTP 호출 자체는 별도 run으로 분리하지 않지�
 성공/실패 전이는 LangGraph child run으로 확인할 수 있다. 입력·출력은 숨김 설정을 유지하고
 비식별 metadata만 전송한다.
 
+기본 설정에서 `tool_enabled=true`인 완료 흐름은 외부 API나 FE fixture가 아니라 프로젝트 내부
+`data/COOKRCP01_FINAL_WITH_INGREDIENT_GROUPS_REVISED_V2.csv`를 사용하는 로컬 Tool Hub를 실행한다.
+Tool Hub 내부의 source metadata는 `internal:recipe-catalog`으로 관리되지만 사용자 `ChatResponse`에는
+노출하지 않는다. 실제 추천 차이는 trace의 입력 상태와 `data.recipe_sets`의 recipe ID를 비교해 확인한다.
+`mocks/chat/response-success.json`은 테스트·FE fixture 전용이다.
+
 ## 3. 개인정보 보호
 
 LangSmith client에 `LANGSMITH_HIDE_INPUTS=true`, `LANGSMITH_HIDE_OUTPUTS=true`를
@@ -57,3 +63,11 @@ uv run uvicorn app.main:app --reload --port 8000
 같은 `session_id`로 `/chat`을 호출한 뒤 LangSmith의 `planeat-backend` 프로젝트에서
 `planeat.chat` run과 `tool_hub_recipe_recommendation` child run을 확인한다. `LANGSMITH_TRACING=false`이거나
 API 키가 없으면 LangSmith 전송 없이도 Tool Hub 동작은 유지된다.
+
+추천 결과가 반복되면 다음 순서로 확인한다.
+
+1. root run metadata의 `has_confirmed_ingredients`, `has_conditions`, `tool_enabled`를 확인한다.
+2. 완료 단계 child run이 존재하는지 확인한다. 없으면 `TOOL_HUB_ENABLED=false` 또는 상태 전이 문제다.
+3. 같은 `session_id`의 요청에서 실제 재료·조건이 갱신됐는지 확인한다. 개인정보 보호를 위해 원문은
+   trace에 남기지 않으므로, API 응답의 `data.recipe_sets[*].recipes[*].recipe_id`를 비교한다.
+4. 동일한 재료·조건이면 내부 CSV의 결정적 검색·정렬 규칙상 같은 recipe ID가 반환될 수 있다.

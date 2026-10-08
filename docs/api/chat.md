@@ -48,9 +48,11 @@ Content-Type: application/json
 ## Response
 
 `status`와 `step`은 FE의 기본 분기 처리에 사용하는 고정 코드입니다. `SUCCESS / COMPLETED` 후속
-흐름은 `next_action`으로 구분합니다. 사용자에게 표시하는 `response`와
-추가 입력 `questions`는 현재 사용자 메시지와 세션에 부족한 정보를 반영해 LLM이 생성하며,
-호출 실패·응답 검증 실패 시 단계별 고정 fallback을 사용합니다. FE는 `questions`·`ingredients`·`data`를 사용합니다.
+흐름은 `next_action`으로 구분합니다. `NEED_MORE_INFO`의 `response`와 `questions`는 현재 사용자
+메시지와 세션에 부족한 정보를 반영해 LLM이 생성할 수 있지만, 서버가 필수 질문만 남기도록
+후처리합니다. 완료 응답의 `response`는 세트 선택·PDF 발급을 안내하는 고정 문구입니다.
+호출 실패·응답 검증 실패 시 단계별 고정 fallback을 사용합니다. FE는
+`questions`·`ingredients`·`data`를 사용합니다.
 
 ### 상태 코드
 
@@ -91,24 +93,27 @@ Content-Type: application/json
 }
 ```
 
-### 자연어 재료 입력: `200 NEED_MORE_INFO`
+### 자연어 재료만 입력: `200 NEED_MORE_INFO`
 
-이미지가 없거나 이미지 요청 후 사진을 사용하지 않는 경우 `message`에 보유 재료를 자연어로 입력합니다. 서버는
-LLM으로 재료를 추출해 확정 재료로 저장하고, 식단 조건이 함께 있으면 추천을 진행합니다. 조건이
-없으면 `CONDITION_INPUT`으로 식단 목표를 추가로 요청합니다. 조리 시간은 선택 입력이며,
-여러 턴에 나뉘어 입력된 목적·조리 시간은 같은 `session_id`에 누적합니다.
+이미지가 없거나 이미지 요청 후 사진을 사용하지 않는 경우 `message`에 보유 재료를 자연어로 입력합니다.
+첫 요청이라도 재료가 포함되면 이미지 요청을 건너뛰고, 서버는 LLM으로 재료를 추출해 확정 재료로
+저장합니다. 식단 목적이 없으면 `CONDITION_INPUT`에서 목적만 추가로 요청합니다. 수량·조리 시간은
+선택 입력이며, 여러 턴에 나뉘어 입력된 목적·조리 시간은 같은 `session_id`에 누적합니다.
 
 ```json
 {
   "status": "NEED_MORE_INFO",
-  "step": "IMAGE_INPUT",
-  "response": "사진이 없어도 괜찮아요. 냉장고에 있는 재료를 텍스트로 알려주세요.",
+  "step": "CONDITION_INPUT",
+  "response": "확정한 재료를 확인했습니다. 식단 목적을 알려주세요.",
   "questions": [
-    "사용 가능한 재료를 알려주세요.",
     "식단 목표는 무엇인가요? 예: 다이어트, 고단백, 채식"
   ]
 }
 ```
+
+재료와 식단 목적을 같은 메시지에 함께 입력하면 `NEED_MORE_INFO` 없이 바로
+`SUCCESS / COMPLETED`와 추천 세트를 반환합니다. 수량을 입력하지 않은 재료는 `수량 미정`으로
+보정되며 수량을 다시 묻지 않습니다.
 
 ### Success: `200`
 
@@ -302,8 +307,8 @@ ToolRequest = {
 ## 처리 규칙
 
 - `session_id`로 LangGraph State를 유지합니다.
-- 이미지가 없는 첫 요청은 `IMAGE_INPUT`으로 사진을 먼저 요청합니다. 같은 세션에서 사진이 없다고
-  다시 답하면 자연어 재료 입력을 안내합니다.
+- 재료가 없는 요청은 `IMAGE_INPUT`으로 사진 또는 자연어 재료 입력을 안내합니다. 첫 요청이라도
+  `message`에 재료가 포함되면 이미지 단계를 건너뜁니다.
 - 이미지와 식단 목적이 담긴 자연어 메시지를 받으면 조리 시간이 없어도 재료 확인 후 추천 단계로 진행합니다. 조리 시간은 입력된 경우에만 추천 필터로 사용합니다.
 - 이미지가 없더라도 사용자가 `message`에 직접 입력한 지원 재료는 확정 재료로 처리하며, 식단 조건이
   있으면 바로 추천하고 조건이 없으면 `CONDITION_INPUT`만 반환합니다.
@@ -314,10 +319,16 @@ ToolRequest = {
   검증해 후보 또는 확정 재료로 저장합니다.
 - `INPUT_REQUIREMENTS`·`IMAGE_INPUT`·`CONDITION_INPUT`의 `response`와 `questions`는
   `OpenAIResponder.generate_clarification_response()`의 Structured Outputs로 생성하며,
-  모델 장애나 검증 실패 시 단계별 고정 fallback으로 응답합니다. 이 fallback은 FE의
-  `status`·`step` 계약을 변경하지 않습니다.
+  서버는 재료·목적 외의 선택 조건(수량·조리 시간·끼니 수·선호·제외 음식)을 필수 질문에서
+  제거하고, 본문에 남아 있으면 단계별 고정 fallback으로 대체합니다. 모델 장애나 검증 실패
+  시에도 고정 fallback을 사용하며 FE의 `status`·`step` 계약은 변경하지 않습니다.
 - 기본 설정에서는 `COMPLETED` 단계에 Recipe·Nutrition·Shopping·RAG Tool을 실행하고,
   Tool 결과의 `response`와 `data.recipe_sets`를 서버에서 `RecommendationData`로 다시 검증합니다.
+- 기본 Tool Hub는 외부 Recipe API가 아니라 `data/COOKRCP01_FINAL_WITH_INGREDIENT_GROUPS_REVISED_V2.csv`
+  내부 카탈로그를 사용합니다. 동일한 확정 재료·조건에는 결정적인 검색·정렬 결과가 반환됩니다.
+  `mocks/chat/response-success.json`은 런타임 데이터가 아니라 FE fixture와 테스트 전용입니다.
+- 완료 응답의 `response`는 세트 선택과 PDF 발급을 안내하는 서버 고정 문구이며, 실제 추천 데이터는
+  `data.recipe_sets`에서 확인합니다.
 - `TOOL_HUB_ENABLED=false` 또는 테스트용 provider 미주입 시에만 OpenAI Structured
   Outputs 기반 임시 추천 결과를 사용합니다.
 - 재료 추출·최종 추천 생성에서 API 키가 없거나 LLM 호출에 실패하면 `500 ERROR`를 반환합니다.

@@ -2,6 +2,9 @@
 
 FE 개발용 `POST /chat` 요청·응답 fixture입니다.
 
+이 디렉터리의 JSON은 FE 화면 개발과 테스트 계약 검증을 위한 예시 데이터이며, 실행 중인
+`/chat`의 추천 source가 아닙니다. 기본 서버는 프로젝트 내부 CSV 기반 Tool Hub를 사용합니다.
+
 | 파일 | 용도 |
 |---|---|
 | `request-no-image.json` | `message`만 보내는 자연어 요청 |
@@ -14,7 +17,8 @@ FE 개발용 `POST /chat` 요청·응답 fixture입니다.
 | `response-success.json` | 추천 완료 응답 |
 | `response-error.json` | 오류 응답 |
 
-`response-success.json`은 `recipe_sets` 2개와 세트별 레시피 5개로 구성되어 있습니다.
+`response-success.json`은 `recipe_sets` 2개와 세트별 레시피 5개로 구성되어 있으며, 완료 후
+두 세트 중 하나를 선택하면 상세 PDF를 생성한다는 안내와 `available_set_ids`를 포함합니다.
 
 ## Base64 이미지 테스트
 

@@ -133,9 +133,8 @@ def route_chat(state: ChatState) -> ChatState:
             if state.get("has_conditions"):
                 return {"step": "COMPLETED", "response_kind": "COMPLETED"}
             return {"step": "WAITING_CONDITIONS", "response_kind": "CONDITION_INPUT"}
-        # 첫 입력에서는 이미지가 식단 조건보다 우선이다. 이미지가 없으면
-        # WAITING_IMAGE에 머물러 다음 메시지에서 자연어 재료를 받을 수 있게 한다.
-        # 조건은 이미지 또는 자연어 재료가 확보된 뒤 CONDITION_INPUT에서 보완한다.
+        # 재료가 아직 없을 때만 이미지 입력을 요청한다. 자연어 재료는 ChatService가
+        # 확정 재료로 정규화하므로, 재료가 확보된 뒤에는 CONDITION_INPUT에서 목적만 보완한다.
         return {"step": "WAITING_IMAGE", "response_kind": "IMAGE_INPUT"}
 
     if step == "WAITING_INGREDIENT_CONFIRM":

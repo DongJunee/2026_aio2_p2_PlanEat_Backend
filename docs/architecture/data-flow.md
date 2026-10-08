@@ -59,14 +59,17 @@ sequenceDiagram
 ```
 
 입력 형식 오류·안전성 검사 실패는 `400 ERROR`, 처리 실패는 `500 ERROR`로 반환한다. `ERROR`에는
-`step`이 없다. 이미지가 없는 첫 요청은 Orchestrator가 `IMAGE_INPUT`으로 사진을 먼저 요청한다. FE는
-별도 조건 JSON이 아닌 `message`에 식단 목적·조리 시간을 적어 보낸다. 사용자가 같은 세션에서
-사진이 없다고 다시 답하면 Orchestrator는 자연어 재료 입력을 안내한다. 한쪽만 있으면 기존 `IMAGE_INPUT`
-또는 `CONDITION_INPUT`을 반환한다. Orchestrator는 이미지를
+`step`이 없다. 재료가 없는 요청은 Orchestrator가 `IMAGE_INPUT`으로 사진 또는 자연어 재료 입력을
+안내한다. FE는 별도 조건 JSON이 아닌 `message`에 식단 목적과 선택 조리 시간을 적어 보낸다. 재료가
+자연어로 포함된 첫 요청은 이미지 단계를 건너뛰고, 재료와 목적이 모두 있으면 바로 추천으로 진행한다.
+한쪽만 있으면 기존 `IMAGE_INPUT` 또는 `CONDITION_INPUT`을 반환한다. Orchestrator는 이미지를
 직접 인식하지 않으며, 2절의 Tool Hub Vision 결과를 `INGREDIENT_CONFIRM` 응답으로 변환한다.
-이미지 요청 후에도 사진이 없으면 사용자가 `message`에 직접 입력한 지원 재료를 사용자 확정
-입력으로 처리해 이미지 단계를 우회할 수 있다. 조건이 부족하면 `CONDITION_INPUT`만 반환한 뒤,
-조건 입력 후 동일한 추천 흐름으로 이어진다.
+사용자가 `message`에 직접 입력한 지원 재료는 첫 요청인지와 관계없이 사용자 확정 입력으로 처리해
+이미지 단계를 우회할 수 있다. 수량이 없으면 `수량 미정`으로 보정한다. 조건이 부족하면
+`CONDITION_INPUT`만 반환한 뒤, 조건 입력 후 동일한 추천 흐름으로 이어진다.
+
+추천 완료 후에는 최종 결과를 먼저 반환한다. 후속 `message`가 피드백이면 Jev Plan을 거쳐
+조건을 갱신하고 재추천·재검증하며, 세트 선택이면 선택 세트 상세 PDF를 저장한 뒤 `pdf_url`을 반환한다.
 
 `INPUT_REQUIREMENTS`, `IMAGE_INPUT`, `CONDITION_INPUT`의 `response`·`questions`는 마지막
 사용자 메시지와 세션 상태를 입력으로 하는 OpenAI Structured Outputs 결과다. 따라서
@@ -116,7 +119,7 @@ sequenceDiagram
 | `session_id` | 도구 호출을 현재 대화와 연결 |
 | `tool_name` | Orchestrator가 실행할 도구 선택 |
 | `confirmed_ingredients` | 사용자 확인을 마친 재료만 전달 |
-| `user_conditions` | 식단 목표·조리 시간 등 추천 조건 전달 |
+| `user_conditions` | 여러 턴에 걸쳐 누적된 식단 목적과 선택 조리 시간 전달 |
 
 ### 사용자 재료 확인 판정
 

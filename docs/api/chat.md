@@ -39,15 +39,16 @@ Content-Type: application/json
 모델이 실제로 확인한 재료명만 구조화해 사용자 입력 확정 재료로 사용합니다. 이미지 인식 후보가 아니므로
 별도 `INGREDIENT_CONFIRM` 단계 없이 조건이 준비된 경우 추천 단계로 진행합니다.
 
-식단 목표와 조리 가능 시간은 별도 JSON 필드가 아닌 `message`의 자연어로 전달합니다. 예를 들어
-`"다이어트 식단으로 20분 안에 만들고 싶어요."`처럼 이미지와 함께 보낼 수 있습니다. 서버는 Jev
-판정과 보수적 fallback 규칙으로 조건이 충분한지 판단합니다. 이미지가 없는 첫 요청에는
-`IMAGE_INPUT`으로 사진을 먼저 요청하고, 사용자가 사진이 없다고 다시 답하면 자연어 재료 입력을
-안내합니다.
+식단 목적은 필수이고 조리 가능 시간은 선택 입력이며, 둘 다 별도 JSON 필드가 아닌 `message`의
+자연어로 전달합니다. 예를 들어 `"다이어트 식단으로 20분 안에 만들고 싶어요."`처럼 이미지와
+함께 보낼 수 있습니다. 서버는 Jev 판정과 보수적 fallback 규칙으로 목적이 충분한지 판단하며,
+여러 턴의 조건을 같은 세션에 누적합니다. 재료가 없는 요청에는 `IMAGE_INPUT`으로 사진 또는
+자연어 재료 입력을 안내하며, 첫 요청이라도 재료가 자연어로 포함되면 이미지 요청을 건너뜁니다.
 
 ## Response
 
-`status`와 `step`은 FE 분기 처리에 사용하는 고정 코드입니다. 사용자에게 표시하는 `response`와
+`status`와 `step`은 FE의 기본 분기 처리에 사용하는 고정 코드입니다. `SUCCESS / COMPLETED` 후속
+흐름은 `next_action`으로 구분합니다. 사용자에게 표시하는 `response`와
 추가 입력 `questions`는 현재 사용자 메시지와 세션에 부족한 정보를 반영해 LLM이 생성하며,
 호출 실패·응답 검증 실패 시 단계별 고정 fallback을 사용합니다. FE는 `questions`·`ingredients`·`data`를 사용합니다.
 
@@ -68,15 +69,15 @@ Content-Type: application/json
 |---|---|---|
 | `SUCCESS` | `COMPLETED` | `data.recipe_sets`를 표시합니다. |
 | `NEED_MORE_INFO` | `INPUT_REQUIREMENTS` | 이미지와 조건을 동시에 수집해야 하는 호환 응답입니다. |
-| `NEED_MORE_INFO` | `IMAGE_INPUT` | 첫 요청에서는 이미지를 요청하고, 재요청에서는 자연어 재료 입력도 안내합니다. |
+| `NEED_MORE_INFO` | `IMAGE_INPUT` | 재료가 없을 때 이미지 또는 자연어 재료 입력을 안내합니다. |
 | `NEED_MORE_INFO` | `CONDITION_INPUT` | `questions`를 표시하고 추가 조건을 입력받습니다. |
 | `NEED_MORE_INFO` | `INGREDIENT_CONFIRM` | `ingredients`를 표시하고 인식 재료를 확인받습니다. |
 
 `ERROR` 응답에는 `step`을 포함하지 않습니다.
 
-### 첫 이미지 요청: `200 NEED_MORE_INFO`
+### 재료가 없는 요청: `200 NEED_MORE_INFO`
 
-이미지가 없는 첫 요청에서는 사진을 먼저 요청합니다. 아래 문구는 대표 예시이며 실제 `response`와
+재료가 없는 요청에서는 사진 또는 자연어 재료 입력을 요청합니다. 아래 문구는 대표 예시이며 실제 `response`와
 `questions`는 LLM이 생성하고, 실패하면 고정 fallback을 사용합니다.
 
 ```json
@@ -90,11 +91,12 @@ Content-Type: application/json
 }
 ```
 
-### 사진 없이 자연어 재료 입력: `200 NEED_MORE_INFO`
+### 자연어 재료 입력: `200 NEED_MORE_INFO`
 
-이미지 요청 후에도 사진이 없으면 `message`에 보유 재료와 수량을 자연어로 입력합니다. 서버는
+이미지가 없거나 이미지 요청 후 사진을 사용하지 않는 경우 `message`에 보유 재료를 자연어로 입력합니다. 서버는
 LLM으로 재료를 추출해 확정 재료로 저장하고, 식단 조건이 함께 있으면 추천을 진행합니다. 조건이
-없으면 `CONDITION_INPUT`으로 식단 목표와 조리 시간을 추가로 요청합니다.
+없으면 `CONDITION_INPUT`으로 식단 목표를 추가로 요청합니다. 조리 시간은 선택 입력이며,
+여러 턴에 나뉘어 입력된 목적·조리 시간은 같은 `session_id`에 누적합니다.
 
 ```json
 {
@@ -102,9 +104,8 @@ LLM으로 재료를 추출해 확정 재료로 저장하고, 식단 조건이 �
   "step": "IMAGE_INPUT",
   "response": "사진이 없어도 괜찮아요. 냉장고에 있는 재료를 텍스트로 알려주세요.",
   "questions": [
-    "사용 가능한 재료와 수량을 알려주세요.",
-    "식단 목표는 무엇인가요? 예: 다이어트, 고단백, 채식",
-    "조리 가능한 시간은 얼마나 되나요? 예: 20분 이내"
+    "사용 가능한 재료를 알려주세요.",
+    "식단 목표는 무엇인가요? 예: 다이어트, 고단백, 채식"
   ]
 }
 ```
@@ -117,7 +118,9 @@ LLM으로 재료를 추출해 확정 재료로 저장하고, 식단 조건이 �
 {
   "status": "SUCCESS",
   "step": "COMPLETED",
-  "response": "조건에 맞는 레시피 2세트(세트당 5개)를 추천했습니다.",
+  "response": "확정한 재료와 조건에 맞는 메인·반찬 식단을 추천했습니다. 두 세트 중 하나를 선택해 주세요. 선택한 레시피의 상세 PDF를 생성해드릴게요.",
+  "next_action": "FEEDBACK_OR_SET_SELECTION",
+  "available_set_ids": ["SET001", "SET002"],
   "data": {
     "recipe_sets": [
       {
@@ -137,6 +140,29 @@ LLM으로 재료를 추출해 확정 재료로 저장하고, 식단 조건이 �
 }
 ```
 
+`next_action=FEEDBACK_OR_SET_SELECTION`이면 FE는 최종 추천을 먼저 표시한 뒤 같은
+`session_id`로 사용자의 개선 의견 또는 세트 선택을 받습니다. 예를 들어
+`"단백질을 더 높여줘"`는 Jev Plan을 거쳐 조건을 누적하고 재추천·재검증합니다.
+`"SET001 선택"`, `"1번 세트 선택"`처럼 세트를 지정하면 선택 세트의 상세 PDF를 생성합니다.
+
+PDF 생성이 완료되면 기존 추천 데이터와 함께 아래 필드를 반환합니다.
+
+```json
+{
+  "status": "SUCCESS",
+  "step": "COMPLETED",
+  "response": "SET001 식단의 상세 PDF를 생성했습니다.",
+  "next_action": "PDF_READY",
+  "available_set_ids": ["SET001", "SET002"],
+  "selected_set_id": "SET001",
+  "pdf_url": "/pdfs/<generated-file>.pdf",
+  "data": { "recipe_sets": ["기존 추천 결과"] }
+}
+```
+
+`pdf_url`은 `GET /pdfs/{filename}`으로 다운로드할 수 있습니다. 배포 환경에서
+`PDF_PUBLIC_BASE_URL`을 설정하면 이 경로 대신 공개 도메인을 포함한 URL을 반환합니다.
+
 FE에서 사용할 수 있는 전체 성공 응답은 [`mocks/chat/response-success.json`](../../mocks/chat/response-success.json)을 참고합니다.
 
 ### 추가 조건 필요: `200`
@@ -147,8 +173,7 @@ FE에서 사용할 수 있는 전체 성공 응답은 [`mocks/chat/response-succ
   "step": "CONDITION_INPUT",
   "response": "추천을 위해 몇 가지 정보를 더 알려주세요.",
   "questions": [
-    "식단 목표가 무엇인가요?",
-    "조리 가능한 시간은 얼마나 되나요?"
+    "식단 목표가 무엇인가요? 예: 다이어트, 고단백, 채식"
   ]
 }
 ```
@@ -279,7 +304,7 @@ ToolRequest = {
 - `session_id`로 LangGraph State를 유지합니다.
 - 이미지가 없는 첫 요청은 `IMAGE_INPUT`으로 사진을 먼저 요청합니다. 같은 세션에서 사진이 없다고
   다시 답하면 자연어 재료 입력을 안내합니다.
-- 이미지와 식단 목적·조리 시간이 담긴 자연어 메시지를 함께 받은 뒤에는 재료 확인만 거치고 추천 단계로 진행합니다.
+- 이미지와 식단 목적이 담긴 자연어 메시지를 받으면 조리 시간이 없어도 재료 확인 후 추천 단계로 진행합니다. 조리 시간은 입력된 경우에만 추천 필터로 사용합니다.
 - 이미지가 없더라도 사용자가 `message`에 직접 입력한 지원 재료는 확정 재료로 처리하며, 식단 조건이
   있으면 바로 추천하고 조건이 없으면 `CONDITION_INPUT`만 반환합니다.
 - 사용자 확인 전 재료 후보는 추천 Tool에 전달하지 않습니다.

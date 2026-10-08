@@ -27,6 +27,8 @@ class Settings(BaseSettings):
     tool_hub_catalog_path: str | None = None
     chroma_persist_directory: str | None = None
     chroma_collection_name: str = "recipe_guides"
+    pdf_storage_directory: str = "output/pdf"
+    pdf_public_base_url: str | None = None
 
 
 @lru_cache

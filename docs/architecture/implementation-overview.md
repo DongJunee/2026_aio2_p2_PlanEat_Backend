@@ -29,7 +29,9 @@ route_chat → (COMPLETED인 경우) Tool Hub recipe_recommendation Tool node
                          │
                          └── RecommendationData·NeMo Guardrails 검증
   ▼
-ChatResponse JSON
+ChatResponse JSON → 피드백 재추천 또는 세트 선택
+                         ├── Jev Plan → 조건 갱신 → 재추천·재검증
+                         └── 선택 세트 → PDF 생성·저장 → pdf_url
 ```
 
 | 영역 | 주요 파일 | 역할 |
@@ -68,7 +70,7 @@ ChatResponse JSON
 | `session_id` | 빈 문자열 불가. 동일 세션의 워크플로우 단계를 이어 간다. |
 | `message` | 1~2,000자. 안전성 검사를 통과해야 한다. |
 | `attachments` | 선택 사항이며 최대 5개. 생략하면 빈 목록으로 처리하고, 현재 `image` 타입만 허용한다. |
-| 식단 목적·시간 | 별도 필드 없이 `message`에서 자연어로 전달한다. Jev 또는 fallback이 충분성을 판정한다. |
+| 식단 목적·선택 시간 | 별도 요청 필드 없이 `message`에서 자연어로 누적한다. 목적만 필수이며 Jev 또는 fallback이 충분성을 판정한다. |
 
 ### 응답 공통 규칙
 
@@ -79,8 +81,8 @@ FE는 `status`, `step`만으로 화면 흐름을 분기한다.
 | 200 | `NEED_MORE_INFO` | `INPUT_REQUIREMENTS` | 이미지와 조건을 동시에 수집하는 호환 응답이다. |
 | 200 | `NEED_MORE_INFO` | `IMAGE_INPUT` | 첫 요청에서는 이미지를 요청하고, 후속 요청에서는 자연어 재료도 받을 수 있다. |
 | 200 | `NEED_MORE_INFO` | `INGREDIENT_CONFIRM` | 인식된 재료 후보의 확인이 필요하다. |
-| 200 | `NEED_MORE_INFO` | `CONDITION_INPUT` | 식단 목표·조리 시간 등의 조건이 필요하다. |
-| 200 | `SUCCESS` | `COMPLETED` | 레시피 2세트(각 5개)가 준비됐다. |
+| 200 | `NEED_MORE_INFO` | `CONDITION_INPUT` | 필수 식단 목적이 필요하다. 조리 시간은 선택값이다. |
+| 200 | `SUCCESS` | `COMPLETED` | 레시피 2세트(각 5개)가 준비됐다. 이후 피드백 또는 세트 선택을 받는다. |
 | 400, 500 | `ERROR` | 없음 | 오류. 항상 `status`, `response`만 반환한다. |
 
 모든 오류는 다음 JSON 형태를 보장한다.
@@ -169,6 +171,12 @@ WAITING_CONDITIONS
 `response`와 `data.recipe_sets`는 Tool Hub 결과 또는 fallback LLM이 생성한다.
 `RecommendationData` 검증과 안전성 검사를 모두 통과한 경우에만 반환하며, Tool Hub 실행·검증에
 실패하면 `500 ERROR`를 반환한다.
+
+초기 완료 응답은 `next_action=FEEDBACK_OR_SET_SELECTION`과 `available_set_ids`를 포함하고,
+두 세트 중 하나를 선택하면 상세 PDF를 생성한다는 안내 문구를 반환한다.
+피드백은 Jev Plan과 조건 병합을 거쳐 같은 Tool·DTO·Output Guardrail 경로로 재추천한다.
+세트 선택이 감지되면 검증된 한 세트만 PDF 생성기에 전달하고, 저장 성공 후
+`next_action=PDF_READY`, `selected_set_id`, `pdf_url`을 반환한다.
 
 ## 5. TypeSafe Jev 자연어 판정
 

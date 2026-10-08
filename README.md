@@ -12,13 +12,14 @@ FastAPI와 LangGraph 기반의 대화형 식단 추천 백엔드입니다. 사�
 - 프로젝트 내부 CSV 레시피 카탈로그 기반 추천
 
 - 성공 응답은 레시피 2세트, 세트당 5개 레시피
+- 최종 추천 후 피드백 재추천 또는 선택 세트 상세 PDF URL 반환
 - Nutrition·Shopping Tool 호출
 - ChromaDB 기반 재료 활용법·대체재·보관법 검색
 - NeMo Guardrails 기반 입력·출력·Tool 결과 안전성 검사
 
 ## API
 
-단일 진입점은 `POST /chat`입니다.
+단일 진입점은 `POST /chat`이며, 생성된 선택 세트 PDF는 `GET /pdfs/{filename}`으로 다운로드합니다.
 
 상세 요청·응답 형식은 [Chat API 명세](docs/api/chat.md)를 참고합니다.
 역할별 데이터 교환은 [데이터 흐름도](docs/architecture/data-flow.md)를 참고합니다.
@@ -140,6 +141,6 @@ NeMo Guardrails는 기본 활성화되며 `guardrails/config.yml`의 정규식 �
 
 ### 선택 사항: TypeSafe Jev 자연어 판정
 
-`TYPESAFE_JEV_ENABLED=true`와 `TYPESAFE_API_KEY`를 설정하면, Jev가 자연어 `message`에서 식단 목표·조리 시간 충족 여부와 재료 확인 의도(`confirmed`, `rejected`, `edited`, `unclear`)를 판정합니다. 신뢰도가 `TYPESAFE_JEV_MIN_CONFIDENCE` 이상일 때만 결과를 반영합니다. API 키가 없거나 Jev 호출이 실패·저신뢰이면 조건 키워드와 확인 표현을 확인하는 보수적 fallback이 적용됩니다.
+`TYPESAFE_JEV_ENABLED=true`와 `TYPESAFE_API_KEY`를 설정하면, Jev가 누적된 자연어 `message`에서 필수 식단 목적 충족 여부와 재료 확인 의도(`confirmed`, `rejected`, `edited`, `unclear`)를 판정합니다. 조리 시간은 선택 입력으로 저장되어 입력된 경우에만 추천 필터에 반영됩니다. 신뢰도가 `TYPESAFE_JEV_MIN_CONFIDENCE` 이상일 때만 결과를 반영합니다. API 키가 없거나 Jev 호출이 실패·저신뢰이면 조건 키워드와 확인 표현을 확인하는 보수적 fallback이 적용됩니다.
 
 Jev에는 이 판정에 필요한 현재 사용자 메시지만 전송됩니다. 실서비스 활성화 전에는 개인정보 처리·보관 정책과 TypeSafe 계약을 확인하세요.

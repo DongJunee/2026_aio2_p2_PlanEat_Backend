@@ -14,7 +14,7 @@ class AgentState(TypedDict):
     confirmed_ingredients: list
 
     goal: str | None
-    cooking_time_min: int | None
+    cooking_time_min: int | None  # 선택 입력
 
     confirmation_status: str | None
     missing_slots: list[str]
@@ -23,6 +23,7 @@ class AgentState(TypedDict):
     nutrition_results: dict | None
     shopping_results: dict | None
     selected_result: dict | None
+    pdf_url: str | None
 
     tool_errors: dict
     status: str | None
@@ -34,13 +35,14 @@ class AgentState(TypedDict):
 | `ingredient_candidates` | Vision으로 추출한 미확정 재료 |
 | `confirmed_ingredients` | 사용자 확인 또는 자연어로 입력된 확정 재료 |
 | `goal` | 식단 목적 |
-| `cooking_time_min` | 조리 가능 시간(분) |
+| `cooking_time_min` | 선택 조리 가능 시간(분) |
 | `confirmation_status` | 재료 확인 상태 |
 | `missing_slots` | 부족한 필수 조건 목록 |
 | `recipe_candidates` | RAG로 검색한 레시피 후보 |
 | `nutrition_results` | 후보별 영양 정보 |
 | `shopping_results` | 후보별 부족 재료/장보기 정보 |
 | `selected_result` | Selection Tool이 선택한 최종 결과 |
+| `pdf_url` | 사용자가 선택한 세트의 상세 PDF 다운로드 URL |
 | `tool_errors` | Tool별 오류 정보 |
 | `status` | 현재 처리 상태 |
 | `error` | 오류 발생 시 상세 정보 |
@@ -52,7 +54,7 @@ class AgentState(TypedDict):
 | Node | 역할 |
 |---|---|
 | `input_guardrail` | 사용자 입력 안전성 검사 |
-| `analyze_input` | 재료·목적·시간을 동시에 분석하고 기존 State와 병합 |
+| `analyze_input` | 재료·목적·선택 시간을 분석하고 기존 State와 병합 |
 | `vision_tool` | 이미지가 있을 때 재료 후보 추출 |
 | `confirm_ingredients` | Vision 재료 후보 확인 및 수정/거부 처리 |
 | `check_conditions` | 필수 조건 충족 여부 확인 |
@@ -101,7 +103,19 @@ flowchart TD
     AGG --> OUTPUT[output_guardrail]
 
     OUTPUT -->|통과| DONE[status = SUCCESS]
-    OUTPUT -->|실패| FAIL
+    OUTPUT -->|실패| REGENERATE[안전 제약으로 응답 재생성]
+    REGENERATE -->|성공| DONE
+    REGENERATE -->|실패| SAFE_FALLBACK[마스킹 또는 고정 안전 문구]
+    SAFE_FALLBACK --> DONE
+
+    DONE --> SUMMARY[5끼니 × 2세트 요약 표시]
+    SUMMARY --> FEEDBACK{사용자 피드백?}
+    FEEDBACK -->|있음| PLAN[Jev Plan → 조건 갱신]
+    PLAN --> RECOMMEND[재추천·재검증]
+    RECOMMEND --> SUMMARY
+    FEEDBACK -->|없음| SELECT[사용자 세트 선택]
+    SELECT --> PDF[선택 세트 상세 PDF 생성·저장]
+    PDF --> URL[pdf_url 반환]
 
     MORE --> WAIT[status = NEED_MORE_INFO]
 
@@ -138,12 +152,12 @@ Vision 결과
 
 ### 추천 실행 조건
 
-다음 세 조건이 모두 확보된 경우에만 Recipe 검색을 시작한다.
+다음 두 필수 조건이 확보되면 Recipe 검색을 시작한다. 조리 시간은 입력된 경우에만 검색·정렬
+조건으로 사용한다.
 
 ```text
 confirmed_ingredients
 + goal
-+ cooking_time_min
 ↓
 Recipe(RAG)
 ```
@@ -168,7 +182,7 @@ Selection Tool은 다음 기준을 바탕으로 최종 조합을 결정한다.
 
 1. 사용자 목적 적합도
 2. 보유 재료 활용도
-3. 조리 시간 충족 여부
+3. 조리 시간 충족 여부(입력된 경우)
 4. 부족 재료 및 장보기 부담
 
 Nutrition과 Shopping은 서로 다른 State key를 갱신하므로 병렬 실행 시 충돌하지 않도록 한다.
@@ -179,7 +193,7 @@ Nutrition과 Shopping은 서로 다른 State key를 갱신하므로 병렬 실�
 
 ## 6. 설계 원칙
 
-1. 재료·목적·조리 시간은 `analyze_input`에서 함께 분석한다.
+1. 재료·목적·선택 조리 시간은 `analyze_input`에서 여러 턴에 걸쳐 병합한다.
 2. Vision Tool은 이미지가 있을 때만 호출한다.
 3. Vision 결과는 확인 전까지 `ingredient_candidates`로 관리한다.
 4. 이미지와 자연어 재료가 함께 있으면 확인 후 병합한다.
@@ -188,3 +202,4 @@ Nutrition과 Shopping은 서로 다른 State key를 갱신하므로 병렬 실�
 7. Nutrition·Shopping 결과를 기반으로 Selection Tool이 최종 조합을 결정한다.
 8. Tool 실패는 `tool_errors`에 기록하고 핵심 실패 여부에 따라 종료를 결정한다.
 9. Node는 하나의 책임을 가지며 분기는 Conditional Edge로 처리한다.
+10. 최종 추천은 피드백 재추천 또는 사용자 세트 선택 후 PDF 발급으로 종료한다.

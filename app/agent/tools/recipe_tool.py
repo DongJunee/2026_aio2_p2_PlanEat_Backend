@@ -97,10 +97,21 @@ def _condition_text(conditions: Mapping[str, object] | object) -> str:
 
 
 def _max_cook_time(conditions: Mapping[str, object] | object) -> int | None:
-    """자연어 조건에 포함된 가장 앞의 분 단위 제한을 찾습니다."""
+    """선택적으로 입력된 조리 시간 제한을 분 단위로 반환합니다."""
 
-    match = re.search(r"(\d+)\s*분(?:\s*(?:안|이내|내))?", _condition_text(conditions))
-    return int(match.group(1)) if match else None
+    if isinstance(conditions, Mapping):
+        stored_minutes = conditions.get("cooking_time_minutes")
+        if isinstance(stored_minutes, int) and stored_minutes >= 0:
+            return stored_minutes
+
+    match = re.search(
+        r"(?P<value>\d+)\s*(?P<unit>분|시간)(?:\s*(?:안|이내|내))?",
+        _condition_text(conditions),
+    )
+    if not match:
+        return None
+    value = int(match.group("value"))
+    return value * 60 if match.group("unit") == "시간" else value
 
 
 def _violates_dietary_condition(recipe: CatalogRecipe, conditions: str) -> bool:

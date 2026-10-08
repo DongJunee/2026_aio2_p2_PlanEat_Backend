@@ -32,6 +32,8 @@ data/*.db
 data/*.sqlite
 data/chroma/
 uploads/
+output/pdf/
+tmp/pdfs/
 
 # IDE and OS files
 .idea/

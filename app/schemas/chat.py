@@ -90,6 +90,10 @@ class ChatSuccessResponse(BaseModel):
     step: Literal["COMPLETED"]
     response: str
     data: RecommendationData
+    next_action: Literal["FEEDBACK_OR_SET_SELECTION", "PDF_READY"] | None = None
+    available_set_ids: list[str] | None = None
+    selected_set_id: str | None = None
+    pdf_url: str | None = None
 
 
 class ChatConditionInputResponse(BaseModel):

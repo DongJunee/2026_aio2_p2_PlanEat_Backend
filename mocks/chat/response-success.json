@@ -1,7 +1,9 @@
 {
   "status": "SUCCESS",
   "step": "COMPLETED",
-  "response": "조건에 맞는 레시피 2세트(세트당 5개)를 추천했습니다.",
+  "response": "확정한 재료와 조건에 맞는 메인·반찬 식단을 추천했습니다. 두 세트 중 하나를 선택해 주세요. 선택한 레시피의 상세 PDF를 생성해드릴게요.",
+  "next_action": "FEEDBACK_OR_SET_SELECTION",
+  "available_set_ids": ["SET001", "SET002"],
   "data": {
     "recipe_sets": [
       {

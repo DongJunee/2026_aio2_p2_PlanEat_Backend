@@ -19,7 +19,8 @@ class ToolRequestPreparationError(ValueError):
 class ToolRequest:
     """Orchestrator에서 Tool Hub로 전달할 정규화 전 Tool 요청입니다.
 
-    ``user_conditions``에는 Orchestrator가 자연어 메시지에서 충분성을 판별한 조건 원문을 담는다.
+    ``user_conditions``에는 Orchestrator가 여러 턴에 걸쳐 누적한 조건 원문과 슬롯을 담는다.
+    식단 목적은 필수이며, ``cooking_time_minutes``는 존재할 때만 적용하는 선택값이다.
     상세 추출 DTO는 Tool Hub와 합의 후 구체화한다. 현재는 임의의 후보 재료가 전달되는 것을
     방지하는 역할을 한다.
     """

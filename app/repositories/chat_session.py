@@ -35,6 +35,9 @@ class ChatSessionState:
     ingredient_candidates: tuple[IngredientCandidate, ...] = field(default_factory=tuple)
     confirmed_ingredients: tuple[IngredientCandidate, ...] = field(default_factory=tuple)
     user_conditions: Mapping[str, object] | None = None
+    recommendation_data: Mapping[str, object] | None = None
+    selected_set_id: str | None = None
+    pdf_url: str | None = None
 
 
 class ChatSessionRepository(Protocol):

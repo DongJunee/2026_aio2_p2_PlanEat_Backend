@@ -46,12 +46,14 @@ Shopping Tool을 실행합니다. Chroma Recipe Guide를 사용하려면
 ## 3. API 작업 기준
 
 - 진입점: `POST /chat`
-- 요청: `session_id`, `message`, 선택적 `attachments` (`message`에서 식단 목적·조리 시간을 판별)
+- 요청: `session_id`, `message`, 선택적 `attachments` (`message`에서 식단 목적과 선택 조리 시간을 판별하고 세션에 누적)
 - 첨부파일: 현재 `image`, 최대 5개
 - 상태: `SUCCESS`, `NEED_MORE_INFO`, `ERROR`
-- 이미지가 없는 첫 요청은 `IMAGE_INPUT` 단계로 사진을 먼저 요청하고, 사진이 없다는 후속 답변에는
-  자연어 재료 입력을 안내
+- 재료가 없는 요청은 `IMAGE_INPUT` 단계로 사진 또는 자연어 재료 입력을 안내하며, 첫 요청이라도
+  `message`에 자연어 재료가 있으면 이미지 단계를 건너뜀
 - 성공 응답: `recipe_sets` 2개, 각 세트의 레시피 5개
+- 성공 후 `next_action=FEEDBACK_OR_SET_SELECTION`이면 피드백 재추천 또는 세트 선택을 받고,
+  선택 시 `pdf_url`을 반환한다.
 - 완료 단계: LangGraph `tool_hub_recipe_recommendation` node가 Tool Hub를 실행하고 결과를 검증
 - NeMo Guardrails: 입력·LLM 출력·Tool 결과의 결정적 안전성 검사
 - 상세 계약: [Chat API](../api/chat.md)
@@ -80,8 +82,9 @@ git status
 
 ## 6. 선택 사항: TypeSafe Jev 자연어 판정
 
-Jev는 사용자 메시지로부터 식단 목표·조리 시간이 충분히 입력됐는지와 재료 확인 의도
-(`confirmed`, `rejected`, `edited`, `unclear`)를 `choice`와 confidence로 판단합니다. 외부
+Jev는 사용자 메시지로부터 식단 목적이 충분히 입력됐는지와 재료 확인 의도
+(`confirmed`, `rejected`, `edited`, `unclear`)를 `choice`와 confidence로 판단합니다. 조리 시간은
+선택 입력으로 별도 필수 판정에 사용하지 않습니다. 외부
 `/chat` 요청·응답 계약은 바꾸지 않습니다.
 
 1. TypeSafe Console에서 API 키를 발급한다.

@@ -15,6 +15,7 @@ dependencies = [
     "openai>=3.23.0",
     "httpx>=0.28.1",
     "nemoguardrails>=0.24,<0.25",
+    "reportlab>=5.0.1",
 ]
 
 [dependency-groups]

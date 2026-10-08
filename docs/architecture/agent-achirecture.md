@@ -72,7 +72,7 @@ Input Guardrail 실패는 악성 사용자 입력을 Graph에 전달하지 않�
 |---|---|---|
 | `WAITING_IMAGE` | 이미지 또는 사용자가 직접 입력한 재료를 기다린다. | `IMAGE_INPUT` 또는 다음 단계 |
 | `WAITING_INGREDIENT_CONFIRM` | Vision 후보를 사용자에게 확인받는다. | `INGREDIENT_CONFIRM` |
-| `WAITING_CONDITIONS` | 식단 목적·조리 시간 등 조건을 수집한다. | `CONDITION_INPUT` |
+| `WAITING_CONDITIONS` | 식단 목적을 필수로 수집하고 조리 시간은 선택적으로 보관한다. | `CONDITION_INPUT` |
 | `COMPLETED` | 확정 재료·조건으로 Tool Hub를 실행한다. | `COMPLETED` |
 
 `ChatState`는 세션별로 다음 흐름에 필요한 값만 관리한다.
@@ -80,8 +80,10 @@ Input Guardrail 실패는 악성 사용자 입력을 Graph에 전달하지 않�
 - `messages`, `summary`: 대화와 오래된 대화의 제한된 요약
 - `has_image`, `has_conditions`, `has_confirmed_ingredients`: 단계 전이용 플래그
 - `ingredient_confirmation`: `confirmed`, `rejected`, `edited`, `unclear`
-- `confirmed_ingredients`, `user_conditions`: Tool Hub에 전달할 사용자 확정 입력
+- `confirmed_ingredients`, `user_conditions`: Tool Hub에 전달할 사용자 확정 입력. `user_conditions`는
+  여러 턴의 목적과 선택 조리 시간을 누적한다.
 - `tool_result`, `tool_source_metadata`, `tool_error`: 완료 단계 내부 Tool 결과
+- `recommendation_data`, `selected_set_id`, `pdf_url`: 최종 추천 보관, 사용자 선택 세트와 생성 PDF 추적
 
 이미지에서 추출한 재료 후보는 `confirmed_ingredients`로 바로 이동하지 않는다. 사용자가 확인한
 뒤에만 추천·RAG 입력으로 사용한다.
@@ -97,7 +99,7 @@ Input Guardrail
   ↓
 사용자 확인
   ↓
-식단 목적·조리 시간 수집
+식단 목적 수집 (조리 시간은 선택)
   ↓
 ToolRequest(확정 재료 + 조건)
   ↓
@@ -106,6 +108,11 @@ Tool Hub
 ToolResult DTO 검증
   ↓
 Output Guardrail
+  ↓
+최종 결과 2세트·5끼니 요약
+  ↓
+피드백이면 Jev Plan → 조건 갱신 → 재추천·재검증
+선택이면 PDF 생성·저장 → `pdf_url`
   ↓
 FE ChatResponse
 ```

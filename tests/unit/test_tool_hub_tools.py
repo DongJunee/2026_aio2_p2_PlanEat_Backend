@@ -24,7 +24,7 @@ from app.agent.tools.nodes import (
 )
 from app.agent.tools.nutrition_tool import NutritionTool
 from app.agent.tools.recipe_guide_tool import InMemoryRecipeGuideRetriever, RecipeGuideTool
-from app.agent.tools.recipe_tool import RecipeTool
+from app.agent.tools.recipe_tool import RecipeTool, _score_recipe
 from app.agent.tools.shopping_tool import ShoppingTool
 from app.agent.tools.tool_hub import PlanEatToolHub
 from app.agent.tools.tool_calls import (
@@ -179,6 +179,15 @@ def test_recipe_tool_prioritizes_recipes_that_use_confirmed_ingredients() -> Non
 
     assert [result.recipe.recipe_id for result in results] == ["uses-tofu", "generic"]
     assert results[0].owned_ingredients[0].name == "두부"
+
+
+def test_recipe_score_gives_stronger_bonus_to_each_owned_ingredient() -> None:
+    recipe = _catalog_recipes(1)[0]
+
+    one_owned = _score_recipe(recipe, owned_count=1, missing_count=2, conditions="")
+    two_owned = _score_recipe(recipe, owned_count=2, missing_count=1, conditions="")
+
+    assert two_owned - one_owned == 203.0
 
 
 def test_tool_hub_returns_existing_chat_recommendation_shape() -> None:

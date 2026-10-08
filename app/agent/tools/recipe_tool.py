@@ -11,6 +11,11 @@ from app.agent.tools.tool_models import (
     ToolIngredient,
 )
 
+_OWNED_RECIPE_BONUS = 1000.0
+_OWNED_INGREDIENT_BONUS = 200.0
+_MISSING_INGREDIENT_PENALTY = 3.0
+_COOK_TIME_PENALTY = 0.05
+
 
 class RecipeRepository(Protocol):
     """식품안전나라·내부 DB 등 Recipe Source의 공통 비동기 경계입니다."""
@@ -132,9 +137,15 @@ def _score_recipe(
 ) -> float:
     """보유 재료 활용을 우선하는 설명 가능한 점수로 후보 순위를 고정합니다."""
 
-    # 보유 재료를 하나라도 쓰는 후보는 미사용 후보보다 항상 먼저 보여야 한다.
-    # 이후에 부족 재료와 조리 시간으로 같은 그룹 안에서만 우선순위를 가른다.
-    score = (1000 if owned_count else 0) + owned_count * 100 - missing_count * 3 - recipe.cook_time * 0.05
+    # 보유 재료를 하나라도 쓰는 후보를 먼저 보여주고, 같은 그룹 안에서는
+    # 보유 재료를 많이 활용할수록 점수가 크게 앞서도록 가중치를 높인다.
+    # 부족 재료·조리 시간은 보조 기준으로 유지해 재료 활용도가 순위를 주도하게 한다.
+    score = (
+        (_OWNED_RECIPE_BONUS if owned_count else 0.0)
+        + owned_count * _OWNED_INGREDIENT_BONUS
+        - missing_count * _MISSING_INGREDIENT_PENALTY
+        - recipe.cook_time * _COOK_TIME_PENALTY
+    )
     if "고단백" in conditions and recipe.nutrition is not None:
         score += float(recipe.nutrition.protein) * 0.5
     if any(keyword in conditions for keyword in ("다이어트", "저칼로리")) and recipe.nutrition is not None:

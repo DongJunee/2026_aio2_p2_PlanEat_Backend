@@ -25,8 +25,12 @@ class Settings(BaseSettings):
     nemo_guardrails_config_path: str = "guardrails"
     tool_hub_enabled: bool = True
     tool_hub_catalog_path: str | None = None
-    chroma_persist_directory: str | None = None
+    # 저장소에 포함한 사전 생성 인덱스를 기본으로 사용한다. 서버 기동 시에는 읽기만 하며
+    # ``chroma_auto_index_on_startup``을 명시적으로 켠 경우에만 다시 임베딩한다.
+    chroma_persist_directory: str | None = "data/chroma"
     chroma_collection_name: str = "recipe_guides"
+    chroma_recipe_collection_name: str = "recipe_catalog"
+    chroma_auto_index_on_startup: bool = False
     pdf_storage_directory: str = "output/pdf"
     pdf_public_base_url: str | None = None
 

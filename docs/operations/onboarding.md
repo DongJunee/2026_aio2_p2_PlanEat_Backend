@@ -38,8 +38,21 @@ LangGraph 실행을 LangSmith에서 확인하려면 `.env`에 `LANGSMITH_TRACING
 [LangSmith 연동 가이드](../integrations/langsmith.md)를 참고합니다.
 
 기본적으로 `TOOL_HUB_ENABLED=true`이면 완료 단계에서 로컬 CSV 기반 Recipe·Nutrition·
-Shopping Tool을 실행합니다. Chroma Recipe Guide를 사용하려면
-`CHROMA_PERSIST_DIRECTORY`를 추가로 지정하고, 기본 카탈로그를 바꾸려면
+Shopping Tool을 실행합니다. 저장소에 포함된 `data/chroma/` 사전 생성 인덱스가 Recipe Guide와
+레시피 의미 검색 후보를 보강하며, 레시피 상세의 원본은 계속 CSV입니다. 서버는 이 인덱스를
+열기만 하고 기동 시 임베딩하지 않습니다. `.env`에서 `CHROMA_AUTO_INDEX_ON_STARTUP=false`를
+유지합니다.
+
+CSV를 의도적으로 변경할 때에만 아래 명령으로 인덱스를 생성·갱신합니다. 생성된
+`data/chroma/` 변경 파일은 CSV 변경과 함께 검토 후 커밋합니다.
+
+```bash
+PYTHONPATH=. uv run python scripts/index_recipe_catalog.py --persist-directory data/chroma
+```
+
+자동 색인은 메모리를 크게 사용할 수 있으므로 일반 개발·데모 환경에서는 사용하지 않습니다.
+
+기본 카탈로그를 바꾸려면
 `TOOL_HUB_CATALOG_PATH`를 지정합니다. Tool을 끄고 기존 OpenAI 임시 추천만 확인하려면
 `TOOL_HUB_ENABLED=false`로 설정합니다.
 

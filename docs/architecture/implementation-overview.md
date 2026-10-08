@@ -258,8 +258,10 @@ uv run uvicorn app.main:app --reload
 | --- | --- | --- |
 | `TOOL_HUB_ENABLED` | 완료 단계 Tool Hub node 사용 여부 | `false`이면 임시 LLM 추천 |
 | `TOOL_HUB_CATALOG_PATH` | Tool Hub Recipe Tool 카탈로그 경로 | 프로젝트 내부 CSV 사용 |
-| `CHROMA_PERSIST_DIRECTORY` | 선택적 Recipe Guide RAG 저장 경로 | 빈 RAG retriever 사용 |
+| `CHROMA_PERSIST_DIRECTORY` | 저장소에 포함된 사전 생성 Chroma 인덱스 경로 | `data/chroma`; 비우면 Chroma 검색 미사용 |
 | `CHROMA_COLLECTION_NAME` | Chroma Recipe Guide collection | `recipe_guides` |
+| `CHROMA_RECIPE_COLLECTION_NAME` | Chroma 레시피 의미 검색 collection | `recipe_catalog` |
+| `CHROMA_AUTO_INDEX_ON_STARTUP` | 서버 기동 시 CSV 재임베딩 여부 | `false`; 사전 생성 인덱스만 사용 |
 | `OPENAI_API_KEY` | 재료 추출·추가 안내 및 Tool Hub 비활성화 시 임시 추천 | 완료 단계에서 `500 ERROR` |
 | `OPENAI_MODEL` | OpenAI 모델 선택 | `gpt-4o-mini` 사용 |
 | `TYPESAFE_JEV_ENABLED` | Jev 자연어 조건·재료 확인 판정 사용 여부 | `false`가 기본값 |
@@ -304,7 +306,7 @@ git diff --check
 | `TOOL_HUB_ENABLED=false`의 LLM 임시 추천 | Tool Hub Recipe·Nutrition·Shopping·RAG 결과 |
 | 프로세스 메모리 세션 | DB 또는 Redis 세션 저장소 |
 | Jev 조건 판정과 제한적인 확인 의도 parser | 합의된 정책에 따른 조건 추출·재료 수정 DTO |
-| 로컬 CSV·선택적 Chroma 기반 Tool Hub | 외부 Tool Hub URL·timeout·재시도 정책을 반영한 비동기 어댑터 |
+| 로컬 CSV·사전 생성 Chroma 기반 Tool Hub | 외부 Tool Hub URL·timeout·재시도 정책을 반영한 비동기 어댑터 |
 
 Tool Hub·RAG가 연결되더라도 외부 `/chat` DTO, `status`, `step`, 레시피 2세트·세트당 5개라는
 FE 계약은 유지해야 한다.

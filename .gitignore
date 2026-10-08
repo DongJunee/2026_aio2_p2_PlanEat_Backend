@@ -30,7 +30,10 @@ dist/
 # Local data and uploads
 data/*.db
 data/*.sqlite
-data/chroma/
+# 3일 프로젝트에서 공유하는 사전 생성 Chroma 인덱스는 추적한다.
+# SQLite의 실행 중 임시 파일만 제외한다.
+data/chroma/*.sqlite3-shm
+data/chroma/*.sqlite3-wal
 uploads/
 output/pdf/
 tmp/pdfs/

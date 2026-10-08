@@ -9,7 +9,7 @@
 | Tool Hub | 박동준 | Tool Hub, RAG 검색, 도구 실행 결과 반환 |
 
 `POST /chat`의 외부 계약은 [Chat API 명세](../api/chat.md)를 따릅니다. 완료 단계의 Orchestrator↔Tool Hub
-호출은 LangGraph의 `tool_hub_recipe_recommendation` Tool node와 로컬 CSV·선택적 Chroma adapter를
+호출은 LangGraph의 `tool_hub_recipe_recommendation` Tool node와 로컬 CSV·사전 생성 Chroma adapter를
 통해 실행되며, 외부 Tool Hub 네트워크 endpoint는 아직 사용하지 않습니다.
 
 ## 1. 외부 대화 흐름: FE ↔ Orchestrator

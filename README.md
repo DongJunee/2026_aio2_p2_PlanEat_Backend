@@ -73,7 +73,7 @@ Tool Hub 연동 상태와 외부 endpoint 확장 지점은 [Tool Hub 연동 상�
 │   ├── architecture/                   # 구조·데이터 흐름
 │   ├── integrations/                   # 외부 연동·안전성
 │   └── operations/                     # 개발·운영
-├── data/                               # 로컬 DB·ChromaDB(커밋하지 않음)
+├── data/                               # 레시피 CSV·사전 생성 ChromaDB(커밋)
 ├── pyproject.toml                      # uv 의존성 설정
 ├── .env.example                        # 환경 변수 예시
 └── .gitignore
@@ -129,6 +129,13 @@ OPTIONAL_INGREDIENTS,SUBSTITUTABLE_INGREDIENTS,REQUIRED_SEASONINGS,SUBSTITUTABLE
 
 기본 `PlanEatToolHub.from_local_catalog(...)`는 `data/`의 보강 내부 CSV를 읽습니다.
 이 카탈로그의 재료 중요도는 제외 재료 재계획에 사용됩니다.
+
+### 사전 생성 Chroma 인덱스
+
+`data/chroma/`에는 레시피 카탈로그의 사전 생성 임베딩 인덱스가 포함되어 있습니다. 서버는
+기본적으로 이 인덱스를 열어 의미 검색에 사용하며, 기동할 때 다시 임베딩하지 않습니다.
+`CHROMA_AUTO_INDEX_ON_STARTUP`은 `false`로 유지하세요. CSV를 의도적으로 교체한 경우에만
+수동 색인 명령을 실행하고, 바뀐 `data/chroma/` 파일도 함께 검토해 커밋합니다.
 
 LLM 추천·완료 응답을 사용하려면 `.env`에 `OPENAI_API_KEY`를 설정합니다. 기본 모델은
 `gpt-4o-mini`이며, 필요하면 `OPENAI_MODEL`로 변경할 수 있습니다.

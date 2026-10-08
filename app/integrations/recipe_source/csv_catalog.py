@@ -82,6 +82,13 @@ class CsvRecipeRepository:
         ]
         return [*matching, *non_matching][:limit]
 
+    async def list_recipes(self) -> tuple[CatalogRecipe, ...]:
+        """벡터 검색 인덱스 적재에 사용할 검증된 전체 카탈로그를 반환합니다."""
+
+        if self._recipes is None:
+            self._recipes = await asyncio.to_thread(self._load_recipes)
+        return self._recipes
+
     def _load_recipes(self) -> tuple[CatalogRecipe, ...]:
         """CSV 전체를 검증해 불완전한 카탈로그가 부분 사용되지 않게 합니다."""
 

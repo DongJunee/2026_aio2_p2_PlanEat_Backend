@@ -130,9 +130,11 @@ def _violates_dietary_condition(recipe: CatalogRecipe, conditions: str) -> bool:
 def _score_recipe(
     recipe: CatalogRecipe, *, owned_count: int, missing_count: int, conditions: str
 ) -> float:
-    """설명 가능한 단순 점수로 후보 순위를 고정합니다."""
+    """보유 재료 활용을 우선하는 설명 가능한 점수로 후보 순위를 고정합니다."""
 
-    score = owned_count * 10 - missing_count * 3 - recipe.cook_time * 0.05
+    # 보유 재료를 하나라도 쓰는 후보는 미사용 후보보다 항상 먼저 보여야 한다.
+    # 이후에 부족 재료와 조리 시간으로 같은 그룹 안에서만 우선순위를 가른다.
+    score = (1000 if owned_count else 0) + owned_count * 100 - missing_count * 3 - recipe.cook_time * 0.05
     if "고단백" in conditions and recipe.nutrition is not None:
         score += float(recipe.nutrition.protein) * 0.5
     if any(keyword in conditions for keyword in ("다이어트", "저칼로리")) and recipe.nutrition is not None:

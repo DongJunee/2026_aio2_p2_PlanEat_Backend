@@ -8,8 +8,10 @@ from app.agent.tools.recipe_guide_tool import (
     InMemoryRecipeGuideRetriever,
     RecipeGuideTool,
 )
+from app.agent.tools.recipe_tool import RecipeTool
 from app.agent.tools.tool_hub import PlanEatToolHub
 from app.core.config import Settings, get_settings
+from app.integrations.recipe_source.csv_catalog import CsvRecipeRepository, internal_catalog_path
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +44,28 @@ def build_default_tool_hub(settings: Settings | None = None) -> PlanEatToolHub:
                 "Chroma Recipe Guide를 초기화하지 못해 빈 RAG retriever를 사용합니다."
             )
 
+    catalog = CsvRecipeRepository(
+        resolved_settings.tool_hub_catalog_path or internal_catalog_path()
+    )
+    recipe_tool = RecipeTool(catalog)
+    if resolved_settings.chroma_persist_directory:
+        try:
+            from app.integrations.vector_store.chroma_recipe_catalog import (
+                ChromaRecipeRepository,
+            )
+
+            recipe_tool = RecipeTool(
+                ChromaRecipeRepository.open(
+                    persist_directory=resolved_settings.chroma_persist_directory,
+                    collection_name=resolved_settings.chroma_recipe_collection_name,
+                    catalog=catalog,
+                )
+            )
+        except (OSError, RuntimeError, ValueError):
+            logger.warning("Chroma Recipe Catalog를 초기화하지 못해 CSV 검색을 사용합니다.")
+
     return PlanEatToolHub.from_local_catalog(
         recipe_guide_tool=guide_tool,
         catalog_path=resolved_settings.tool_hub_catalog_path or None,
+        recipe_tool=recipe_tool,
     )

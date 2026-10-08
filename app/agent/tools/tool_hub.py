@@ -70,6 +70,7 @@ class PlanEatToolHub:
         *,
         recipe_guide_tool: RecipeGuideTool,
         catalog_path: str | Path | None = None,
+        recipe_tool: RecipeTool | None = None,
         jev: MealPlanningJev | None = None,
         pair_composer: MealPairComposer | None = None,
     ) -> "PlanEatToolHub":
@@ -87,7 +88,7 @@ class PlanEatToolHub:
             else CsvRecipeRepository.from_internal_catalog()
         )
         return cls(
-            recipe_tool=RecipeTool(repository),
+            recipe_tool=recipe_tool or RecipeTool(repository),
             nutrition_tool=NutritionTool(),
             shopping_tool=ShoppingTool(),
             recipe_guide_tool=recipe_guide_tool,
@@ -152,6 +153,16 @@ class PlanEatToolHub:
             for recipe in (meal_set.main_recipe, meal_set.side_recipe)
         ]
         matches = [self._match_recipe(recipe, request.confirmed_ingredients) for recipe in recipes]
+        # Meal Planning은 메인·반찬 쌍을 우선하므로, 평면 2×5 카드 응답으로 바꿀 때는
+        # 보유 재료를 많이 활용한 카드를 BEST_MATCH에 먼저 모은다.
+        matches.sort(
+            key=lambda match: (
+                -len(match.owned_ingredients),
+                len(match.missing_ingredients),
+                match.recipe.cook_time,
+                match.recipe.title,
+            )
+        )
         guides = await self._recipe_guide_tool.find_guides(
             ingredient.name for match in matches for ingredient in match.missing_ingredients
         )

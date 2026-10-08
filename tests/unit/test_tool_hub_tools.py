@@ -32,6 +32,7 @@ from app.agent.tools.tool_calls import (
     create_recipe_recommendation_tool,
 )
 from app.integrations.recipe_source.csv_catalog import CsvRecipeRepository
+from app.integrations.vector_store.chroma_recipe_catalog import ChromaRecipeRepository
 from app.integrations.vector_store.chroma_recipe_guide import _split_front_matter, load_markdown_documents
 from app.integrations.vision.openai_vision import VisionToolError, _validated_image_data
 from app.schemas.chat import RecommendationData
@@ -47,6 +48,20 @@ class StaticRecipeRepository:
     async def search(self, query: RecipeSearchQuery, *, limit: int) -> list[CatalogRecipe]:
         self.queries.append(query)
         return self._recipes[:limit]
+
+
+class FakeChromaCollection:
+    """Chroma 서버 없이 적재·검색 어댑터 경계를 검증하는 테스트 대역입니다."""
+
+    def __init__(self, recipe_ids: list[str]) -> None:
+        self._recipe_ids = recipe_ids
+        self.upserted_ids: list[str] = []
+
+    def upsert(self, *, ids, documents, metadatas) -> None:
+        self.upserted_ids.extend(ids)
+
+    def query(self, *, query_texts, n_results, include) -> dict[str, list[list[str]]]:
+        return {"ids": [self._recipe_ids[:n_results]]}
 
 
 def _local_tool_hub() -> PlanEatToolHub:
@@ -125,6 +140,47 @@ def test_recipe_tool_uses_confirmed_ingredients_and_condition_time() -> None:
     assert all(result.recipe.cook_time <= 15 for result in results)
 
 
+def test_recipe_tool_prioritizes_recipes_that_use_confirmed_ingredients() -> None:
+    repository = StaticRecipeRepository(
+        [
+            CatalogRecipe(
+                recipe_id="generic",
+                title="간단한 반찬",
+                cook_time=5,
+                ingredients=[RecipeIngredient(name="소금", amount="1꼬집")],
+                nutrition=NutritionValues(calories=30, protein=1, carbohydrate=2, fat=1),
+                source="test-recipe-source",
+            ),
+            CatalogRecipe(
+                recipe_id="uses-tofu",
+                title="두부 듬뿍 찜",
+                cook_time=20,
+                ingredients=[
+                    RecipeIngredient(name="두부", amount="1모"),
+                    RecipeIngredient(name="간장", amount="1큰술"),
+                    RecipeIngredient(name="대파", amount="1대"),
+                    RecipeIngredient(name="참기름", amount="1작은술"),
+                ],
+                nutrition=NutritionValues(calories=260, protein=18, carbohydrate=10, fat=16),
+                source="test-recipe-source",
+            ),
+        ]
+    )
+
+    results = asyncio.run(
+        RecipeTool(repository).recommend(
+            RecipeSearchQuery(
+                confirmed_ingredients=[ToolIngredient(name="두부", amount="1모")],
+                user_conditions={"message": "간단한 메뉴"},
+            ),
+            limit=2,
+        )
+    )
+
+    assert [result.recipe.recipe_id for result in results] == ["uses-tofu", "generic"]
+    assert results[0].owned_ingredients[0].name == "두부"
+
+
 def test_tool_hub_returns_existing_chat_recommendation_shape() -> None:
     local_hub = _local_tool_hub()
     request = ToolRequest(
@@ -150,6 +206,31 @@ def test_tool_hub_returns_existing_chat_recommendation_shape() -> None:
         "recipe_count": 10,
         "planning_set_count": 5,
     }
+
+
+def test_tool_hub_places_owned_ingredient_recipes_in_best_match_set() -> None:
+    recipes = _catalog_recipes()
+    recipes[0] = recipes[0].model_copy(
+        update={"ingredients": [RecipeIngredient(name="소금", amount="1꼬집")]}
+    )
+    hub = PlanEatToolHub(
+        recipe_tool=RecipeTool(StaticRecipeRepository(recipes)),
+        nutrition_tool=NutritionTool(),
+        shopping_tool=ShoppingTool(),
+        recipe_guide_tool=RecipeGuideTool(InMemoryRecipeGuideRetriever()),
+    )
+    request = ToolRequest(
+        session_id="best-match-owned-first",
+        tool_name="recipe_recommendation",
+        confirmed_ingredients=({"name": "두부", "amount": "1모"},),
+        user_conditions={"message": "간단한 메뉴"},
+    )
+
+    result = asyncio.run(hub.execute(request))
+
+    assert result.result is not None
+    best_match = result.result["data"]["recipe_sets"][0]["recipes"]
+    assert all(recipe["owned_ingredients"] == ["두부"] for recipe in best_match)
 
 
 def test_recipe_recommendation_tool_call_returns_json_payload() -> None:
@@ -306,6 +387,30 @@ def test_internal_csv_repository_prioritizes_recipes_matching_confirmed_ingredie
     recipes = asyncio.run(repository.search(query, limit=1))
 
     assert [recipe.recipe_id for recipe in recipes] == ["2"]
+
+
+def test_chroma_recipe_repository_merges_semantic_and_exact_candidates(tmp_path) -> None:
+    catalog_path = tmp_path / "recipe-catalog.csv"
+    catalog_path.write_text(
+        "recipe_id,title,image,cook_time,ingredients,calories,protein,carbohydrate,fat,source\n"
+        'exact,두부 찜,,10,"[{""name"": ""두부"", ""amount"": ""1모""}]",200,20,10,10,test\n'
+        'semantic,만두국,,15,"[{""name"": ""대파"", ""amount"": ""1대""}]",250,15,25,8,test\n',
+        encoding="utf-8",
+    )
+    catalog = CsvRecipeRepository(catalog_path)
+    collection = FakeChromaCollection(["semantic"])
+    repository = ChromaRecipeRepository(collection, catalog)
+    query = RecipeSearchQuery(
+        confirmed_ingredients=[ToolIngredient(name="두부", amount="1모")],
+        user_conditions={"message": "만두 같은 따뜻한 메뉴"},
+    )
+
+    count = asyncio.run(repository.upsert_catalog())
+    recipes = asyncio.run(repository.search(query, limit=2))
+
+    assert count == 2
+    assert collection.upserted_ids == ["exact", "semantic"]
+    assert [recipe.recipe_id for recipe in recipes] == ["exact", "semantic"]
 
 
 def test_markdown_guide_loader_and_front_matter(tmp_path) -> None:

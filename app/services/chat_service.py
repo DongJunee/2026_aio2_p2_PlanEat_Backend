@@ -141,6 +141,12 @@ class ChatService:
         session = await self._session_repository.get(request.session_id)
         previous_step = session.step
         stored_recommendation = _stored_recommendation(session)
+        replace_confirmed_ingredients = (
+            previous_step == "COMPLETED"
+            and stored_recommendation is not None
+            and not request.attachments
+            and _looks_like_ingredient_replacement(request.message)
+        )
         if previous_step == "COMPLETED" and stored_recommendation is not None:
             selected_set_id = _parse_selected_set_id(request.message, stored_recommendation)
             if selected_set_id is not None:
@@ -175,7 +181,25 @@ class ChatService:
         candidate_ingredients = session.ingredient_candidates
         confirmed_ingredients = session.confirmed_ingredients
         extracted_ingredients: tuple[IngredientCandidate, ...] | None = None
-        if previous_step == "WAITING_INGREDIENT_CONFIRM":
+        if replace_confirmed_ingredients:
+            # 완료 이후에도 사용자가 명시적으로 새 재료를 지정하면 피드백이 아닌
+            # 재료 교체로 처리한다. 그렇지 않으면 이전 확정 재료가 그대로 Tool Hub로
+            # 전달되어 같은 레시피가 반복된다.
+            try:
+                extracted_ingredients = await self._extract_ingredients(
+                    user_message=request.message,
+                    attachments=(),
+                    current_ingredients=session.confirmed_ingredients,
+                )
+            except LLMResponseError:
+                return {
+                    "status": "ERROR",
+                    "response": "새 재료 입력을 해석하는 중 오류가 발생했습니다.",
+                }, 500
+            if extracted_ingredients:
+                candidate_ingredients = tuple()
+                confirmed_ingredients = extracted_ingredients
+        elif previous_step == "WAITING_INGREDIENT_CONFIRM":
             confirmation_decision = await self._read_ingredient_confirmation(request.message)
             candidate_ingredients, confirmed_ingredients = _apply_confirmation_decision(
                 session=session,
@@ -1031,6 +1055,26 @@ def _contains_optional_condition_question(text: str) -> bool:
 
     return _is_optional_condition_question(text) and bool(
         re.search(r"(?:알려|원하|있으신|얼마|몇|어떤|무엇|선호|피하|제외)", text)
+    )
+
+
+def _looks_like_ingredient_replacement(user_message: str) -> bool:
+    """완료 후 메시지가 기존 재료 전체 교체를 명시하는지 판정합니다.
+
+    ``스팸을 빼줘`` 같은 제외 피드백은 기존 Jev Plan 경로로 보내야 하므로,
+    재료를 새 목록으로 바꾸겠다는 표현만 교체 분기로 보낸다.
+    """
+
+    if re.search(r"(?:빼|삭제|제외|피하|싫)", user_message):
+        return False
+    return bool(
+        re.search(
+            r"(?:재료|식재료).{0,20}(?:바꾸|변경|교체|대체)|"
+            r"(?:바꾸|변경|교체|대체).{0,20}(?:재료|식재료)|"
+            r"(?:바꿔|변경|교체|대체).{0,30}(?:다시|새로)?\s*(?:추천|만들|짜|해줘)|"
+            r"(?:새|다른)\s*(?:재료|식재료)",
+            user_message,
+        )
     )
 
 

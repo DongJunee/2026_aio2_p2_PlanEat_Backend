@@ -975,6 +975,68 @@ def test_natural_language_ingredients_can_replace_missing_image() -> None:
     )
 
 
+def test_completed_session_replaces_ingredients_before_tool_request() -> None:
+    """완료 후 새 재료를 명시하면 기존 확정 재료 대신 교체 목록을 Tool에 전달합니다."""
+
+    class ReplacementGenerator(FakeStructuredRecommendationGenerator):
+        async def extract_ingredients(
+            self,
+            user_message: str,
+            attachments,
+            current_ingredients=(),
+        ) -> list[dict[str, str]]:
+            del attachments, current_ingredients
+            if "두부" in user_message:
+                return [
+                    {"name": "두부", "amount": "1모"},
+                    {"name": "계란", "amount": "2개"},
+                ]
+            if "닭가슴살" in user_message:
+                return [
+                    {"name": "닭가슴살", "amount": "1팩"},
+                    {"name": "고구마", "amount": "1개"},
+                ]
+            return []
+
+    repository = InMemoryChatSessionRepository()
+    provider = RecordingToolHubProvider()
+    service = ChatService(
+        llm_responder=ReplacementGenerator(),
+        tool_provider=provider,
+        session_repository=repository,
+    )
+    session_id = "completed-ingredient-replacement-session"
+
+    first, first_status = asyncio.run(
+        service.handle(
+            ChatRequest(
+                session_id=session_id,
+                message="두부와 계란으로 다이어트 식단을 만들어줘",
+            )
+        )
+    )
+    second, second_status = asyncio.run(
+        service.handle(
+            ChatRequest(
+                session_id=session_id,
+                message="닭가슴살과 고구마로 바꿔서 다시 추천해줘",
+            )
+        )
+    )
+
+    assert first_status == second_status == 200
+    assert first["step"] == second["step"] == "COMPLETED"
+    assert len(provider.requests) == 2
+    assert provider.requests[0].confirmed_ingredients == (
+        {"name": "두부", "amount": "1모"},
+        {"name": "계란", "amount": "2개"},
+    )
+    assert provider.requests[1].confirmed_ingredients == (
+        {"name": "닭가슴살", "amount": "1팩"},
+        {"name": "고구마", "amount": "1개"},
+    )
+
+
 def test_missing_image_with_natural_ingredients_can_ask_only_for_conditions() -> None:
     repository = InMemoryChatSessionRepository()
     service = ChatService(

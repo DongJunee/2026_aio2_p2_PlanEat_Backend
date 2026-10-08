@@ -285,6 +285,29 @@ def test_internal_csv_repository_preserves_enriched_ingredient_importance(tmp_pa
     ]
 
 
+def test_internal_csv_repository_prioritizes_recipes_matching_confirmed_ingredients(
+    tmp_path,
+) -> None:
+    catalog_path = tmp_path / "recipe-catalog.csv"
+    catalog_path.write_text(
+        "RCP_SEQ,RCP_NM,RCP_PAT2,RCP_PARTS_DTLS,REQUIRED_INGREDIENTS,"
+        "OPTIONAL_INGREDIENTS,SUBSTITUTABLE_INGREDIENTS,SUBSTITUTABLE_SEASONINGS,"
+        "INFO_ENG,INFO_PRO,INFO_CAR,INFO_FAT\n"
+        "1,닭고기 요리,반찬,닭고기 1개,닭고기,,,,320,20,18,15\n"
+        "2,두부 찜,반찬,두부 1모,두부,,,,280,18,16,12\n",
+        encoding="utf-8",
+    )
+    repository = CsvRecipeRepository(catalog_path)
+    query = RecipeSearchQuery(
+        confirmed_ingredients=[ToolIngredient(name="두부", amount="1모")],
+        user_conditions={"purpose": "다이어트"},
+    )
+
+    recipes = asyncio.run(repository.search(query, limit=1))
+
+    assert [recipe.recipe_id for recipe in recipes] == ["2"]
+
+
 def test_markdown_guide_loader_and_front_matter(tmp_path) -> None:
     guide_file = tmp_path / "soy-sauce.md"
     guide_file.write_text(

@@ -175,7 +175,10 @@ Tool Hub 또는 fallback LLM의 결과는 `RecommendationData` 검증과 안전�
 
 초기 완료 응답은 `next_action=FEEDBACK_OR_SET_SELECTION`과 `available_set_ids`를 포함하고,
 두 세트 중 하나를 선택하면 상세 PDF를 생성한다는 안내 문구를 반환한다.
-피드백은 Jev Plan과 조건 병합을 거쳐 같은 Tool·DTO·Output Guardrail 경로로 재추천한다.
+일반 피드백은 Jev Plan과 조건 병합을 거쳐 같은 Tool·DTO·Output Guardrail 경로로 재추천한다.
+완료 후 새 재료 교체 의도가 명확한 메시지는 기존 `confirmed_ingredients`를 교체하고,
+누적된 식단 조건을 유지한 채 같은 Tool 경로를 다시 실행한다. 단순 제외 피드백은 기존 재료를
+유지한다.
 세트 선택이 감지되면 검증된 한 세트만 PDF 생성기에 전달하고, 저장 성공 후
 `next_action=PDF_READY`, `selected_set_id`, `pdf_url`을 반환한다.
 

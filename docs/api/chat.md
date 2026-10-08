@@ -150,6 +150,11 @@ Content-Type: application/json
 `"단백질을 더 높여줘"`는 Jev Plan을 거쳐 조건을 누적하고 재추천·재검증합니다.
 `"SET001 선택"`, `"1번 세트 선택"`처럼 세트를 지정하면 선택 세트의 상세 PDF를 생성합니다.
 
+완료 후 `"닭가슴살과 고구마로 바꿔서 다시 추천해줘"`처럼 새 재료로 교체하겠다는 의도가
+명확하면 기존 `confirmed_ingredients`를 새 목록으로 교체한 뒤 같은 식단 조건으로 Tool Hub를
+다시 실행합니다. 단순히 `"스팸을 빼줘"`처럼 제외하는 피드백은 기존 Jev Plan의 조건 갱신·재추천
+경로로 처리합니다.
+
 PDF 생성이 완료되면 기존 추천 데이터와 함께 아래 필드를 반환합니다.
 
 ```json
@@ -329,6 +334,8 @@ ToolRequest = {
   `mocks/chat/response-success.json`은 런타임 데이터가 아니라 FE fixture와 테스트 전용입니다.
 - 완료 응답의 `response`는 세트 선택과 PDF 발급을 안내하는 서버 고정 문구이며, 실제 추천 데이터는
   `data.recipe_sets`에서 확인합니다.
+- `COMPLETED` 이후 새 재료 교체 의도가 명확한 메시지는 기존 확정 재료를 새 목록으로 교체해
+  Tool Hub에 전달합니다. 일반적인 제외·선호 피드백은 기존 확정 재료를 유지합니다.
 - `TOOL_HUB_ENABLED=false` 또는 테스트용 provider 미주입 시에만 OpenAI Structured
   Outputs 기반 임시 추천 결과를 사용합니다.
 - 재료 추출·최종 추천 생성에서 API 키가 없거나 LLM 호출에 실패하면 `500 ERROR`를 반환합니다.

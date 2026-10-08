@@ -61,15 +61,26 @@ class CsvRecipeRepository:
     async def search(self, query: RecipeSearchQuery, *, limit: int) -> list[CatalogRecipe]:
         """카탈로그를 로드하고, 순위 계산에 필요한 후보 수만 반환합니다.
 
-        재료 보유율·조리시간·식단 조건의 최종 필터와 정렬은 ``RecipeTool``이 담당한다.
+        확정 재료가 포함된 후보를 먼저 반환하되, 조리시간·식단 조건의 최종 필터와
+        정렬은 ``RecipeTool``이 담당한다. 재료 검색까지 무시하면 카탈로그 앞부분에
+        없는 재료가 요청되어도 항상 같은 후보만 전달될 수 있다.
         """
 
-        del query  # RecipeTool이 정규화된 조건으로 후보를 재정렬한다.
         if limit < 1:
             return []
         if self._recipes is None:
             self._recipes = await asyncio.to_thread(self._load_recipes)
-        return list(self._recipes[:limit])
+        owned_names = {_normalize_name(item.name) for item in query.confirmed_ingredients}
+        matching = [
+            recipe
+            for recipe in self._recipes
+            if any(_normalize_name(item.name) in owned_names for item in recipe.ingredients)
+        ]
+        matching_ids = {recipe.recipe_id for recipe in matching}
+        non_matching = [
+            recipe for recipe in self._recipes if recipe.recipe_id not in matching_ids
+        ]
+        return [*matching, *non_matching][:limit]
 
     def _load_recipes(self) -> tuple[CatalogRecipe, ...]:
         """CSV 전체를 검증해 불완전한 카탈로그가 부분 사용되지 않게 합니다."""
@@ -316,3 +327,11 @@ def _nonnegative_number(row: Mapping[str, str | None], field: str, row_number: i
 
 def _ingredient_key(name: str) -> str:
     return "".join(name.split()).lower()
+
+
+def _normalize_name(name: str) -> str:
+    """카탈로그 검색에서만 사용하는 재료명 표기 정규화입니다."""
+
+    normalized = _ingredient_key(name)
+    aliases = {"달걀": "계란", "파": "대파", "닭가슴": "닭가슴살"}
+    return aliases.get(normalized, normalized)

@@ -56,13 +56,9 @@ flowchart TD
     RESPONSE --> OUTPUT[Output Guardrail]
     OUTPUT -->|통과| SUCCESS[SUCCESS / COMPLETED]
     OUTPUT -->|실패| REGENERATE[안전 제약을 추가해 응답 재생성]
-    REGENERATE --> REGEN_CHECK{재생성 결과 검증}
-    REGEN_CHECK -->|통과| REGENERATED_SUCCESS[SUCCESS / COMPLETED]
-    REGEN_CHECK -->|실패| MASK[식별 가능한 값만 마스킹]
-    MASK --> MASK_CHECK{마스킹 결과 재검증}
-    MASK_CHECK -->|통과| MASKED_SUCCESS[SUCCESS / COMPLETED]
-    MASK_CHECK -->|실패| SAFE_FALLBACK[고정된 안전 문구로 응답]
-    SAFE_FALLBACK --> SAFE_SUCCESS[SUCCESS / COMPLETED]
+    REGENERATE -->|성공| SUCCESS
+    REGENERATE -->|실패| SAFE_FALLBACK[마스킹 또는 고정 안전 문구]
+    SAFE_FALLBACK --> SUCCESS
 ```
 
 Input Guardrail 실패는 악성 사용자 입력을 Graph에 전달하지 않기 위한 입력 차단이므로 기존처럼

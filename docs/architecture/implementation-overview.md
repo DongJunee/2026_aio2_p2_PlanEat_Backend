@@ -10,7 +10,7 @@
 FE
   │ POST /chat (session_id, message, attachments?)
   ▼
-FastAPI Router
+Plan Agent
   ▼
 ChatService ── 세션별 현재 단계 저장
   │

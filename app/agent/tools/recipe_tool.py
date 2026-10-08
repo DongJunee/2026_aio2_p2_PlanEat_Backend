@@ -4,7 +4,7 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Protocol
 
-from app.agent.tools.be2_models import (
+from app.agent.tools.tool_models import (
     CatalogRecipe,
     RecipeMatch,
     RecipeSearchQuery,
@@ -71,7 +71,7 @@ def query_from_tool_request(
     confirmed_ingredients: Sequence[Mapping[str, object]],
     user_conditions: Mapping[str, object],
 ) -> RecipeSearchQuery:
-    """기존 BE1 ``ToolRequest``의 느슨한 Mapping을 BE2 검색 모델로 검증합니다."""
+    """기존 Orchestrator ``ToolRequest``의 느슨한 Mapping을 Tool Hub 검색 모델로 검증합니다."""
 
     return RecipeSearchQuery(
         confirmed_ingredients=[ToolIngredient.model_validate(item) for item in confirmed_ingredients],
@@ -88,7 +88,7 @@ def _normalize_name(name: str) -> str:
 
 
 def _condition_text(conditions: Mapping[str, object] | object) -> str:
-    """BE1이 보관한 자연어 조건 원문을 안전하게 읽습니다."""
+    """Orchestrator가 보관한 자연어 조건 원문을 안전하게 읽습니다."""
 
     if not isinstance(conditions, Mapping):
         return ""

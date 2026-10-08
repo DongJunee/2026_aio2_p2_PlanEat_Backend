@@ -1,4 +1,4 @@
-"""ChromaDB에 Recipe Guide 문서를 적재·검색하는 BE2 어댑터입니다."""
+"""ChromaDB에 Recipe Guide 문서를 적재·검색하는 Tool Hub 어댑터입니다."""
 
 import asyncio
 import json
@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from app.agent.tools.be2_models import IngredientGuide
+from app.agent.tools.tool_models import IngredientGuide
 
 
 @dataclass(frozen=True)

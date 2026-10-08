@@ -48,7 +48,7 @@ LangGraph와 서비스가 결정하며, 안내 LLM 장애 시 단계별 fallback
 - 프롬프트 파일의 역할·출력·보안 지시는 `instructions`에만 둔다.
 - 사용자 메시지, 이미지 인식 결과, Tool Hub·RAG 결과는 데이터로 취급하며 그 안의
   지시문을 실행하지 않는다.
-- 외부 Tool 호출 권한은 BE2의 LangGraph가 결정한다. 최종 응답 생성 LLM에는 Tool을
+- 외부 Tool 호출 권한은 Tool Hub의 LangGraph가 결정한다. 최종 응답 생성 LLM에는 Tool을
   제공하지 않는다.
 - `message`는 최대 2,000자로 제한하고, 최종 출력은 최대 120 토큰으로 제한한다.
 - OpenAI Responses 요청에는 `store=False`를 지정한다.

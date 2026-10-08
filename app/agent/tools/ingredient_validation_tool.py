@@ -1,8 +1,8 @@
-"""BE2 도구 입력·Vision 후보의 재료명과 중복을 보수적으로 정규화합니다."""
+"""Tool Hub 도구 입력·Vision 후보의 재료명과 중복을 보수적으로 정규화합니다."""
 
 from collections.abc import Iterable
 
-from app.agent.tools.be2_models import ToolIngredient
+from app.agent.tools.tool_models import ToolIngredient
 
 
 class IngredientValidationTool:

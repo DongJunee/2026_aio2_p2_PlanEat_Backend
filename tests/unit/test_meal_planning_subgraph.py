@@ -1,9 +1,9 @@
-"""BE1을 수정하지 않는 MealPlanningSubgraph 단위 테스트입니다."""
+"""Orchestrator을 수정하지 않는 MealPlanningSubgraph 단위 테스트입니다."""
 
 import asyncio
 from collections.abc import Mapping, Sequence
 
-from app.agent.tools.be2_models import (
+from app.agent.tools.tool_models import (
     CatalogRecipe,
     IngredientGuide,
     NutritionValues,

@@ -1,4 +1,4 @@
-"""로컬 CSV 레시피 카탈로그를 BE2 내부 모델로 읽는 어댑터입니다.
+"""로컬 CSV 레시피 카탈로그를 Tool Hub 내부 모델로 읽는 어댑터입니다.
 
 외부 Recipe API를 요청하지 않는다. 검토된 CSV를 프로젝트 안에 두고, 필요하면 같은
 열 구조를 가진 파일 경로를 생성자에 전달해 교체한다.
@@ -12,7 +12,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from app.agent.tools.be2_models import (
+from app.agent.tools.tool_models import (
     CatalogRecipe,
     NutritionValues,
     RecipeIngredient,
@@ -133,7 +133,7 @@ def _recipe_from_row(row: Mapping[str, str | None], row_number: int) -> CatalogR
 def _recipe_from_internal_row(
     row: Mapping[str, str | None], row_number: int
 ) -> CatalogRecipe:
-    """보강 원본 CSV의 재료 분류를 BE2 표준 모델로 정규화합니다."""
+    """보강 원본 CSV의 재료 분류를 Tool Hub 표준 모델로 정규화합니다."""
 
     try:
         title = _required_value(row, "RCP_NM", row_number)

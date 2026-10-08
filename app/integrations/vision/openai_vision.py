@@ -1,4 +1,4 @@
-"""냉장고 이미지에서 사용자 확인 전 재료 후보만 추출하는 BE2 Vision provider입니다."""
+"""냉장고 이미지에서 사용자 확인 전 재료 후보만 추출하는 Tool Hub Vision provider입니다."""
 
 import json
 from collections.abc import Mapping, Sequence
@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 from openai import AsyncOpenAI, OpenAIError
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from app.agent.tools.be2_models import ToolIngredient
+from app.agent.tools.tool_models import ToolIngredient
 from app.agent.tools.ingredient_validation_tool import IngredientValidationTool
 
 _PROMPT_PATH = Path(__file__).resolve().parents[3] / "prompts" / "vision" / "ingredient-extraction.md"
@@ -57,7 +57,7 @@ class OpenAIVisionIngredientExtractor:
     """OpenAI Responses API로 이미지의 재료 후보를 추출합니다.
 
     이 클래스는 후보만 반환한다. 후보를 확정 재료나 Recipe/RAG 입력으로 사용하는
-    정책은 BE1의 재료 확인 단계가 책임진다.
+    정책은 Orchestrator의 재료 확인 단계가 책임진다.
     """
 
     def __init__(

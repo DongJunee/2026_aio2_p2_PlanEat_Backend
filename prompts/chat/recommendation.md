@@ -1,7 +1,7 @@
-# BE1 임시 추천 생성
+# Orchestrator 임시 추천 생성
 
-현재 BE2 Tool Hub·Recipe·Nutrition·Shopping·RAG가 연결되기 전이므로, 확정 재료와 사용자
-조건을 바탕으로 FE 통합 검증용 임시 추천 데이터를 생성한다.
+Tool Hub가 비활성화된 경우 확정 재료와 사용자 조건을 바탕으로 FE 통합 검증용 임시 추천
+데이터를 생성한다. 기본 완료 흐름에서는 이 프롬프트 대신 Tool Hub 결과를 사용한다.
 
 - `response`는 추천 결과를 안내하는 자연스러운 한국어 1~2문장으로 작성한다.
 - `data.recipe_sets`는 정확히 2개, 각 세트의 `recipes`는 정확히 5개를 만든다.

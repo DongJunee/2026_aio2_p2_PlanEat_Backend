@@ -87,7 +87,7 @@ class FakeCompletionMessageGenerator:
 
 
 class FakeStructuredRecommendationGenerator(FakeCompletionMessageGenerator):
-    """BE2 없이도 mock 추천 데이터와 LLM 호출 경계를 검증하는 fake입니다."""
+    """Tool Hub 없이도 mock 추천 데이터와 LLM 호출 경계를 검증하는 fake입니다."""
 
     def __init__(self, **kwargs: object) -> None:
         super().__init__(
@@ -140,14 +140,21 @@ class FakeIngredientConfirmationEvaluator:
 
 
 class RecordingToolHubProvider:
-    """완료 단계에서 BE2로 전달할 ToolRequest를 기록하는 fake입니다."""
+    """완료 단계에서 Tool Hub로 전달할 ToolRequest와 결과를 기록하는 fake입니다."""
 
     def __init__(self) -> None:
         self.requests: list[ToolRequest] = []
 
-    async def execute(self, request: ToolRequest) -> ToolResult:
+    async def execute(self, request: ToolRequest, *, config=None) -> ToolResult:
+        del config
         self.requests.append(request)
-        return ToolResult(result={"accepted": True})
+        return ToolResult(
+            result={
+                "response": "Tool Hub가 확정 재료와 조건으로 추천했습니다.",
+                "data": _mock_recommendation_data(),
+            },
+            source_metadata={"provider": "test"},
+        )
 
 
 def test_chat_api_advances_one_session_through_langgraph(monkeypatch) -> None:
@@ -188,7 +195,7 @@ def test_chat_api_advances_one_session_through_langgraph(monkeypatch) -> None:
     body = completed.json()
     assert body["status"] == "SUCCESS"
     assert body["step"] == "COMPLETED"
-    assert body["response"] == "다이어트, 20분 이내 조건에 맞는 레시피를 준비했습니다."
+    assert body["response"] == "확정한 재료와 조건에 맞는 메인·반찬 식단을 추천했습니다."
     assert len(body["data"]["recipe_sets"]) == 2
 
 
@@ -421,7 +428,7 @@ def test_tool_provider_receives_only_prepared_tool_request() -> None:
 
     assert request.confirmed_ingredients == ({"name": "두부", "amount": "1모"},)
     assert request.user_conditions == {"message": "다이어트 식단으로 20분 안에 만들고 싶어요."}
-    assert result.result == {"accepted": True}
+    assert result.result["response"] == "Tool Hub가 확정 재료와 조건으로 추천했습니다."
     assert provider.requests == [request]
 
 
@@ -495,6 +502,48 @@ def test_confirmed_ingredients_move_to_tool_request_after_user_confirmation() ->
         {"name": "두부", "amount": "1모"},
         {"name": "계란", "amount": "4개"},
     )
+
+
+def test_chat_service_uses_tool_hub_result_instead_of_llm_recommendation() -> None:
+    class FailingRecommendationGenerator(FakeCompletionMessageGenerator):
+        async def generate_recommendation(
+            self,
+            user_message: str,
+            confirmed_ingredients: list[dict[str, str]],
+            user_conditions: dict[str, object] | None,
+        ) -> dict[str, object]:
+            raise AssertionError("Tool Hub 결과가 있으면 임시 LLM 추천을 호출하면 안 됩니다.")
+
+    repository = InMemoryChatSessionRepository()
+    provider = RecordingToolHubProvider()
+    asyncio.run(
+        repository.save(
+            "tool-hub-result-session",
+            ChatSessionState(
+                step="WAITING_CONDITIONS",
+                confirmed_ingredients=(IngredientCandidate(name="두부", amount="1모"),),
+                user_conditions={"message": "다이어트 식단으로 20분 안에 만들고 싶어요."},
+            ),
+        )
+    )
+    service = ChatService(
+        llm_responder=FailingRecommendationGenerator(),
+        tool_provider=provider,
+        session_repository=repository,
+    )
+
+    payload, status_code = asyncio.run(
+        service.handle(
+            ChatRequest(
+                session_id="tool-hub-result-session",
+                message="다이어트 식단으로 20분 안에 만들고 싶어요.",
+            )
+        )
+    )
+
+    assert status_code == 200
+    assert payload["response"] == "Tool Hub가 확정 재료와 조건으로 추천했습니다."
+    assert payload["data"] == _mock_recommendation_data()
 
 
 def test_edited_ingredients_are_updated_and_requested_again() -> None:

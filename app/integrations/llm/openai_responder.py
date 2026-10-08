@@ -214,7 +214,7 @@ def load_completion_instructions() -> str:
 
 @lru_cache
 def load_recommendation_instructions() -> str:
-    """BE2 연결 전 임시 추천 생성에 필요한 프롬프트를 조합합니다."""
+    """Tool Hub 비활성화 시 임시 추천 생성에 필요한 프롬프트를 조합합니다."""
 
     return "\n\n".join(load_prompt_part(path) for path in _RECOMMENDATION_PROMPT_PARTS)
 
@@ -402,9 +402,9 @@ class OpenAIResponder:
     ) -> GeneratedRecommendation:
         """확정 재료·조건으로 API 계약에 맞는 임시 추천을 구조화해 생성합니다.
 
-        BE2 Recipe·Nutrition·Shopping·RAG 결과가 연결되기 전의 교체 지점이다. OpenAI의
-        Structured Outputs로 JSON 형태를 제한한 뒤, 서버에서도 `RecommendationData`를
-        다시 검증해 잘못된 모델 응답이 FE 계약으로 유입되지 않게 한다.
+        Tool Hub를 사용할 수 없는 fallback 경로의 임시 추천이다. OpenAI의 Structured
+        Outputs로 JSON 형태를 제한한 뒤, 서버에서도 `RecommendationData`를 다시 검증해
+        잘못된 모델 응답이 FE 계약으로 유입되지 않게 한다.
         """
 
         if not self._api_key:

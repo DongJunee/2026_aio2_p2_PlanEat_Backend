@@ -66,12 +66,12 @@ class NemoGuardrailService:
         return await self._check(text, role="assistant")
 
     async def validate_tool_result(self, text: str) -> bool:
-        """BE2 결과를 assistant 출력과 같은 비신뢰 텍스트 경계에서 검사합니다.
+        """Tool Hub 결과를 assistant 출력과 같은 비신뢰 텍스트 경계에서 검사합니다.
 
-        현재 BE1의 ToolProvider는 OpenAI tool-call 대화 이력이 아니라 별도 async
+        현재 Orchestrator의 Tool Hub provider는 OpenAI tool-call 대화 이력이 아니라 별도 async
         계약을 사용하므로 NeMo의 구조적 ``tool result validation`` rail을 직접
         호출할 수 없다. 결과를 최종 출력 rail에 통과시켜 내부 지시·비밀값 패턴이
-        FE 응답 경계로 넘어가지 않게 하고, BE2가 Chat Completions tool loop를
+        FE 응답 경계로 넘어가지 않게 하고, Tool Hub가 Chat Completions tool loop를
         제공하면 그때 구조적 rail로 교체한다.
         """
 

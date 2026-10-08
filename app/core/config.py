@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     typesafe_jev_min_confidence: float = 0.8
     nemo_guardrails_enabled: bool = True
     nemo_guardrails_config_path: str = "guardrails"
+    tool_hub_enabled: bool = True
+    tool_hub_catalog_path: str | None = None
+    chroma_persist_directory: str | None = None
+    chroma_collection_name: str = "recipe_guides"
 
 
 @lru_cache

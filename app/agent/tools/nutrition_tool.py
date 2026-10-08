@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 
-from app.agent.tools.be2_models import CatalogRecipe, NutritionValues
+from app.agent.tools.tool_models import CatalogRecipe, NutritionValues
 
 
 @dataclass(frozen=True)

@@ -1,6 +1,6 @@
 """Tool Hub 내부에서 사용하는 정규화 모델입니다.
 
-외부 레시피 소스의 느슨한 필드를 BE2 내부 모델로 정규화한 뒤, 마지막에 기존 Chat API가 요구하는 recipe_sets
+외부 레시피 소스의 느슨한 필드를 Tool Hub 내부 모델로 정규화한 뒤, 마지막에 기존 Chat API가 요구하는 recipe_sets
 형태로 변환하기 위한 독립 경계다.
 """
 
@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class ToolIngredient(BaseModel):
-    """BE2 도구가 받거나 반환하는 재료와 수량입니다."""
+    """Tool Hub 도구가 받거나 반환하는 재료와 수량입니다."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -38,7 +38,7 @@ class NutritionValues(BaseModel):
 
 
 class CatalogRecipe(BaseModel):
-    """외부 Recipe Source를 정규화한 BE2 내부 레시피입니다."""
+    """외부 Recipe Source를 정규화한 Tool Hub 내부 레시피입니다."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -86,7 +86,7 @@ class IngredientGuide(BaseModel):
 
 
 class ToolRecipeCard(BaseModel):
-    """기존 Chat API ``Recipe`` 객체와 호환되는 BE2 결과 카드입니다."""
+    """기존 Chat API ``Recipe`` 객체와 호환되는 Tool Hub 결과 카드입니다."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -110,7 +110,7 @@ class ToolRecipeSet(BaseModel):
 
 
 class ToolRecommendationData(BaseModel):
-    """FE의 ``RecommendationData``와 동일한 형태의 BE2 완료 데이터입니다."""
+    """FE의 ``RecommendationData``와 동일한 형태의 Tool Hub 완료 데이터입니다."""
 
     model_config = ConfigDict(extra="forbid")
 

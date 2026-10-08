@@ -1,6 +1,6 @@
-"""BE1이 BE2 Tool Hub에 전달할 내부 계약과 호출 전 검증을 정의합니다.
+"""Orchestrator가 Tool Hub에 전달할 내부 계약과 호출 전 검증을 정의합니다.
 
-BE2 URL과 하위 DTO는 아직 팀 합의 전이다. 따라서 이 모듈은 네트워크 호출을 하지 않고,
+Tool Hub URL과 하위 DTO는 아직 팀 합의 전이다. 따라서 이 모듈은 네트워크 호출을 하지 않고,
 상위 필드와 사용자 확인 제약만 고정한다.
 """
 
@@ -17,10 +17,10 @@ class ToolRequestPreparationError(ValueError):
 
 @dataclass(frozen=True)
 class ToolRequest:
-    """BE1에서 BE2로 전달할 정규화 전 Tool 요청입니다.
+    """Orchestrator에서 Tool Hub로 전달할 정규화 전 Tool 요청입니다.
 
-    ``user_conditions``에는 BE1이 자연어 메시지에서 충분성을 판별한 조건 원문을 담는다.
-    상세 추출 DTO는 BE2와 합의 후 구체화한다. 현재는 임의의 후보 재료가 전달되는 것을
+    ``user_conditions``에는 Orchestrator가 자연어 메시지에서 충분성을 판별한 조건 원문을 담는다.
+    상세 추출 DTO는 Tool Hub와 합의 후 구체화한다. 현재는 임의의 후보 재료가 전달되는 것을
     방지하는 역할을 한다.
     """
 
@@ -32,7 +32,7 @@ class ToolRequest:
 
 @dataclass(frozen=True)
 class ToolResult:
-    """BE2 결과를 BE1 워크플로우가 안전하게 처리할 수 있는 형태로 표현합니다."""
+    """Tool Hub 결과를 Orchestrator 워크플로우가 안전하게 처리할 수 있는 형태로 표현합니다."""
 
     result: Mapping[str, Any] | None = None
     source_metadata: Mapping[str, Any] | None = None

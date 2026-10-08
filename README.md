@@ -26,7 +26,7 @@ FastAPI와 LangGraph 기반의 대화형 식단 추천 백엔드입니다. 사�
 NeMo Guardrails 설정·적용 범위는 [Guardrails 연동 가이드](docs/integrations/guardrails.md)를 참고합니다.
 TypeSafe Jev 자연어 판정 설정은 [Jev 연동 가이드](docs/integrations/jev.md)를 참고합니다.
 소스 구조와 실행 흐름은 [구현 개요](docs/architecture/implementation-overview.md)를 참고합니다.
-Tool Hub 연결 전 준비 상태는 [Tool Hub 연동 준비](docs/integrations/tool-hub-readiness.md)를 참고합니다.
+Tool Hub 연동 상태와 외부 endpoint 확장 지점은 [Tool Hub 연동 상태](docs/integrations/tool-hub-readiness.md)를 참고합니다.
 전체 문서 카테고리와 권장 읽기 순서는 [문서 안내](docs/README.md)를 참고합니다.
 
 주요 상태:
@@ -57,13 +57,11 @@ Tool Hub 연결 전 준비 상태는 [Tool Hub 연동 준비](docs/integrations/
 │   ├── schemas/                        # Chat Request·Response 모델
 │   ├── services/                       # 세션·대화 처리
 │   ├── repositories/                   # 세션·레시피 DB 접근
-│   ├── models/                         # DB 모델
-│   ├── integrations/
+│   └── integrations/
 │   │   ├── llm/                        # LLM Provider
 │   │   ├── vision/                     # 이미지 인식 Provider
 │   │   ├── recipe_source/              # 로컬 CSV 레시피 카탈로그
 │   │   └── vector_store/               # ChromaDB
-│   └── db/                             # DB 설정
 ├── prompts/                            # LLM 운영 프롬프트
 ├── guardrails/                         # NeMo Guardrails 설정
 ├── tests/                              # 단위·통합 테스트
@@ -103,8 +101,9 @@ git diff --check
 ```
 
 현재 `/chat`은 LangGraph 기반의 세션 단계 전이를 제공합니다. 이미지 재료와 자연어 재료는
-OpenAI 구조화 추출로 처리하고, Tool Hub·RAG 연동 전에는 OpenAI가 생성한 임시 레시피·영양·
-장보기 데이터를 반환합니다. BE2 연동 후 해당 LLM 임시 경로를 실제 Tool 결과로 교체합니다.
+OpenAI 구조화 추출로 처리하고, 재료 확인이 끝난 완료 단계에서는 Tool Hub Recipe·Nutrition·
+Shopping·RAG Tool 결과를 반환합니다. `TOOL_HUB_ENABLED=false`이면 OpenAI가 생성한
+임시 추천 경로로 fallback합니다.
 
 ### 로컬 레시피 CSV
 

@@ -116,7 +116,7 @@ class JevIngredientConfirmationEvaluator:
     """Jev Choice 질문으로 재료 후보 확인 의도를 분류합니다.
 
     Jev는 후보 재료를 수정하지 않고 의도만 분류한다. ``edited``인 경우 후보의 실제
-    변경은 서비스 계층의 제한적인 자연어 parser가 담당하며, 합의된 BE2 추출 DTO가
+    변경은 서비스 계층의 제한적인 자연어 parser가 담당하며, 합의된 Tool Hub 추출 DTO가
     생기면 해당 parser를 교체한다.
     """
 

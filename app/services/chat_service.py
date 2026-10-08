@@ -6,13 +6,10 @@ import json
 import re
 from typing import Literal, Protocol
 
-from app.agent.graph import ChatState, WorkflowStep, chat_graph
-from app.agent.tools.contracts import (
-    ToolRequest,
-    ToolRequestPreparationError,
-    ToolResult,
-    build_tool_request,
-)
+from app.agent.graph import ChatState, WorkflowStep, build_chat_graph
+from app.agent.tools.factory import build_default_tool_hub
+from app.agent.tools.nodes import build_recipe_recommendation_node
+from app.agent.tools.tool_calls import ToolRequestExecutor
 from app.core.config import get_settings
 from app.core.observability import build_langsmith_run_config
 from app.core.safety import (
@@ -80,22 +77,15 @@ class IngredientConfirmationEvaluator(Protocol):
         """확정·거절·수정·모호함 중 하나를 반환합니다."""
 
 
-class ToolHubProvider(Protocol):
-    """BE2 Tool Hub가 제공해야 하는 비동기 실행 인터페이스입니다."""
-
-    async def execute(self, request: ToolRequest) -> ToolResult:
-        """정규화된 ToolRequest를 실행합니다."""
-
-
 class ChatService:
-    """세션 상태, LangGraph 전이, LLM 임시 추천 응답 생성을 연결합니다."""
+    """세션 상태, LangGraph 전이, Tool Hub·임시 LLM 응답을 연결합니다."""
 
     def __init__(
         self,
         llm_responder: LLMResponder | None = None,
         condition_evaluator: ConditionReadinessEvaluator | None = None,
         ingredient_confirmation_evaluator: IngredientConfirmationEvaluator | None = None,
-        tool_provider: ToolHubProvider | None = None,
+        tool_provider: ToolRequestExecutor | None = None,
         session_repository: ChatSessionRepository | None = None,
         guardrail_validator: GuardrailValidator | None = None,
     ) -> None:
@@ -109,9 +99,14 @@ class ChatService:
             ingredient_confirmation_evaluator
             or JevIngredientConfirmationEvaluator(settings)
         )
-        # BE2 endpoint가 합의되기 전에는 provider를 호출하지 않는다. 테스트나 실제
-        # 어댑터를 주입한 경우에만 ToolRequest를 전달해 임시 결과를 강제로 만들지 않는다.
         self._tool_provider = tool_provider
+        self._chat_graph = build_chat_graph(
+            tool_node=(
+                build_recipe_recommendation_node(tool_provider)
+                if tool_provider is not None
+                else None
+            )
+        )
         self._session_repository = session_repository or InMemoryChatSessionRepository()
         self._guardrail_validator = guardrail_validator or NemoGuardrailService(settings)
 
@@ -206,6 +201,12 @@ class ChatService:
             "step": previous_step,
             "messages": messages,
             "summary": session.summary,
+            "session_id": request.session_id,
+            "confirmed_ingredients": [
+                {"name": ingredient.name, "amount": ingredient.amount}
+                for ingredient in confirmed_ingredients
+            ],
+            "user_conditions": dict(effective_conditions or {}),
             "has_image": bool(request.attachments),
             "has_conditions": effective_conditions is not None,
             "has_confirmed_ingredients": bool(confirmed_ingredients),
@@ -224,11 +225,12 @@ class ChatService:
             has_conditions=effective_conditions is not None,
             has_confirmed_ingredients=bool(confirmed_ingredients),
             attachment_count=len(request.attachments or []),
+            tool_enabled=self._tool_provider is not None,
         )
         if trace_config is None:
-            result = await chat_graph.ainvoke(state)
+            result = await self._chat_graph.ainvoke(state)
         else:
-            result = await chat_graph.ainvoke(state, config=trace_config)
+            result = await self._chat_graph.ainvoke(state, config=trace_config)
         next_session = _next_session_state(
             session=session,
             next_step=result["step"],
@@ -250,14 +252,17 @@ class ChatService:
         await self._session_repository.save(request.session_id, next_session)
 
         try:
-            if result["step"] == "COMPLETED":
-                tool_error = await self._execute_tool_request(
-                    session_id=request.session_id,
-                    session=next_session,
-                )
-                if tool_error is not None:
-                    return tool_error, 500
-            response = await self._to_response(result, request.message, next_session)
+            if result.get("tool_error"):
+                return {
+                    "status": "ERROR",
+                    "response": "추천 도구 실행 중 오류가 발생했습니다.",
+                }, 500
+            response = await self._to_response(
+                result,
+                request.message,
+                next_session,
+                tool_result=result.get("tool_result"),
+            )
         except LLMResponseError:
             return {"status": "ERROR", "response": "추천 응답 생성 중 오류가 발생했습니다."}, 500
 
@@ -276,6 +281,7 @@ class ChatService:
         state: Mapping[str, object],
         user_message: str,
         session: ChatSessionState,
+        tool_result: object = None,
     ) -> dict[str, object]:
         """LangGraph의 내부 단계를 외부 Chat API 응답 형식으로 변환합니다."""
 
@@ -373,6 +379,9 @@ class ChatService:
                 "response": message,
                 "questions": questions,
             }
+        if tool_result is not None:
+            return await self._response_from_tool_hub(tool_result)
+
         generated_recommendation = await self._generate_recommendation(
             user_message=user_message,
             session=session,
@@ -385,6 +394,38 @@ class ChatService:
             "step": "COMPLETED",
             "response": completion_message,
             "data": {"recipe_sets": recipe_sets},
+        }
+
+    async def _response_from_tool_hub(self, raw_result: object) -> dict[str, object]:
+        """Tool Hub 결과를 기존 ChatResponse 계약으로 검증·변환합니다.
+
+        Tool 결과는 외부 입력과 같은 비신뢰 경계로 취급한다. 따라서 FE에 반환하기
+        전에 NeMo rail과 기존 Pydantic DTO를 모두 통과시킨다.
+        """
+
+        if not isinstance(raw_result, Mapping):
+            raise LLMResponseError("Tool Hub 결과 형식이 올바르지 않습니다.")
+        tool_result_payload = json.dumps(raw_result, ensure_ascii=False, default=str)
+        if not await self._guardrail_validator.validate_tool_result(tool_result_payload):
+            raise LLMResponseError("Tool Hub 결과가 안전성 검사를 통과하지 못했습니다.")
+
+        completion_message = raw_result.get("response")
+        raw_data = raw_result.get("data")
+        if not isinstance(completion_message, str) or not isinstance(raw_data, Mapping):
+            raise LLMResponseError("Tool Hub 결과 형식이 올바르지 않습니다.")
+        try:
+            validate_completion_output(completion_message)
+            recommendation = RecommendationData.model_validate(raw_data)
+        except (SafetyViolationError, ValueError) as error:
+            raise LLMResponseError("Tool Hub 결과 검증에 실패했습니다.") from error
+        if not await self._guardrail_validator.validate_output(completion_message):
+            raise LLMResponseError("NeMo Guardrails가 Tool Hub 완료 응답을 차단했습니다.")
+
+        return {
+            "status": "SUCCESS",
+            "step": "COMPLETED",
+            "response": completion_message,
+            "data": recommendation.model_dump(),
         }
 
     async def _clarification_response(
@@ -454,9 +495,9 @@ class ChatService:
     ) -> tuple[str, list[dict[str, object]]]:
         """기본 LLM 응답기가 제공하는 구조화 추천을 API 응답 데이터로 검증합니다.
 
-        BE2가 준비되면 이 메서드의 호출 경계를 Recipe·Nutrition·Shopping·RAG 결과
-        어댑터로 교체한다. 추천 데이터는 코드에 내장하지 않고 LLM 또는 BE2 결과에서
-        받아 서버 DTO로 검증한다.
+        ``TOOL_HUB_ENABLED=false``이거나 provider가 주입되지 않은 fallback 경로에서만
+        호출한다. 기본 완료 흐름은 Tool Hub 결과를 사용하며, 두 경로 모두 서버 DTO로
+        다시 검증한다.
         """
 
         generator = getattr(self._llm_responder, "generate_recommendation", None)
@@ -531,42 +572,6 @@ class ChatService:
         if decision is not None:
             return decision
         return _fallback_ingredient_confirmation(user_message)
-
-    async def _execute_tool_request(
-        self, *, session_id: str, session: ChatSessionState
-    ) -> dict[str, str] | None:
-        """확정 재료와 조건을 BE2 계약으로 만들어 provider에 전달합니다."""
-
-        if self._tool_provider is None:
-            # BE2 endpoint가 아직 없을 때는 임의의 fake 결과를 만들지 않고, 추천 생성기가
-            # 확정 재료·조건을 직접 처리하도록 둔다.
-            return None
-
-        try:
-            request = build_tool_request(
-                session_id=session_id,
-                tool_name="recipe_recommendation",
-                session=session,
-            )
-            result = await self._tool_provider.execute(request)
-        except ToolRequestPreparationError:
-            return {
-                "status": "ERROR",
-                "response": "재료 확인이 완료되지 않아 추천을 진행할 수 없습니다.",
-            }
-        if result.error:
-            return {"status": "ERROR", "response": "추천 도구 실행 중 오류가 발생했습니다."}
-        tool_result_payload = json.dumps(
-            {
-                "result": result.result,
-                "source_metadata": result.source_metadata,
-            },
-            ensure_ascii=False,
-            default=str,
-        )
-        if not await self._guardrail_validator.validate_tool_result(tool_result_payload):
-            return {"status": "ERROR", "response": "추천 도구 결과를 검증할 수 없습니다."}
-        return None
 
     async def _read_conditions_from_message(
         self, user_message: str
@@ -702,4 +707,13 @@ def _has_fallback_conditions(user_message: str) -> bool:
     return has_goal and has_time
 
 
-chat_service = ChatService()
+def _build_default_tool_provider() -> ToolRequestExecutor | None:
+    """기본 앱에 연결할 Tool Hub provider를 설정에 따라 조립합니다."""
+
+    settings = get_settings()
+    if not settings.tool_hub_enabled:
+        return None
+    return build_default_tool_hub(settings)
+
+
+chat_service = ChatService(tool_provider=_build_default_tool_provider())

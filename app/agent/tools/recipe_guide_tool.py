@@ -4,7 +4,7 @@ import asyncio
 from collections.abc import Iterable
 from typing import Protocol
 
-from app.agent.tools.be2_models import IngredientGuide
+from app.agent.tools.tool_models import IngredientGuide
 
 
 class RecipeGuideRetriever(Protocol):

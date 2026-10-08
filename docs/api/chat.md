@@ -35,7 +35,7 @@ Content-Type: application/json
 `attachments[].type`은 현재 `image`만 지원합니다.
 
 `attachments`는 생략해도 됩니다. 이미지 없이 시작하거나 이미지 요청 후에도 사용자가
-이미지 요청 후 `"두부 1모와 계란이 있어요"`처럼 재료를 `message`에 직접 입력하면, BE1은 지원하는
+이미지 요청 후 `"두부 1모와 계란이 있어요"`처럼 재료를 `message`에 직접 입력하면, Orchestrator는 지원하는
 모델이 실제로 확인한 재료명만 구조화해 사용자 입력 확정 재료로 사용합니다. 이미지 인식 후보가 아니므로
 별도 `INGREDIENT_CONFIRM` 단계 없이 조건이 준비된 경우 추천 단계로 진행합니다.
 
@@ -169,7 +169,7 @@ FE에서 사용할 수 있는 전체 성공 응답은 [`mocks/chat/response-succ
 ```
 
 FE는 별도 확인 DTO를 보내지 않고 사용자의 자연어 답변을 `message`로 다시 전송합니다.
-BE1은 Jev의 `choice` 판정으로 답변 의도를 분류합니다.
+Orchestrator는 Jev의 `choice` 판정으로 답변 의도를 분류합니다.
 
 | 내부 판정 | 처리 | 외부 응답 |
 |---|---|---|
@@ -182,8 +182,9 @@ BE1은 Jev의 `choice` 판정으로 답변 의도를 분류합니다.
 다시 반환됩니다. `"네, 모두 맞아요"`는 `confirmed`로 분류됩니다.
 
 재료가 확정되고 식단 조건도 준비되면 내부적으로 아래 요청을 생성합니다. 이 DTO는 FE에
-노출되지 않으며, BE2 provider가 주입된 경우에만 실행합니다. BE2 provider가 없으면
-확정 재료·조건을 OpenAI 추천 생성기에 직접 전달합니다.
+노출되지 않으며, 기본 설정에서는 LangGraph의 Tool Hub node가 실행합니다.
+`TOOL_HUB_ENABLED=false`이거나 테스트용 provider가 없으면 확정 재료·조건을 OpenAI
+임시 추천 생성기에 직접 전달합니다.
 
 ```text
 ToolRequest = {
@@ -290,9 +291,10 @@ ToolRequest = {
   `OpenAIResponder.generate_clarification_response()`의 Structured Outputs로 생성하며,
   모델 장애나 검증 실패 시 단계별 고정 fallback으로 응답합니다. 이 fallback은 FE의
   `status`·`step` 계약을 변경하지 않습니다.
-- Tool Hub 연동 전에는 확정 재료·조건을 바탕으로 OpenAI가 생성한 임시 추천 결과를 반환합니다.
-- `COMPLETED` 단계의 `response`와 `data.recipe_sets`는 OpenAI Structured Outputs로 생성하고,
-  서버에서 `RecommendationData`로 다시 검증합니다.
+- 기본 설정에서는 `COMPLETED` 단계에 Recipe·Nutrition·Shopping·RAG Tool을 실행하고,
+  Tool 결과의 `response`와 `data.recipe_sets`를 서버에서 `RecommendationData`로 다시 검증합니다.
+- `TOOL_HUB_ENABLED=false` 또는 테스트용 provider 미주입 시에만 OpenAI Structured
+  Outputs 기반 임시 추천 결과를 사용합니다.
 - 재료 추출·최종 추천 생성에서 API 키가 없거나 LLM 호출에 실패하면 `500 ERROR`를 반환합니다.
   추가 입력 안내 생성만 실패한 경우에는 단계별 고정 fallback을 사용해 `200 NEED_MORE_INFO`를 유지합니다.
 - 최종 추천 응답 프롬프트는 [`prompts/`](../../prompts/)의 공통·단계별 조각을 조합해 관리합니다.
@@ -302,8 +304,8 @@ ToolRequest = {
 - Chat API는 NFKC·소문자·구분 문자 제거로 정규화한 입력을 검사하고, 통과한 사용자
   메시지도 비신뢰 데이터 블록으로만 LLM에 전달합니다. LLM 출력은 내부 지시·API 키 노출
   여부를 다시 검사합니다.
-- Tool Hub 연동 후에는 OpenAI 임시 재료·추천 데이터를 Vision·Recipe·Nutrition·Shopping·RAG
-  Tool 실행 결과로 대체합니다.
+- 완료 단계에서는 OpenAI 임시 추천 대신 Tool Hub Recipe·Nutrition·Shopping·RAG Tool 실행 결과를
+  사용합니다. 이미지 재료 후보는 기존 확인 단계를 거친 뒤에만 Tool 입력으로 전달합니다.
 - 사용자 확인 전의 이미지 인식 결과는 추천에 사용하지 않습니다.
 - Recipe Tool은 내부 레시피 DB를 조회합니다.
 - Nutrition Tool은 영양 정보를 제공합니다.

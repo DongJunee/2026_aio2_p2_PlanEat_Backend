@@ -1,8 +1,8 @@
 # PlanEat Backend 구현 개요
 
 이 문서는 현재 저장소에 구현된 Chat API의 구성, 요청 흐름, 상태 전이, 응답 계약과
-외부 AI 연동 지점을 한눈에 설명한다. Tool Hub·RAG·실제 Vision 연동은 아직 구현 범위가
-아니며, 해당 부분은 OpenAI 구조화 재료 추출과 임시 추천 데이터로 FE 통합을 검증한다.
+외부 AI 연동 지점을 한눈에 설명한다. 완료 단계에서는 LangGraph가 Tool Hub Recipe·Nutrition·
+Shopping·RAG Tool을 실행하고, 설정으로 비활성화한 경우에만 OpenAI 임시 추천으로 fallback한다.
 
 ## 1. 전체 구조
 
@@ -20,12 +20,14 @@ ChatService ── 세션별 현재 단계 저장
   ▼
 LangGraph summarize_conversation (> 10 messages) -> route_chat
   ▼
+route_chat → (COMPLETED인 경우) Tool Hub recipe_recommendation Tool node
+  ▼
 응답 변환
   ├── INPUT_REQUIREMENTS / IMAGE_INPUT / INGREDIENT_CONFIRM / CONDITION_INPUT
   │      └── message 직접 입력 재료가 있으면 이미지 없이 조건 확인·추천으로 우회
-  └── COMPLETED → OpenAI 임시 추천 데이터·완료 안내 문구
+  └── COMPLETED → Tool Hub 결과 또는 비활성화 시 OpenAI 임시 추천
                          │
-                         └── NeMo Guardrails 출력·Tool 결과 검사
+                         └── RecommendationData·NeMo Guardrails 검증
   ▼
 ChatResponse JSON
 ```
@@ -36,11 +38,11 @@ ChatResponse JSON
 | HTTP 진입점 | `app/api/v1/endpoints/chat/router.py` | `POST /chat` 요청 수신, 서비스 호출, HTTP 상태 설정 |
 | DTO·API 계약 | `app/schemas/chat.py` | 요청·응답 Pydantic 모델 및 필드 제약 |
 | 상태 전이 | `app/agent/graph.py` | LangGraph `ChatState`와 단계별 분기 규칙 |
-| 세션·응답 조립 | `app/services/chat_service.py` | 세션 상태 저장, Graph 실행, LLM 추천·응답 변환 |
+| 세션·응답 조립 | `app/services/chat_service.py` | 세션 상태 저장, Graph 실행, Tool Hub/LLM 추천·응답 변환 |
 | 재료 추출 | `app/integrations/llm/openai_responder.py` | 이미지·자연어 입력에서 재료와 수량을 Structured Outputs로 추출·검증 |
 | LLM 추가 안내·추천 | `app/integrations/llm/openai_responder.py` | OpenAI Structured Outputs 기반 부족 정보 질문·임시 추천 생성과 응답 검증 |
 | 자연어 조건·확인 판정 | `app/integrations/decision_engine/typesafe_jev.py` | 식단 조건 충분성 및 재료 확인 의도에 대한 Jev choice, confidence 검증, fallback |
-| 재료 확인·Tool 준비 | `app/services/chat_service.py` | 후보 수정·확정, 세션 반영, `ToolRequest` 생성과 provider 전달 |
+| 재료 확인·Tool 준비 | `app/services/chat_service.py`, `app/agent/graph.py` | 후보 수정·확정, 세션 반영, 완료 단계 Tool Hub node 실행과 결과 변환 |
 | 안전성 검사 | `app/core/safety.py` | 사용자 입력·LLM 출력의 위험한 패턴 검사 |
 | NeMo Guardrails | `app/integrations/guardrails/nemo.py`, `guardrails/config.yml` | 입력·출력·Tool 결과의 NeMo IORails 정규식 검사 및 장애 시 기존 안전성 검사 fallback |
 | LangSmith observability | `app/core/observability.py` | LangGraph 실행 trace와 비식별 상태 metadata 전송. 사용자 입력·이미지 원문은 숨김 |
@@ -137,14 +139,11 @@ WAITING_CONDITIONS
 
 ## 4. 완료 응답의 데이터 구성
 
-`COMPLETED`에서는 `OpenAIResponder.generate_recommendation()`이 확정 재료와 사용자 조건을
-입력으로 받아 Structured Outputs JSON을 생성한다. 서버는 결과를 `RecommendationData`로
-검증한 뒤 FE 계약에 맞는 임시 레시피 2세트(세트당 5개)를 반환한다. 이 데이터는 BE2가
-준비되기 전 FE 통합 검증을 위한 provisional 결과이며, 실제 레시피 DB·영양·장보기·RAG
-검색 결과가 아니다. BE2 provider가 주입된 경우에만 같은 확정 재료·조건으로 `ToolRequest`를
-전달한다. 실제 연동에서는 BE1이 이미지를
-직접 인식하지 않고, BE2 Vision Function Call이 반환한 후보를 FE가 확정한 뒤
-Recipe·Nutrition·Shopping·RAG Function Call 결과를 사용한다.
+`COMPLETED`에서는 `app/agent/graph.py`의 Tool Hub node가 확정 재료와 사용자 조건으로
+`ToolRequest`를 만들고 `PlanEatToolHub`를 실행한다. Tool 결과는 `ChatService`가
+`RecommendationData`로 다시 검증한 뒤 FE 계약에 맞는 2세트(세트당 5개)로 변환한다.
+`TOOL_HUB_ENABLED=false`이거나 테스트에서 provider를 주입하지 않은 경우에만
+`OpenAIResponder.generate_recommendation()`의 Structured Outputs 임시 경로를 사용한다.
 
 ```json
 {
@@ -167,10 +166,9 @@ Recipe·Nutrition·Shopping·RAG Function Call 결과를 사용한다.
 - `shopping_list` 항목: `ingredient`, `amount`만 허용
 - nutrition: `calories`, `protein`, `carbohydrate`, `fat`이며 음수를 허용하지 않음
 
-`response`와 `data.recipe_sets`는 `OpenAIResponder`가 생성한다. Structured Outputs와
-`RecommendationData` 검증, 안전성 검사를 모두 통과한 경우에만 반환하며, OpenAI API 키가
-없거나 호출·출력 검증에 실패하면 `500 ERROR`를 반환한다. BE2 Tool Hub가 연결되면 이
-LLM 임시 추천 경로를 실제 Tool 결과 어댑터로 교체한다.
+`response`와 `data.recipe_sets`는 Tool Hub 결과 또는 fallback LLM이 생성한다.
+`RecommendationData` 검증과 안전성 검사를 모두 통과한 경우에만 반환하며, Tool Hub 실행·검증에
+실패하면 `500 ERROR`를 반환한다.
 
 ## 5. TypeSafe Jev 자연어 판정
 
@@ -181,7 +179,7 @@ Jev는 사용자 메시지의 식단 조건 충분성과 재료 확인 의도를
 
 이미지 요청 이후 사용자가 재료를 자연어로 직접 입력하는 경우에는 Jev의 이미지 후보 확인
 판정을 거치지 않는다. `OpenAIResponder.extract_ingredients()`로 지원 재료를 사전 없이
-추출하고, 사용자가 명시한 값이므로 `confirmed_ingredients`로 저장한다. 이 메서드는 BE2의
+추출하고, 사용자가 명시한 값이므로 `confirmed_ingredients`로 저장한다. 이 메서드는 Tool Hub의
 Vision·재료 정규화 결과가 준비되면 해당 결과 어댑터로 교체한다.
 
 ### 5.1 조건 충분성 판정
@@ -203,7 +201,7 @@ Vision·재료 정규화 결과가 준비되면 해당 결과 어댑터로 교�
 | `unclear` | 후보를 유지하고 `INGREDIENT_CONFIRM` 재확인을 요청한다. |
 
 Jev가 비활성화·실패·저신뢰이면 `ChatService`의 확인 표현 fallback을 사용한다. `edited`의
-복잡한 식재료명·수량 추출은 현재 범위가 아니며 BE2 정규화 DTO 합의 후 교체한다.
+복잡한 식재료명·수량 추출은 현재 범위가 아니며 Tool Hub 정규화 DTO 합의 후 교체한다.
 
 외부 API 호출은 세션 잠금 밖에서 수행해, 한 세션의 네트워크 지연이 다른 세션의 처리를
 막지 않게 한다. API 키·사용자 메시지 원문은 애플리케이션 로그에 기록하지 않는다.
@@ -240,7 +238,11 @@ uv run uvicorn app.main:app --reload
 
 | 설정 | 용도 | 없을 때 동작 |
 | --- | --- | --- |
-| `OPENAI_API_KEY` | 임시 추천 데이터·완료 안내 문구 생성 | 완료 단계에서 `500 ERROR` |
+| `TOOL_HUB_ENABLED` | 완료 단계 Tool Hub node 사용 여부 | `false`이면 임시 LLM 추천 |
+| `TOOL_HUB_CATALOG_PATH` | Tool Hub Recipe Tool 카탈로그 경로 | 프로젝트 내부 CSV 사용 |
+| `CHROMA_PERSIST_DIRECTORY` | 선택적 Recipe Guide RAG 저장 경로 | 빈 RAG retriever 사용 |
+| `CHROMA_COLLECTION_NAME` | Chroma Recipe Guide collection | `recipe_guides` |
+| `OPENAI_API_KEY` | 재료 추출·추가 안내 및 Tool Hub 비활성화 시 임시 추천 | 완료 단계에서 `500 ERROR` |
 | `OPENAI_MODEL` | OpenAI 모델 선택 | `gpt-4o-mini` 사용 |
 | `TYPESAFE_JEV_ENABLED` | Jev 자연어 조건·재료 확인 판정 사용 여부 | `false`가 기본값 |
 | `TYPESAFE_API_KEY` | Jev 인증 | Jev를 호출하지 않고 fallback |
@@ -279,12 +281,12 @@ git diff --check
 
 | 현재 임시 구현 | 향후 교체 지점 |
 | --- | --- |
-| `OpenAIResponder.extract_ingredients()`의 LLM 재료 추출 | BE2 Vision·재료 정규화 결과 |
+| `OpenAIResponder.extract_ingredients()`의 LLM 재료 추출 | Tool Hub Vision·재료 정규화 결과 |
 | `OpenAIResponder.generate_clarification_response()`의 추가 입력 안내 | 상태별 FE 안내 정책 또는 향후 대화형 오케스트레이터 |
-| `OpenAIResponder.generate_recommendation()`의 LLM 임시 추천 | BE2 Recipe·Nutrition·Shopping·RAG 결과 |
+| `TOOL_HUB_ENABLED=false`의 LLM 임시 추천 | Tool Hub Recipe·Nutrition·Shopping·RAG 결과 |
 | 프로세스 메모리 세션 | DB 또는 Redis 세션 저장소 |
 | Jev 조건 판정과 제한적인 확인 의도 parser | 합의된 정책에 따른 조건 추출·재료 수정 DTO |
-| ToolRequest 호출 전 검증 | BE2 URL·timeout·재시도 정책을 반영한 실제 비동기 어댑터 |
+| 로컬 CSV·선택적 Chroma 기반 Tool Hub | 외부 Tool Hub URL·timeout·재시도 정책을 반영한 비동기 어댑터 |
 
 Tool Hub·RAG가 연결되더라도 외부 `/chat` DTO, `status`, `step`, 레시피 2세트·세트당 5개라는
 FE 계약은 유지해야 한다.

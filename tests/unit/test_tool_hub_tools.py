@@ -1,11 +1,11 @@
-"""BE1 코드 변경 없이 실행 가능한 BE2 Tool Hub 단위 테스트입니다."""
+"""Orchestrator 코드 변경 없이 실행 가능한 Tool Hub 단위 테스트입니다."""
 
 import asyncio
 import json
 
 from langchain_core.messages import AIMessage
 
-from app.agent.tools.be2_models import (
+from app.agent.tools.tool_models import (
     CatalogRecipe,
     IngredientGuide,
     NutritionValues,
@@ -16,7 +16,7 @@ from app.agent.tools.be2_models import (
 from app.agent.tools.contracts import ToolRequest
 from app.agent.tools.ingredient_validation_tool import IngredientValidationTool
 from app.agent.tools.nodes import (
-    build_be2_tool_call_node,
+    build_tool_hub_call_node,
     build_meal_planning_node,
     build_recipe_recommendation_node,
     route_after_meal_planning,
@@ -50,7 +50,7 @@ class StaticRecipeRepository:
 
 
 def _local_tool_hub() -> PlanEatToolHub:
-    """외부 I/O 없이 ToolCall과 LangGraph 노드를 검증할 로컬 BE2 Hub입니다."""
+    """외부 I/O 없이 ToolCall과 LangGraph 노드를 검증할 로컬 Tool Hub입니다."""
 
     return PlanEatToolHub(
         recipe_tool=RecipeTool(StaticRecipeRepository(_catalog_recipes())),
@@ -72,7 +72,7 @@ def _local_tool_hub() -> PlanEatToolHub:
 
 def _tool_call_input() -> dict[str, object]:
     return {
-        "session_id": "be2-tool-call-test",
+        "session_id": "tool-hub-tool-call-test",
         "confirmed_ingredients": [
             {"name": "두부", "amount": "1모"},
             {"name": "양배추", "amount": "반 통"},
@@ -128,7 +128,7 @@ def test_recipe_tool_uses_confirmed_ingredients_and_condition_time() -> None:
 def test_tool_hub_returns_existing_chat_recommendation_shape() -> None:
     local_hub = _local_tool_hub()
     request = ToolRequest(
-        session_id="be2-unit-test",
+        session_id="tool-hub-unit-test",
         tool_name="recipe_recommendation",
         confirmed_ingredients=(
             {"name": "두부", "amount": "1모"},
@@ -181,8 +181,8 @@ def test_meal_planning_tool_call_returns_five_main_side_sets() -> None:
     assert payload["source_metadata"]["planning_set_count"] == 5
 
 
-def test_be2_tool_call_node_executes_langchain_ai_message_tool_call() -> None:
-    node = build_be2_tool_call_node(_local_tool_hub())
+def test_tool_hub_call_node_executes_langchain_ai_message_tool_call() -> None:
+    node = build_tool_hub_call_node(_local_tool_hub())
     message = AIMessage(
         content="",
         tool_calls=[
@@ -202,13 +202,13 @@ def test_be2_tool_call_node_executes_langchain_ai_message_tool_call() -> None:
     assert payload["ok"] is True
 
 
-def test_recipe_recommendation_node_exposes_result_for_be1_state_graph() -> None:
+def test_recipe_recommendation_node_exposes_result_for_orchestrator_state_graph() -> None:
     node = build_recipe_recommendation_node(_local_tool_hub())
 
     result = asyncio.run(node(_tool_call_input()))
 
-    assert result["be2_tool_error"] is None
-    assert isinstance(result["be2_tool_result"], dict)
+    assert result["tool_error"] is None
+    assert isinstance(result["tool_result"], dict)
     assert route_after_recipe_recommendation(result) == "tool_succeeded"
 
     failed_result = asyncio.run(
@@ -220,11 +220,11 @@ def test_recipe_recommendation_node_exposes_result_for_be1_state_graph() -> None
             }
         )
     )
-    assert failed_result["be2_tool_result"] is None
+    assert failed_result["tool_result"] is None
     assert route_after_recipe_recommendation(failed_result) == "tool_failed"
 
 
-def test_meal_planning_node_exposes_new_be2_result_without_changing_be1_state() -> None:
+def test_meal_planning_node_exposes_new_tool_hub_result_without_changing_orchestrator_state() -> None:
     node = build_meal_planning_node(_local_tool_hub())
     tool_input = _tool_call_input()
     tool_input["excluded_ingredients"] = ["간장"]

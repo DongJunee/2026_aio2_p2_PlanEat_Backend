@@ -24,18 +24,20 @@ API 키는 `.env`와 배포 환경의 secret store에만 보관하며, 코드·f
 
 ## 2. 현재 trace 범위
 
-`ChatService`가 `chat_graph.ainvoke()`를 실행할 때 요청별 LangSmith callback을 연결한다.
-LangGraph의 요약·단계 전이 실행을 `planeat.chat` run으로 확인할 수 있으며, 다음 metadata를
-기록한다.
+`ChatService`가 요청별 LangSmith callback을 `build_chat_graph(...).ainvoke()`에 연결한다.
+따라서 `planeat.chat` root run 아래에 요약·단계 전이와 완료 단계
+`tool_hub_recipe_recommendation` child run이 함께 표시된다. 다음 metadata를 기록한다.
 
 - 해시된 `session_id`
 - 요청 시작 시점의 내부 workflow step
 - 이미지 첨부 여부와 첨부 개수
 - 조건 입력 여부
 - 확정 재료 보유 여부
+- Tool Hub node 활성화 여부와 논리적 tool 이름
 
-현재 raw OpenAI·TypeSafe HTTP 호출과 주입된 Tool provider 결과를 별도 LangSmith run으로
-분리하지는 않는다. BE2 Tool Hub가 연결되면 필요에 따라 provider 단위 tracing을 확장한다.
+raw OpenAI·TypeSafe HTTP 호출 자체는 별도 run으로 분리하지 않지만, Tool Hub node의 실행·
+성공/실패 전이는 LangGraph child run으로 확인할 수 있다. 입력·출력은 숨김 설정을 유지하고
+비식별 metadata만 전송한다.
 
 ## 3. 개인정보 보호
 
@@ -53,5 +55,5 @@ uv run uvicorn app.main:app --reload --port 8000
 ```
 
 같은 `session_id`로 `/chat`을 호출한 뒤 LangSmith의 `planeat-backend` 프로젝트에서
-`planeat.chat` run을 확인한다. `LANGSMITH_TRACING=false`이거나 API 키가 없으면
-LangSmith 호출 없이도 Tool provider가 없는 임시 LLM 기반 동작을 유지한다.
+`planeat.chat` run과 `tool_hub_recipe_recommendation` child run을 확인한다. `LANGSMITH_TRACING=false`이거나
+API 키가 없으면 LangSmith 전송 없이도 Tool Hub 동작은 유지된다.

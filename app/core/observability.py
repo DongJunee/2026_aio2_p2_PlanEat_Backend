@@ -24,6 +24,7 @@ def build_langsmith_run_config(
     has_conditions: bool,
     has_confirmed_ingredients: bool,
     attachment_count: int,
+    tool_enabled: bool = False,
 ) -> RunnableConfig | None:
     """LangGraph 요청에 사용할 LangSmith callback 설정을 만듭니다.
 
@@ -74,6 +75,10 @@ def build_langsmith_run_config(
         "has_confirmed_ingredients": has_confirmed_ingredients,
         "attachment_count": attachment_count,
     }
+    if tool_enabled:
+        # 사용자 입력·재료 원문 대신 Tool Hub 경로가 실행됐다는 사실만 남긴다.
+        metadata["tool_enabled"] = True
+        metadata["tool_name"] = "recipe_recommendation"
     return {
         "callbacks": [tracer],
         "run_name": "planeat.chat",

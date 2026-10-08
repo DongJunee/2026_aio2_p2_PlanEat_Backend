@@ -1,6 +1,6 @@
-# BE2 Meal Planning 결과 계약
+# Tool Hub Meal Planning 결과 계약
 
-BE2의 실제 추천 흐름은 `MealPlanningSubgraph`다. Vision(OpenAI) 결과가 사용자에게
+Tool Hub의 실제 추천 흐름은 `MealPlanningSubgraph`다. Vision(OpenAI) 결과가 사용자에게
 확인된 뒤, 다음 순서로 실행한다.
 
 ```text
@@ -13,7 +13,7 @@ Recipe 후보 검색 → 메인·반찬 조합 → Jev 선택 → 세트별 Shop
 `생략 가능`·`대체 가능`·`필수`로 판단한다. 전자의 두 경우 Shopping만 바꾸고,
 필수 재료이거나 대체재가 없으면 Recipe와 Shopping을 재계획한다.
 
-`PlanEatToolHub.execute(ToolRequest)`는 BE1의 현재 계약을 위해서만 남긴 호환
+`PlanEatToolHub.execute(ToolRequest)`는 Orchestrator의 현재 계약을 위해서만 남긴 호환
 adapter다. 이 adapter는 위의 정식 5세트 결과를 기존 2세트×5레시피 카드 DTO로 변환하며,
 별도 추천 흐름을 실행하지 않는다.
 
@@ -33,22 +33,23 @@ adapter다. 이 adapter는 위의 정식 5세트 결과를 기존 2세트×5레�
 ```
 
 `result.data`는 기존 `app.schemas.chat.RecommendationData`로 바로 검증 가능하다.
-통합 시 BE1은 `ToolResult.error`가 없을 때 `result.response`와 `result.data`를 사용하고,
-실패 시 기존 오류 정책을 적용한다. 이 문서는 BE1 소스·외부 Chat API를 바꾸지 않는다.
+통합 시 Orchestrator는 `ToolResult.error`가 없을 때 `result.response`와 `result.data`를 사용하고,
+실패 시 기존 오류 정책을 적용한다. Orchestrator는 이 결과를 기존 `ChatResponse`로 변환하며,
+외부 Chat API의 경로와 DTO는 바꾸지 않는다.
 
 Vision은 추천 ToolRequest와 분리한다. `OpenAIVisionIngredientExtractor.extract()`의 결과는
 사용자 확인 전 후보이므로 Recipe·Nutrition·Shopping·RAG 실행에 전달하면 안 된다.
 
 ## LangChain Tool Calling·LangGraph 노드 준비
 
-BE2는 BE1의 `app/agent/graph.py`, `ChatService`, `/chat` DTO를 바꾸지 않고 아래의 연결
-지점을 제공한다.
+Tool Hub는 Orchestrator의 `app/agent/graph.py` 완료 단계에 연결되며, 기존 `ChatService`와
+`/chat` DTO를 유지한 채 아래의 확장 지점을 제공한다.
 
-| 목적 | BE2 진입점 | 입출력 |
+| 목적 | Tool Hub 진입점 | 입출력 |
 | --- | --- | --- |
-| LLM Function Calling | `create_be2_tools(tool_hub)` | 호환용 `recipe_recommendation`과 정식 `meal_planning` Tool 반환 |
-| 표준 LangChain ToolNode | `build_be2_tool_call_node(tool_hub)` | `messages: list[BaseMessage]` 상태에서 두 ToolCall 처리 |
-| 기존 BE1 상태용 직접 노드 | `build_recipe_recommendation_node(tool_hub)` | 기존 2×5 호환 결과를 `be2_tool_*` 키에 반환 |
+| LLM Function Calling | `create_tool_hub_tools(tool_hub)` | 호환용 `recipe_recommendation`과 정식 `meal_planning` Tool 반환 |
+| 표준 LangChain ToolNode | `build_tool_hub_call_node(tool_hub)` | `messages: list[BaseMessage]` 상태에서 두 ToolCall 처리 |
+| 기존 Orchestrator 상태용 직접 노드 | `build_recipe_recommendation_node(tool_hub)` | 기존 2×5 호환 결과를 `tool_*` 키에 반환 |
 | 새 식단 상태용 직접 노드 | `build_meal_planning_node(tool_hub)` | 5개 메인·반찬 세트를 `meal_plan_*` 키에 반환 |
 
 모든 ToolCall은 다음 값만 받는다. 이미지 Vision 후보가 아니라 사용자 확인이 끝난 재료만
@@ -77,10 +78,11 @@ ToolCall의 JSON 결과는 `{ ok, result, source_metadata, error }`다. `ok: tru
 }
 ```
 
-### 현재 BE1 StateGraph에 연결할 때
+### 현재 Orchestrator StateGraph 연결
 
-현재 BE1의 `ChatState.messages`는 LangChain `BaseMessage`가 아닌 dict 메시지이므로,
-`ToolNode`를 바로 연결하지 않는다. 완료 단계 이후 별도 상태에 다음 노드를 추가하면 된다.
+현재 Orchestrator의 `ChatState.messages`는 LangChain `BaseMessage`가 아닌 dict 메시지이므로,
+기본 완료 흐름은 직접 호출 노드를 사용한다. 표준 `ToolNode`가 필요한 별도 메시지 상태에서는
+다음처럼 연결할 수 있다.
 
 ```python
 from app.agent.tools.nodes import (
@@ -88,9 +90,9 @@ from app.agent.tools.nodes import (
     route_after_recipe_recommendation,
 )
 
-graph.add_node("be2_recipe_recommendation", build_recipe_recommendation_node(tool_hub))
+graph.add_node("tool_hub_recipe_recommendation", build_recipe_recommendation_node(tool_hub))
 graph.add_conditional_edges(
-    "be2_recipe_recommendation",
+    "tool_hub_recipe_recommendation",
     route_after_recipe_recommendation,
     {
         "tool_succeeded": "response_node",
@@ -100,31 +102,33 @@ graph.add_conditional_edges(
 ```
 
 이 노드는 `session_id`, `confirmed_ingredients`, `user_conditions`를 읽고,
-`be2_tool_result`, `be2_tool_source_metadata`, `be2_tool_error`만 반환한다. 따라서 BE1은
-성공 경로에서 `be2_tool_result["data"]`를 검증해 기존 `/chat` 응답으로 변환하면 된다.
+`tool_result`, `tool_source_metadata`, `tool_error`만 반환한다. 따라서 Orchestrator는
+성공 경로에서 `tool_result["data"]`를 검증해 기존 `/chat` 응답으로 변환하면 된다.
 
 표준 LLM Tool Calling 메시지 상태로 전환하는 경우에만
-`build_be2_tool_call_node(tool_hub)`를 사용한다. 두 노드 모두 외부 Recipe API를 호출하지
+`build_tool_hub_call_node(tool_hub)`를 사용한다. 두 노드 모두 외부 Recipe API를 호출하지
 않고 `PlanEatToolHub.from_local_catalog(...)`의 로컬 CSV 카탈로그를 사용할 수 있다.
 
 ### 새 Meal Planning 상태에 연결할 때
 
-BE1이 5개 메인·반찬 세트 DTO를 채택한 뒤에는 기존 노드 대신 아래 BE2 노드를 연결한다.
+Orchestrator가 5개 메인·반찬 세트 DTO를 채택한 뒤에는 기존 노드 대신 아래 Tool Hub 노드를 연결한다.
 이 노드는 OpenAI가 구조화 추출한 `excluded_ingredients`까지 받아 결과를 분리된 상태 키에
 기록한다.
 
 ```python
 from app.agent.tools.nodes import build_meal_planning_node, route_after_meal_planning
 
-graph.add_node("be2_meal_planning", build_meal_planning_node(tool_hub))
+graph.add_node("tool_hub_meal_planning", build_meal_planning_node(tool_hub))
 graph.add_conditional_edges(
-    "be2_meal_planning",
+    "tool_hub_meal_planning",
     route_after_meal_planning,
     {"tool_succeeded": "response_node", "tool_failed": "tool_error_node"},
 )
 ```
 
-현재 이 모듈을 추가해도 BE1 코드와 `/chat` 응답은 변경되지 않는다.
+기본 앱은 `TOOL_HUB_ENABLED=true`일 때 위의 호환용 `recipe_recommendation` node를
+완료 단계에 연결한다. 설정을 `false`로 두거나 provider를 주입하지 않은 테스트에서는 기존
+OpenAI 임시 추천 경로가 유지된다.
 
 ## Recipe Source 조립
 

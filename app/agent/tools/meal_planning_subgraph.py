@@ -1,8 +1,8 @@
-"""사용자 확인 이후 식단 세트를 만드는 BE2 전용 LangGraph 서브그래프입니다.
+"""사용자 확인 이후 식단 세트를 만드는 Tool Hub 전용 LangGraph 서브그래프입니다.
 
-이 모듈은 BE1의 ``ChatState``나 API DTO를 변경하지 않는다. Vision(OpenAI)이 인식한
+이 모듈은 Orchestrator의 ``ChatState``나 API DTO를 변경하지 않는다. Vision(OpenAI)이 인식한
 후 사용자가 확정한 재료와 OpenAI 구조화 추출 결과의 ``excluded_ingredients``만 받아
-독립적으로 실행된다. 따라서 BE1은 완료 단계에서 이 서브그래프를 주입해 사용할 수 있다.
+독립적으로 실행된다. 따라서 Orchestrator는 완료 단계에서 이 서브그래프를 주입해 사용할 수 있다.
 """
 
 from __future__ import annotations
@@ -13,10 +13,11 @@ from dataclasses import dataclass
 from typing import Literal, Protocol, TypedDict
 
 import httpx
+from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, StateGraph
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.agent.tools.be2_models import (
+from app.agent.tools.tool_models import (
     CatalogRecipe,
     IngredientGuide,
     NutritionValues,
@@ -44,7 +45,7 @@ class MealPlanningError(RuntimeError):
 
 
 class MealPlanningRequest(BaseModel):
-    """Vision 확인 뒤 BE2 서브그래프에 전달하는 확정 입력입니다.
+    """Vision 확인 뒤 Tool Hub 서브그래프에 전달하는 확정 입력입니다.
 
     ``excluded_ingredients``는 사용자의 자연어를 OpenAI Structured Outputs가 추출한
     값이다. 이미지에서 추정한, 사용자가 아직 확인하지 않은 후보는 여기에 넣지 않는다.
@@ -109,7 +110,7 @@ class ExclusionAction(BaseModel):
 
 
 class MealPlanningResult(BaseModel):
-    """BE1이 자신의 응답 DTO로 변환할 수 있는 독립 서브그래프 결과입니다."""
+    """Orchestrator가 자신의 응답 DTO로 변환할 수 있는 독립 서브그래프 결과입니다."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -128,7 +129,7 @@ class MealPairComposer(Protocol):
 
 
 class MealPlanningJev(Protocol):
-    """Jev의 세트 선택과 제외 재료 판단을 BE2에 주입하는 경계입니다."""
+    """Jev의 세트 선택과 제외 재료 판단을 Tool Hub에 주입하는 경계입니다."""
 
     async def select_sets(
         self,
@@ -364,7 +365,7 @@ class _PairShoppingPlan:
 
 
 class MealPlanningGraphState(TypedDict, total=False):
-    """BE1과 분리된 MealPlanningSubgraph 내부 상태입니다."""
+    """Orchestrator과 분리된 MealPlanningSubgraph 내부 상태입니다."""
 
     query: RecipeSearchQuery
     excluded_ingredients: list[str]
@@ -402,20 +403,27 @@ class MealPlanningSubgraph:
         self._pair_composer = pair_composer or DeterministicMealPairComposer()
         self._graph = self._build_graph()
 
-    async def execute(self, request: MealPlanningRequest) -> MealPlanningResult:
+    async def execute(
+        self,
+        request: MealPlanningRequest,
+        *,
+        config: RunnableConfig | None = None,
+    ) -> MealPlanningResult:
         """확정 입력으로 정확히 5개의 메인·반찬 세트를 만듭니다."""
 
-        graph_state = await self._graph.ainvoke(
-            {
-                "query": RecipeSearchQuery(
-                    confirmed_ingredients=request.confirmed_ingredients,
-                    user_conditions=request.user_conditions,
-                ),
-                "excluded_ingredients": _unique_names(request.excluded_ingredients),
-                "exclusion_actions": [],
-                "replanned": False,
-            }
-        )
+        invoke_input = {
+            "query": RecipeSearchQuery(
+                confirmed_ingredients=request.confirmed_ingredients,
+                user_conditions=request.user_conditions,
+            ),
+            "excluded_ingredients": _unique_names(request.excluded_ingredients),
+            "exclusion_actions": [],
+            "replanned": False,
+        }
+        if config is None:
+            graph_state = await self._graph.ainvoke(invoke_input)
+        else:
+            graph_state = await self._graph.ainvoke(invoke_input, config=config)
         final_sets = graph_state.get("final_sets")
         if not isinstance(final_sets, list):
             raise MealPlanningError("식단 세트 생성 결과가 올바르지 않습니다.")

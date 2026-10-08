@@ -4,7 +4,7 @@ from collections.abc import Mapping
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.agent.tools.be2_models import IngredientGuide, RecipeMatch
+from app.agent.tools.tool_models import IngredientGuide, RecipeMatch
 
 
 class ShoppingPlan(BaseModel):

@@ -3,9 +3,10 @@
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
+from langchain_core.runnables import RunnableConfig
 from pydantic import ValidationError
 
-from app.agent.tools.be2_models import (
+from app.agent.tools.tool_models import (
     CatalogRecipe,
     IngredientGuide,
     RecipeMatch,
@@ -34,10 +35,10 @@ _LEGACY_TOOL_NAME = "recipe_recommendation"
 
 
 class PlanEatToolHub:
-    """BE1의 ``ToolHubProvider`` 프로토콜과 호환되는 BE2 구현체입니다.
+    """Orchestrator의 ``ToolRequestExecutor`` 프로토콜과 호환되는 Tool Hub 구현체입니다.
 
-    이 클래스는 아직 전역 ``chat_service``에 주입되지 않는다. 독립 테스트와 실제
-    데이터 적재가 끝난 뒤 BE1이 생성자 주입만 하면 실행할 수 있도록 구성한다.
+    기본 애플리케이션에서는 ``ChatService``의 완료 단계 노드에 주입된다. 독립
+    테스트나 다른 실행 환경에서는 생성자 주입으로 카탈로그·RAG 구현을 교체한다.
     """
 
     def __init__(
@@ -94,13 +95,23 @@ class PlanEatToolHub:
             pair_composer=pair_composer,
         )
 
-    async def execute_meal_plan(self, request: MealPlanningRequest) -> MealPlanningResult:
-        """새 BE2 계약으로 5개의 메인·반찬 세트를 반환합니다."""
+    async def execute_meal_plan(
+        self,
+        request: MealPlanningRequest,
+        *,
+        config: RunnableConfig | None = None,
+    ) -> MealPlanningResult:
+        """새 Tool Hub 계약으로 5개의 메인·반찬 세트를 반환합니다."""
 
-        return await self._meal_planning.execute(request)
+        return await self._meal_planning.execute(request, config=config)
 
-    async def execute(self, request: ToolRequest) -> ToolResult:
-        """기존 BE1 ``ToolRequest``를 Meal Planning 결과로 호환 변환합니다."""
+    async def execute(
+        self,
+        request: ToolRequest,
+        *,
+        config: RunnableConfig | None = None,
+    ) -> ToolResult:
+        """기존 Orchestrator ``ToolRequest``를 Meal Planning 결과로 호환 변환합니다."""
 
         if request.tool_name != _LEGACY_TOOL_NAME:
             return ToolResult(error="지원하지 않는 Tool 요청입니다.")
@@ -113,12 +124,12 @@ class PlanEatToolHub:
                 ],
                 user_conditions=dict(request.user_conditions),
             )
-            meal_plan = await self.execute_meal_plan(plan_request)
+            meal_plan = await self.execute_meal_plan(plan_request, config=config)
             data, source_metadata = await self._legacy_response_data(meal_plan, plan_request)
         except MealPlanningError:
             return ToolResult(error="조건에 맞는 레시피 후보가 충분하지 않습니다.")
         except (ValidationError, ValueError, TypeError, RuntimeError):
-            # Tool 경계에서 외부 API·Jev·카탈로그 세부 오류를 BE1 또는 FE로 노출하지 않는다.
+            # Tool 경계에서 외부 API·Jev·카탈로그 세부 오류를 Orchestrator 또는 FE로 노출하지 않는다.
             return ToolResult(error="조건에 맞는 레시피 후보를 준비하지 못했습니다.")
         return ToolResult(
             result={
@@ -133,7 +144,7 @@ class PlanEatToolHub:
         meal_plan: MealPlanningResult,
         request: MealPlanningRequest,
     ) -> tuple[ToolRecommendationData, dict[str, object]]:
-        """정식 Meal Planning 결과를 현행 BE1의 2×5 카드 DTO로만 변환합니다."""
+        """정식 Meal Planning 결과를 현행 Orchestrator의 2×5 카드 DTO로만 변환합니다."""
 
         recipes = [
             recipe

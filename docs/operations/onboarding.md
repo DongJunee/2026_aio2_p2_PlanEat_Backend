@@ -30,12 +30,18 @@ cp .env.example .env
 
 NeMo Guardrails는 기본 활성화되며 `guardrails/config.yml`을 읽습니다. 로컬 사고 대응이나
 호환성 확인 때문에 일시적으로 끄려면 `NEMO_GUARDRAILS_ENABLED=false`를 설정합니다.
-설정 상세와 BE2 연동 시 확장 지점은 [Guardrails 연동 가이드](../integrations/guardrails.md)를 참고합니다.
+설정 상세와 Tool Hub 연동 시 확장 지점은 [Guardrails 연동 가이드](../integrations/guardrails.md)를 참고합니다.
 
 LangGraph 실행을 LangSmith에서 확인하려면 `.env`에 `LANGSMITH_TRACING=true`,
 `LANGSMITH_API_KEY`, `LANGSMITH_PROJECT`를 설정합니다. tracing은 선택 사항이며,
 사용자 메시지와 이미지 원문은 trace payload에 기록하지 않습니다. 자세한 설정과 확인 방법은
 [LangSmith 연동 가이드](../integrations/langsmith.md)를 참고합니다.
+
+기본적으로 `TOOL_HUB_ENABLED=true`이면 완료 단계에서 로컬 CSV 기반 Recipe·Nutrition·
+Shopping Tool을 실행합니다. Chroma Recipe Guide를 사용하려면
+`CHROMA_PERSIST_DIRECTORY`를 추가로 지정하고, 기본 카탈로그를 바꾸려면
+`TOOL_HUB_CATALOG_PATH`를 지정합니다. Tool을 끄고 기존 OpenAI 임시 추천만 확인하려면
+`TOOL_HUB_ENABLED=false`로 설정합니다.
 
 ## 3. API 작업 기준
 
@@ -46,6 +52,7 @@ LangGraph 실행을 LangSmith에서 확인하려면 `.env`에 `LANGSMITH_TRACING
 - 이미지가 없는 첫 요청은 `IMAGE_INPUT` 단계로 사진을 먼저 요청하고, 사진이 없다는 후속 답변에는
   자연어 재료 입력을 안내
 - 성공 응답: `recipe_sets` 2개, 각 세트의 레시피 5개
+- 완료 단계: LangGraph `tool_hub_recipe_recommendation` node가 Tool Hub를 실행하고 결과를 검증
 - NeMo Guardrails: 입력·LLM 출력·Tool 결과의 결정적 안전성 검사
 - 상세 계약: [Chat API](../api/chat.md)
 

@@ -1,5 +1,6 @@
-"""Tool Hub 연동 전 Chat 단계 전이와 대화 요약을 담당하는 LangGraph입니다."""
+"""Chat 단계 전이와 완료 단계 Tool 실행을 담당하는 LangGraph입니다."""
 
+from collections.abc import Awaitable, Callable
 from typing import Literal, TypedDict
 
 from langgraph.graph import END, StateGraph
@@ -42,6 +43,17 @@ class ChatState(TypedDict, total=False):
         "CONDITION_INPUT",
         "COMPLETED",
     ]
+    # 완료 단계에서만 Tool Hub node가 사용하는 내부 입력·출력이다.
+    # 사용자에게 반환하는 ChatResponse에는 노출하지 않는다.
+    session_id: str
+    confirmed_ingredients: list[dict[str, str]]
+    user_conditions: dict[str, object]
+    tool_result: dict[str, object] | None
+    tool_source_metadata: dict[str, object] | None
+    tool_error: str | None
+
+
+ChatToolNode = Callable[[ChatState], Awaitable[dict[str, object]]]
 
 
 def should_summarize(
@@ -57,7 +69,7 @@ def should_summarize(
 def summarize_conversation(state: ChatState) -> ChatState:
     """오래된 대화를 결정적으로 압축하고 최근 메시지는 보존합니다.
 
-    BE1의 기본 테스트는 외부 LLM에 의존하지 않아야 하므로 현재는 로컬 요약을 사용한다.
+    Orchestrator의 기본 테스트는 외부 LLM에 의존하지 않아야 하므로 현재는 로컬 요약을 사용한다.
     ``_build_conversation_summary``가 실제 요약 모델을 연결할 때의 교체 지점이다.
     요약 후 최근 2개 메시지만 남겨 세션 상태가 요청마다 무한히 커지지 않게 한다.
     """
@@ -160,7 +172,24 @@ def route_chat(state: ChatState) -> ChatState:
     return {"step": "COMPLETED", "response_kind": "COMPLETED"}
 
 
-def build_chat_graph():
+def _route_after_chat_with_tool(
+    state: ChatState,
+) -> Literal["tool_hub_recipe_recommendation", "finish"]:
+    """완료 단계에서만 Tool Hub node로 분기합니다."""
+
+    if state.get("step") == "COMPLETED":
+        return "tool_hub_recipe_recommendation"
+    return "finish"
+
+
+def build_chat_graph(tool_node: ChatToolNode | None = None):
+    """Chat 전이 그래프를 만들고, 선택적으로 완료 단계 Tool node를 연결합니다.
+
+    Tool node를 주입하지 않은 그래프는 순수 상태 전이 테스트와 임시 LLM 경로에
+    사용한다. 실제 앱은 ``ChatService``가 Tool Hub node를 주입해 완료 단계에서만
+    확정 재료·조건을 Tool Hub로 전달한다.
+    """
+
     graph = StateGraph(ChatState)
     graph.add_node("summarize_conversation", summarize_conversation)
     graph.add_node("route_chat", route_chat)
@@ -172,7 +201,16 @@ def build_chat_graph():
         },
     )
     graph.add_edge("summarize_conversation", "route_chat")
-    graph.add_edge("route_chat", END)
+    if tool_node is None:
+        graph.add_edge("route_chat", END)
+    else:
+        graph.add_node("tool_hub_recipe_recommendation", tool_node)
+        graph.add_conditional_edges(
+            "route_chat",
+            _route_after_chat_with_tool,
+            {"tool_hub_recipe_recommendation": "tool_hub_recipe_recommendation", "finish": END},
+        )
+        graph.add_edge("tool_hub_recipe_recommendation", END)
     return graph.compile()
 
 

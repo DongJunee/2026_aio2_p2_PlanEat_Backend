@@ -9,7 +9,7 @@ FastAPI와 LangGraph 기반의 대화형 식단 추천 백엔드입니다. 사�
 - 이미지별 식재료 추출 및 중복 병합
 - 사용자 재료 확인·수정
 - `session_id` 기반 LangGraph 상태 관리
-- 내부 레시피 DB 기반 추천
+- 프로젝트 내부 CSV 레시피 카탈로그 기반 추천
 
 - 성공 응답은 레시피 2세트, 세트당 5개 레시피
 - Nutrition·Shopping Tool 호출
@@ -40,8 +40,8 @@ Tool Hub 연결 전 준비 상태는 [Tool Hub 연동 준비](docs/integrations/
 - 이미지 인식 결과는 후보이며, 사용자가 확인한 재료만 추천에 사용합니다.
 - 이미지를 사용할 수 없는 경우 `message`에 직접 입력한 지원 재료로도 추천을 진행합니다.
 - `session_id`로 대화와 LangGraph State를 이어갑니다.
-- Recipe Tool은 내부 레시피 DB를 조회합니다.
-- 식품안전나라 API는 레시피 초기 적재·갱신에만 사용합니다.
+- Recipe Tool은 프로젝트 내부 CSV 레시피 카탈로그를 조회합니다.
+- 레시피 추천 과정에서 외부 Recipe API를 호출하지 않습니다.
 - 원본 레시피 정보와 LLM 생성 설명을 구분합니다.
 - 새로운 Tool은 `/chat` API를 바꾸지 않고 LangGraph Workflow에 추가합니다.
 
@@ -61,7 +61,7 @@ Tool Hub 연결 전 준비 상태는 [Tool Hub 연동 준비](docs/integrations/
 │   ├── integrations/
 │   │   ├── llm/                        # LLM Provider
 │   │   ├── vision/                     # 이미지 인식 Provider
-│   │   ├── recipe_source/              # 식품안전나라 적재·갱신
+│   │   ├── recipe_source/              # 로컬 CSV 레시피 카탈로그
 │   │   └── vector_store/               # ChromaDB
 │   └── db/                             # DB 설정
 ├── prompts/                            # LLM 운영 프롬프트
@@ -105,6 +105,24 @@ git diff --check
 현재 `/chat`은 LangGraph 기반의 세션 단계 전이를 제공합니다. 이미지 재료와 자연어 재료는
 OpenAI 구조화 추출로 처리하고, Tool Hub·RAG 연동 전에는 OpenAI가 생성한 임시 레시피·영양·
 장보기 데이터를 반환합니다. BE2 연동 후 해당 LLM 임시 경로를 실제 Tool 결과로 교체합니다.
+
+### 로컬 레시피 CSV
+
+기본 카탈로그는 `data/COOKRCP01_FINAL_WITH_INGREDIENT_GROUPS_REVISED_V2.csv`입니다.
+외부 API를 호출하지 않고 이 내부 CSV만 읽습니다. 파일은 UTF-8(BOM 허용)으로 저장하며,
+보강 내부 형식의 주요 열은 아래와 같습니다.
+
+```text
+RCP_SEQ,RCP_NM,RCP_PAT2,RCP_PARTS_DTLS,REQUIRED_INGREDIENTS,
+OPTIONAL_INGREDIENTS,SUBSTITUTABLE_INGREDIENTS,REQUIRED_SEASONINGS,SUBSTITUTABLE_SEASONINGS
+```
+
+`REQUIRED_*`, `SUBSTITUTABLE_*`, `OPTIONAL_INGREDIENTS`는 각각 필수, 대체 가능,
+생략 가능 재료로 정규화됩니다. `RCP_PAT2`는 메인·반찬 조합을 위한 역할로 사용합니다.
+필요하면 정규화된 자체 CSV 경로를 `CsvRecipeRepository` 생성자에 전달할 수도 있습니다.
+
+기본 `PlanEatToolHub.from_local_catalog(...)`는 `data/`의 보강 내부 CSV를 읽습니다.
+이 카탈로그의 재료 중요도는 제외 재료 재계획에 사용됩니다.
 
 LLM 추천·완료 응답을 사용하려면 `.env`에 `OPENAI_API_KEY`를 설정합니다. 기본 모델은
 `gpt-4o-mini`이며, 필요하면 `OPENAI_MODEL`로 변경할 수 있습니다.

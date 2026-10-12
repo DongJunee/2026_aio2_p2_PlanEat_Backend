@@ -46,12 +46,37 @@
 
 ## 팀원 소개
 
-| 이름 | 역할 | 담당 영역 |
-| :---: | :--- | --- |
-| 조권식 | PM | 일정·요구사항 관리, 팀 업무 조율, 데이터 전처리와 초기 데이터 관리 |
-| 이홍진 | FE | Streamlit 화면, 사용자 입력·이미지 수집, API 연동, 상태별 화면 전환, UI/UX |
-| 박동준 | BE · Tool Hub | 이미지 기반 재료 인식, Recipe·Nutrition·Shopping·Guide Tool, ChromaDB 검색, Tool 호출 결과 관리 |
-| 최경락 | BE · Agent Orchestrator | FastAPI, LangGraph 상태 전이, 세션 관리, Jev 판정, Guardrails, 결과 통합 |
+<table>
+  <thead>
+    <tr>
+      <th width="18%" align="center">이름</th>
+      <th width="22%" align="left">역할</th>
+      <th align="left">담당 영역</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td align="center">조권식</td>
+      <td>PM</td>
+      <td>일정·요구사항 관리, 팀 업무 조율, 데이터 전처리와 초기 데이터 관리</td>
+    </tr>
+    <tr>
+      <td align="center">이홍진</td>
+      <td>FE</td>
+      <td>Streamlit 화면, 사용자 입력·이미지 수집, API 연동, 상태별 화면 전환, UI/UX</td>
+    </tr>
+    <tr>
+      <td align="center">박동준</td>
+      <td>BE · Tool Hub</td>
+      <td>이미지 기반 재료 인식, Recipe·Nutrition·Shopping·Guide Tool, ChromaDB 검색, Tool 호출 결과 관리</td>
+    </tr>
+    <tr>
+      <td align="center">최경락</td>
+      <td>BE · Agent Orchestrator</td>
+      <td>FastAPI, LangGraph 상태 전이, 세션 관리, Jev 판정, Guardrails, 결과 통합</td>
+    </tr>
+  </tbody>
+</table>
 
 <br>
 

@@ -1720,6 +1720,47 @@ def test_combined_replacement_and_typoed_deletion_update_the_list_together() -> 
     assert session.ingredient_candidates == (IngredientCandidate(name="참치", amount="1캔"),)
 
 
+def test_replacement_target_excludes_conversational_ending_without_duplicate() -> None:
+    """'연어 대신 참치야'의 '야'는 재료명이 아니라 종결어미다."""
+
+    repository = InMemoryChatSessionRepository()
+    asyncio.run(
+        repository.save(
+            "replacement-ending-session",
+            ChatSessionState(
+                step="WAITING_INGREDIENT_CONFIRM",
+                ingredient_candidates=(
+                    IngredientCandidate(name="토마토", amount="2개"),
+                    IngredientCandidate(name="연어", amount="200g"),
+                ),
+            ),
+        )
+    )
+    service = ChatService(
+        llm_responder=FakeCompletionMessageGenerator(
+            edited_ingredients=[{"name": "참치", "amount": "1캔"}]
+        ),
+        ingredient_confirmation_evaluator=FakeIngredientConfirmationEvaluator("unclear"),
+        session_repository=repository,
+    )
+
+    payload, status_code = asyncio.run(
+        service.handle(
+            ChatRequest(
+                session_id="replacement-ending-session",
+                message="토마토 빼주고 연어대신 참치야",
+            )
+        )
+    )
+    session = asyncio.run(repository.get("replacement-ending-session"))
+
+    assert status_code == 200
+    assert "변경한 재료: 연어 → 참치" in payload["response"]
+    assert "제외한 재료: 토마토" in payload["response"]
+    assert "참치야" not in payload["response"]
+    assert session.ingredient_candidates == (IngredientCandidate(name="참치", amount="1캔"),)
+
+
 def test_short_candidate_deletion_expression_is_an_ingredient_edit() -> None:
     """'양배추는 빼'처럼 짧은 후보 삭제 표현도 Jev 분류와 무관하게 반영합니다."""
 

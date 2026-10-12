@@ -23,8 +23,12 @@ _VISION_RESPONSE_SCHEMA = {
             "items": {
                 "type": "object",
                 "additionalProperties": False,
-                "properties": {"name": {"type": "string"}, "amount": {"type": "string"}},
-                "required": ["name", "amount"],
+                "properties": {
+                    "name": {"type": "string"},
+                    "amount": {"type": "string"},
+                    "is_food": {"type": "boolean"},
+                },
+                "required": ["name", "amount", "is_food"],
             },
         }
     },
@@ -45,12 +49,18 @@ class DetectedIngredient(BaseModel):
     amount: str = Field(min_length=1)
 
 
+class DetectedIngredientCandidate(DetectedIngredient):
+    """Vision 모델이 식품 여부까지 판정한 내부 후보입니다."""
+
+    is_food: bool
+
+
 class VisionIngredientResponse(BaseModel):
     """Vision 모델의 엄격한 구조화 결과입니다."""
 
     model_config = ConfigDict(extra="forbid")
 
-    ingredients: list[DetectedIngredient]
+    ingredients: list[DetectedIngredientCandidate]
 
 
 class OpenAIVisionIngredientExtractor:
@@ -126,6 +136,7 @@ class OpenAIVisionIngredientExtractor:
         normalized = self._ingredient_validator.normalize(
             ToolIngredient(name=candidate.name, amount=candidate.amount)
             for candidate in candidates
+            if candidate.is_food
         )
         return [DetectedIngredient.model_validate(item.model_dump()) for item in normalized]
 

@@ -46,8 +46,9 @@ _INGREDIENT_RESPONSE_SCHEMA = {
                 "properties": {
                     "name": {"type": "string"},
                     "amount": {"type": "string"},
+                    "is_food": {"type": "boolean"},
                 },
-                "required": ["name", "amount"],
+                "required": ["name", "amount", "is_food"],
             },
         }
     },
@@ -391,11 +392,27 @@ class OpenAIResponder:
             raw_ingredients = payload.get("ingredients") if isinstance(payload, dict) else None
             if not isinstance(raw_ingredients, list):
                 raise ValueError("재료 목록이 없습니다.")
-            validated: list[dict[str, str]] = []
+            validated_by_name: dict[str, dict[str, str]] = {}
             for raw_ingredient in raw_ingredients:
-                ingredient = IngredientConfirmation.model_validate(raw_ingredient)
-                validated.append(ingredient.model_dump())
-            return validated
+                if not isinstance(raw_ingredient, dict):
+                    raise ValueError("재료 항목 형식이 올바르지 않습니다.")
+                # 영수증의 문구류·홍보 문구처럼 모델이 비식품으로 판정한 항목은
+                # 사용자 확인 목록에도 넣지 않는다.
+                if raw_ingredient.get("is_food") is not True:
+                    continue
+                ingredient = IngredientConfirmation.model_validate(
+                    {
+                        "name": raw_ingredient.get("name"),
+                        "amount": raw_ingredient.get("amount"),
+                    }
+                )
+                normalized = ingredient.model_dump()
+                existing = validated_by_name.get(ingredient.name)
+                if existing is None or (
+                    existing["amount"] == "수량 미정" and normalized["amount"] != "수량 미정"
+                ):
+                    validated_by_name[ingredient.name] = normalized
+            return list(validated_by_name.values())
         except (json.JSONDecodeError, TypeError, ValueError, ValidationError) as error:
             raise LLMResponseError("OpenAI 재료 추출 응답을 검증할 수 없습니다.") from error
 

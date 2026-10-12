@@ -2123,8 +2123,21 @@ def _explicit_replacements_from_message(
                 user_message,
             )
         if match is not None:
-            replacements.append((candidate, match.group("target")))
+            target = _strip_replacement_target_ending(match.group("target"))
+            if target:
+                replacements.append((candidate, target))
     return replacements
+
+
+def _strip_replacement_target_ending(target: str) -> str:
+    """교체 대상 뒤에 붙은 짧은 서술형 종결어미를 재료명에서 분리합니다.
+
+    ``연어 대신 참치야``에서 ``참치야`` 전체를 재료명으로 보정하면, 추출 모델의
+    ``참치``와 서로 다른 재료로 취급되어 후보가 중복될 수 있다. 이 함수는 ``대신``
+    교체 구문에서만 사용하므로 일반 재료 추출 결과는 바꾸지 않는다.
+    """
+
+    return re.sub(r"(?:이에요|예요|이야|야)$", "", target.strip())
 
 
 def _explicit_addition_names(user_message: str) -> list[str]:

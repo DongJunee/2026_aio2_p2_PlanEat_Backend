@@ -140,16 +140,19 @@ def test_responder_parses_structured_llm_recommendation(monkeypatch) -> None:
     assert len(result["data"]["recipe_sets"][0]["recipes"]) == 5
 
 
-def test_responder_extracts_natural_language_ingredients_with_structured_output(monkeypatch) -> None:
+def test_responder_keeps_only_food_ingredients_with_structured_output(monkeypatch) -> None:
     payload = {
         "ingredients": [
-            {"name": "모델이 반환한 재료", "amount": "수량 미정"},
+            {"name": "커다란 응원", "amount": "1개", "is_food": False},
+            {"name": "우유", "amount": "900ml", "is_food": True},
+            {"name": "우유", "amount": "수량 미정", "is_food": True},
         ]
     }
 
     class FakeResponses:
         async def create(self, **kwargs: object) -> SimpleNamespace:
             assert kwargs["text"]["format"]["type"] == "json_schema"  # type: ignore[index]
+            assert "is_food" in kwargs["text"]["format"]["schema"]["properties"]["ingredients"]["items"]["required"]  # type: ignore[index]
             assert "<untrusted_user_message>" in kwargs["input"]
             assert "<current_ingredients>" in kwargs["input"]
             return SimpleNamespace(output_text=json.dumps(payload, ensure_ascii=False))
@@ -168,7 +171,7 @@ def test_responder_extracts_natural_language_ingredients_with_structured_output(
         )
     )
 
-    assert result == [{"name": "모델이 반환한 재료", "amount": "수량 미정"}]
+    assert result == [{"name": "우유", "amount": "900ml"}]
 
 
 def test_responder_parses_structured_clarification_response(monkeypatch) -> None:

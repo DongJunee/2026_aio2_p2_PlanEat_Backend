@@ -6,6 +6,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.agent.tools.tool_models import IngredientGuide, RecipeMatch
 
+_MAX_SHOPPING_ITEMS = 5
+
 
 class ShoppingPlan(BaseModel):
     """기존 Chat API의 missing_ingredients·shopping_list와 호환되는 계획입니다."""
@@ -13,11 +15,14 @@ class ShoppingPlan(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     missing_ingredients: list[dict[str, str | None]] = Field(default_factory=list)
-    shopping_list: list[dict[str, str]] = Field(default_factory=list)
+    shopping_list: list[dict[str, str]] = Field(
+        default_factory=list,
+        max_length=_MAX_SHOPPING_ITEMS,
+    )
 
 
 class ShoppingTool:
-    """필수·권장 재료만 장보기 목록에 포함하는 결정적 계산기입니다."""
+    """부족 재료를 레시피 순서대로 최대 5개까지 장보기 목록에 담는 계산기입니다."""
 
     def build(
         self,
@@ -48,4 +53,10 @@ class ShoppingTool:
             if ingredient.importance != "생략 가능":
                 shopping.append({"ingredient": ingredient.name, "amount": ingredient.amount})
 
-        return ShoppingPlan(missing_ingredients=missing, shopping_list=shopping)
+        # ``missing_ingredients``는 대체·생략 정보까지 보존한다. 실제 구매 목록만
+        # 원본 레시피 순서대로 잘라 5개를 넘지 않게 한다. 대체 가능 재료를 제외하면
+        # Jev가 사용자의 기피 재료를 대체하는 후속 흐름을 판단할 수 없게 된다.
+        return ShoppingPlan(
+            missing_ingredients=missing,
+            shopping_list=shopping[:_MAX_SHOPPING_ITEMS],
+        )

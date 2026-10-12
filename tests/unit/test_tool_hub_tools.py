@@ -10,6 +10,7 @@ from app.agent.tools.tool_models import (
     IngredientGuide,
     NutritionValues,
     RecipeIngredient,
+    RecipeMatch,
     RecipeSearchQuery,
     ToolIngredient,
 )
@@ -180,6 +181,46 @@ def test_recipe_tool_prioritizes_recipes_that_use_confirmed_ingredients() -> Non
 
     assert [result.recipe.recipe_id for result in results] == ["uses-tofu", "generic"]
     assert results[0].owned_ingredients[0].name == "두부"
+
+
+def test_shopping_tool_limits_the_visible_list_to_five_items() -> None:
+    """호환 API 경로를 포함해 장보기 목록은 최대 5개여야 한다."""
+
+    owned = RecipeIngredient(name="두부", amount="1모", importance="필수")
+    missing = [
+        RecipeIngredient(name="필수1", amount="1개", importance="필수"),
+        RecipeIngredient(name="필수2", amount="1개", importance="필수"),
+        RecipeIngredient(name="권장1", amount="1개", importance="권장"),
+        RecipeIngredient(name="권장2", amount="1개", importance="권장"),
+        RecipeIngredient(name="권장3", amount="1개", importance="권장"),
+        RecipeIngredient(name="대체재", amount="1개", importance="대체 가능"),
+        RecipeIngredient(name="생략재", amount="1개", importance="생략 가능"),
+    ]
+    recipe = CatalogRecipe(
+        recipe_id="shopping-limit",
+        title="장보기 제한 테스트",
+        cook_time=10,
+        ingredients=[owned, *missing],
+        nutrition=NutritionValues(calories=300, protein=20, carbohydrate=30, fat=10),
+        source="unit-test",
+    )
+    match = RecipeMatch(
+        recipe=recipe,
+        owned_ingredients=[owned],
+        missing_ingredients=missing,
+        score=0,
+    )
+
+    plan = ShoppingTool().build(match)
+
+    assert len(plan.missing_ingredients) == 7
+    assert plan.shopping_list == [
+        {"ingredient": "필수1", "amount": "1개"},
+        {"ingredient": "필수2", "amount": "1개"},
+        {"ingredient": "권장1", "amount": "1개"},
+        {"ingredient": "권장2", "amount": "1개"},
+        {"ingredient": "권장3", "amount": "1개"},
+    ]
 
 
 def test_recipe_tool_excludes_previously_recommended_recipe_ids() -> None:

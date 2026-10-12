@@ -5,6 +5,7 @@ from app.agent.graph import (
     SUMMARY_TRIGGER_MESSAGE_COUNT,
     ChatState,
     ConversationMessage,
+    build_chat_graph,
     chat_graph,
 )
 
@@ -76,3 +77,32 @@ def test_waiting_image_with_text_ingredients_requests_only_missing_conditions() 
 
     assert result["step"] == "WAITING_CONDITIONS"
     assert result["response_kind"] == "CONDITION_INPUT"
+
+
+def test_completed_state_runs_injected_tool_node() -> None:
+    async def fake_tool_node(state: ChatState) -> dict[str, object]:
+        assert state["step"] == "COMPLETED"
+        return {
+            "tool_result": {
+                "response": "Tool Hub 결과",
+                "data": {"recipe_sets": []},
+            },
+            "tool_source_metadata": {"provider": "test"},
+            "tool_error": None,
+        }
+
+    graph = build_chat_graph(tool_node=fake_tool_node)
+    result = asyncio.run(
+        graph.ainvoke(
+            {
+                "step": "WAITING_IMAGE",
+                "messages": _messages(1),
+                "has_image": False,
+                "has_conditions": True,
+                "has_confirmed_ingredients": True,
+            }
+        )
+    )
+
+    assert result["step"] == "COMPLETED"
+    assert result["tool_result"]["response"] == "Tool Hub 결과"

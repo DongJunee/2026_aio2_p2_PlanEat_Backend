@@ -1,29 +1,33 @@
 """Chat API의 세션 관리와 LangGraph 실행을 연결합니다."""
 
-from dataclasses import replace
-from collections.abc import Mapping, Sequence
+import asyncio
+from collections.abc import AsyncIterator, Mapping, Sequence
+from contextlib import suppress
+from dataclasses import dataclass, replace
 import json
 import re
 from typing import Literal, Protocol
 
-from app.agent.graph import ChatState, WorkflowStep, chat_graph
-from app.agent.tools.contracts import (
-    ToolRequest,
-    ToolRequestPreparationError,
-    ToolResult,
-    build_tool_request,
-)
+from pydantic import TypeAdapter
+
+from app.agent.graph import ChatState, WorkflowStep, build_chat_graph
+from app.agent.tools.factory import build_default_tool_hub
+from app.agent.tools.nodes import build_recipe_recommendation_node
+from app.agent.tools.tool_calls import ToolRequestExecutor
 from app.core.config import get_settings
 from app.core.observability import build_langsmith_run_config
 from app.core.safety import (
     SafetyViolationError,
+    is_prompt_disclosure_request,
     validate_completion_output,
     validate_user_message,
 )
 from app.integrations.decision_engine.typesafe_jev import (
     ConditionReadinessDecision,
+    FeedbackPlan,
     IngredientConfirmationDecision,
     JevConditionReadinessEvaluator,
+    JevFeedbackPlanner,
     JevIngredientConfirmationEvaluator,
 )
 from app.integrations.guardrails.nemo import GuardrailValidator, NemoGuardrailService
@@ -35,7 +39,70 @@ from app.repositories.chat_session import (
     InMemoryChatSessionRepository,
     IngredientCandidate,
 )
-from app.schemas.chat import ChatRequest, RecommendationData
+from app.schemas.chat import (
+    ChatRequest,
+    ChatResponse,
+    ChatStreamEvent,
+    RecommendationData,
+    RECIPE_SET_DISPLAY_LABELS,
+    RecipeSet,
+    get_recipe_set_key,
+)
+from app.services.pdf_service import RecipePdfService, recipe_pdf_service
+
+
+# 추천 결과의 대표 세트 문구는 FE에 표시되고, 선택 요청은 서버 내부 set_key로
+# 다시 변환해야 PDF 생성 경로가 아닌 피드백 경로로 빠지지 않는다.
+_KOREAN_SET_ID_ALIASES: dict[str, tuple[str, ...]] = {
+    "BESTMATCH": (
+        "베스트 매치",
+        "베스트매치",
+        "베스트",
+        "가장 잘 맞는",
+        "가장잘맞는",
+        RECIPE_SET_DISPLAY_LABELS["BEST_MATCH"],
+    ),
+    "MOREOPTIONS": (RECIPE_SET_DISPLAY_LABELS["MORE_OPTIONS"],),
+}
+_SELECTION_INTENT_PATTERN = re.compile(
+    r"선택|고르|골라|정해|결정|진행|발급|보내|pdf|피디에프|파일|"
+    r"할게|할께|해줘|해주세요|주세요|받고\s*싶",
+    flags=re.IGNORECASE,
+)
+_CHAT_RESPONSE_ADAPTER = TypeAdapter(ChatResponse)
+_STREAM_TEXT_CHUNK_SIZE = 32
+_INGREDIENT_REMOVAL_PATTERN = (
+    r"(?:빼\s*(?:줘|주세요|고|서|자|버려)?|삭제|제거|제외|없애|덜어|"
+    r"넣지\s*(?:말|마)|안\s*넣)"
+)
+_PROMPT_DISCLOSURE_RESPONSE = (
+    "요청하신 내용은 안내할 수 없습니다. 레시피 추천을 원하시면 "
+    "사용 가능한 재료와 식단 목표를 알려주세요."
+)
+_PROMPT_DISCLOSURE_QUESTIONS = [
+    "사용 가능한 재료는 무엇인가요?",
+    "식단 목표는 무엇인가요?",
+]
+_UNRECOGNIZED_IMAGE_RESPONSE = (
+    "올려주신 사진은 냉장고 재료나 영수증 사진으로 확인하기 어려워요. "
+    "냉장고 속 재료가 보이는 사진 또는 영수증 사진을 올려주세요."
+)
+_UNRECOGNIZED_IMAGE_QUESTIONS = [
+    "냉장고 안 재료가 잘 보이는 사진이나 영수증 사진을 첨부해주세요.",
+]
+
+
+def _guardrail_rejection(message: str) -> tuple[dict[str, object], int]:
+    """공개 요청은 FE 오류 화면 대신 기존 추가 입력 계약으로 안전하게 안내합니다."""
+
+    if is_prompt_disclosure_request(message):
+        return {
+            "status": "NEED_MORE_INFO",
+            "step": "CONDITION_INPUT",
+            "response": _PROMPT_DISCLOSURE_RESPONSE,
+            "questions": list(_PROMPT_DISCLOSURE_QUESTIONS),
+        }, 200
+    return {"status": "ERROR", "response": "요청을 처리할 수 없습니다."}, 400
 
 
 class LLMResponder(Protocol):
@@ -76,28 +143,49 @@ class ConditionReadinessEvaluator(Protocol):
 class IngredientConfirmationEvaluator(Protocol):
     """재료 후보에 대한 사용자 자연어 확인 의도를 판단합니다."""
 
-    async def evaluate(self, user_message: str) -> IngredientConfirmationDecision | None:
+    async def evaluate(
+        self,
+        user_message: str,
+        proposed_ingredients: Sequence[Mapping[str, str]],
+    ) -> IngredientConfirmationDecision | None:
         """확정·거절·수정·모호함 중 하나를 반환합니다."""
 
 
-class ToolHubProvider(Protocol):
-    """BE2 Tool Hub가 제공해야 하는 비동기 실행 인터페이스입니다."""
+@dataclass(frozen=True)
+class IngredientConfirmationRead:
+    """재료 확인 판정과 다음 턴에 유지할 확인 문맥입니다."""
 
-    async def execute(self, request: ToolRequest) -> ToolResult:
-        """정규화된 ToolRequest를 실행합니다."""
+    decision: IngredientConfirmationDecision
+    guidance: str | None
+    acknowledged_ingredient_names: tuple[str, ...]
+    pending_ingredient_correction: str | None
+    extraction_message: str | None = None
+
+
+class FeedbackPlanner(Protocol):
+    """완료된 추천에 대한 사용자 피드백의 재추천 계획 경계입니다."""
+
+    async def plan(
+        self,
+        user_message: str,
+        current_conditions: Mapping[str, object] | None,
+    ) -> FeedbackPlan:
+        """피드백을 조건 갱신·재추천 계획으로 분류합니다."""
 
 
 class ChatService:
-    """세션 상태, LangGraph 전이, LLM 임시 추천 응답 생성을 연결합니다."""
+    """세션 상태, LangGraph 전이, Tool Hub·임시 LLM 응답을 연결합니다."""
 
     def __init__(
         self,
         llm_responder: LLMResponder | None = None,
         condition_evaluator: ConditionReadinessEvaluator | None = None,
         ingredient_confirmation_evaluator: IngredientConfirmationEvaluator | None = None,
-        tool_provider: ToolHubProvider | None = None,
+        tool_provider: ToolRequestExecutor | None = None,
         session_repository: ChatSessionRepository | None = None,
         guardrail_validator: GuardrailValidator | None = None,
+        feedback_planner: FeedbackPlanner | None = None,
+        pdf_service: RecipePdfService | None = None,
     ) -> None:
         settings = get_settings()
         self._settings = settings
@@ -109,9 +197,16 @@ class ChatService:
             ingredient_confirmation_evaluator
             or JevIngredientConfirmationEvaluator(settings)
         )
-        # BE2 endpoint가 합의되기 전에는 provider를 호출하지 않는다. 테스트나 실제
-        # 어댑터를 주입한 경우에만 ToolRequest를 전달해 임시 결과를 강제로 만들지 않는다.
+        self._feedback_planner = feedback_planner or JevFeedbackPlanner(settings)
+        self._pdf_service = pdf_service or recipe_pdf_service
         self._tool_provider = tool_provider
+        self._chat_graph = build_chat_graph(
+            tool_node=(
+                build_recipe_recommendation_node(tool_provider)
+                if tool_provider is not None
+                else None
+            )
+        )
         self._session_repository = session_repository or InMemoryChatSessionRepository()
         self._guardrail_validator = guardrail_validator or NemoGuardrailService(settings)
 
@@ -121,34 +216,115 @@ class ChatService:
         try:
             validate_user_message(request.message)
         except SafetyViolationError:
-            return {"status": "ERROR", "response": "요청을 처리할 수 없습니다."}, 400
+            return _guardrail_rejection(request.message)
         if not await self._guardrail_validator.validate_input(request.message):
-            return {"status": "ERROR", "response": "요청을 처리할 수 없습니다."}, 400
+            return _guardrail_rejection(request.message)
 
         session = await self._session_repository.get(request.session_id)
         previous_step = session.step
-        request_conditions = await self._read_conditions_from_message(request.message)
+        stored_recommendation = _stored_recommendation(session)
+        regenerate_with_new_recipes = (
+            previous_step == "COMPLETED"
+            and stored_recommendation is not None
+            and _is_recipe_regeneration_request(request.message)
+        )
+        replace_confirmed_ingredients = (
+            previous_step == "COMPLETED"
+            and stored_recommendation is not None
+            and not request.attachments
+            and _looks_like_ingredient_replacement(request.message)
+        )
+        if previous_step == "COMPLETED" and stored_recommendation is not None:
+            selected_set_id = _parse_selected_set_id(request.message, stored_recommendation)
+            if selected_set_id is not None:
+                return await self._handle_set_selection(
+                    request=request,
+                    session=session,
+                    recommendation=stored_recommendation,
+                    selected_set_id=selected_set_id,
+                )
+
+            # 완료 결과 이후에는 새 메시지를 단순한 재추천 요청으로 취급하지 않고
+            # Jev Plan을 거쳐 조건·피드백을 누적한 뒤 같은 Tool 검증 경로를 다시 탄다.
+            feedback_plan = await self._feedback_planner.plan(
+                request.message,
+                session.user_conditions,
+            )
+            request_conditions = _merge_feedback_conditions(
+                session.user_conditions,
+                request.message,
+                feedback_plan,
+            )
+            if regenerate_with_new_recipes:
+                request_conditions = _exclude_previously_recommended_recipes(
+                    request_conditions,
+                    stored_recommendation,
+                )
+            else:
+                # 이전 재생성 플래그가 다음 일반 피드백 응답의 문구까지 바꾸지 않게 한다.
+                request_conditions = {
+                    **request_conditions,
+                    "regenerated_recipe_request": False,
+                }
+            condition_ready = _has_required_condition(request_conditions)
+        else:
+            request_conditions, condition_ready = await self._read_condition_state(
+                request.message,
+                session.user_conditions,
+            )
         effective_conditions = request_conditions or session.user_conditions
+        if request_conditions is None:
+            condition_ready = _has_required_condition(effective_conditions)
         confirmation_decision: IngredientConfirmationDecision | None = None
         candidate_ingredients = session.ingredient_candidates
         confirmed_ingredients = session.confirmed_ingredients
         extracted_ingredients: tuple[IngredientCandidate, ...] | None = None
-        if previous_step == "WAITING_INGREDIENT_CONFIRM":
-            confirmation_decision = await self._read_ingredient_confirmation(request.message)
+        ingredient_edit_summary: list[str] = []
+        ingredient_confirmation_message: str | None = None
+        acknowledged_ingredient_names = session.acknowledged_ingredient_names
+        pending_ingredient_correction = session.pending_ingredient_correction
+        ingredient_extraction_message = request.message
+        if replace_confirmed_ingredients:
+            # 완료 이후에도 사용자가 명시적으로 새 재료를 지정하면 피드백이 아닌
+            # 재료 교체로 처리한다. 그렇지 않으면 이전 확정 재료가 그대로 Tool Hub로
+            # 전달되어 같은 레시피가 반복된다.
+            try:
+                extracted_ingredients = await self._extract_ingredients(
+                    user_message=request.message,
+                    attachments=(),
+                    current_ingredients=session.confirmed_ingredients,
+                )
+            except LLMResponseError:
+                return {
+                    "status": "ERROR",
+                    "response": "새 재료 입력을 해석하는 중 오류가 발생했습니다.",
+                }, 500
+            if extracted_ingredients:
+                candidate_ingredients = tuple()
+                confirmed_ingredients = extracted_ingredients
+        elif previous_step == "WAITING_INGREDIENT_CONFIRM":
+            confirmation_read = await self._read_ingredient_confirmation(
+                request.message,
+                session.ingredient_candidates,
+                acknowledged_ingredient_names=session.acknowledged_ingredient_names,
+                pending_ingredient_correction=session.pending_ingredient_correction,
+            )
+            confirmation_decision = confirmation_read.decision
+            ingredient_confirmation_message = confirmation_read.guidance
+            acknowledged_ingredient_names = confirmation_read.acknowledged_ingredient_names
+            pending_ingredient_correction = confirmation_read.pending_ingredient_correction
+            ingredient_extraction_message = (
+                confirmation_read.extraction_message or request.message
+            )
             candidate_ingredients, confirmed_ingredients = _apply_confirmation_decision(
                 session=session,
                 decision=confirmation_decision,
                 user_message=request.message,
             )
-            if confirmation_decision.intent == "edited" and not candidate_ingredients:
-                # 후보를 모두 제거한 수정은 확인 목록을 만들 수 없으므로 재촬영으로 전환한다.
-                confirmation_decision = IngredientConfirmationDecision(
-                    intent="rejected", confidence=confirmation_decision.confidence
-                )
             if confirmation_decision.intent == "edited":
                 try:
                     extracted_ingredients = await self._extract_ingredients(
-                        user_message=request.message,
+                        user_message=ingredient_extraction_message,
                         attachments=(),
                         current_ingredients=session.ingredient_candidates,
                     )
@@ -161,26 +337,50 @@ class ChatService:
                 # 해석하지 못한 경우일 수 있으므로, 기존 후보를 보존해 빈 확인 응답을 막는다.
                 if extracted_ingredients:
                     candidate_ingredients = extracted_ingredients
-        elif previous_step == "WAITING_IMAGE" and not request.attachments:
-            # 새 세션의 첫 요청에서는 이미지 우선 UX를 지킨다. 첫 응답으로 이미지
-            # 요청을 보낸 뒤 같은 세션에서 사진이 없다고 답한 경우에만 자연어 재료를
-            # LLM으로 추출해 확정 재료로 저장한다.
-            if session.messages:
-                try:
-                    extracted_ingredients = await self._extract_ingredients(
-                        user_message=request.message,
-                        attachments=(),
+                ingredient_edit_summary = _summarize_ingredient_changes(
+                    before=session.ingredient_candidates,
+                    after=candidate_ingredients,
+                    user_message=ingredient_extraction_message,
+                )
+                if not candidate_ingredients:
+                    # 삭제와 추가가 같은 답변에 있는 경우 OpenAI 반영 뒤에도 후보가 비어
+                    # 있을 때만 재촬영으로 전환한다. 반영 전 목록만 보고 전환하면 새로
+                    # 추가한 재료까지 잃을 수 있다.
+                    confirmation_decision = IngredientConfirmationDecision(
+                        intent="rejected", confidence=confirmation_decision.confidence
                     )
-                except LLMResponseError:
-                    return {
-                        "status": "ERROR",
-                        "response": "재료 입력을 해석하는 중 오류가 발생했습니다.",
-                    }, 500
-                if extracted_ingredients:
-                    # 이미지 인식 후보가 아니라 사용자 명시 입력이므로 별도 확인 없이
-                    # 확정 재료로 보관한다.
+                elif (
+                    extracted_ingredients
+                    and ingredient_edit_summary
+                    and _requests_finalization_after_edit(request.message)
+                ):
+                    # 수정과 확정을 함께 말한 경우에는 먼저 수정 결과를 만든 뒤,
+                    # 갱신된 목록만 확정 재료로 이동한다.
+                    confirmed_ingredients = candidate_ingredients
                     candidate_ingredients = tuple()
-                    confirmed_ingredients = extracted_ingredients
+                    confirmation_decision = IngredientConfirmationDecision(
+                        intent="confirmed", confidence=confirmation_decision.confidence
+                    )
+            if confirmation_decision.intent in {"confirmed", "rejected", "edited"}:
+                acknowledged_ingredient_names = tuple()
+                pending_ingredient_correction = None
+        elif previous_step == "WAITING_IMAGE" and not request.attachments:
+            # 첫 요청인지와 관계없이 사용자가 텍스트로 재료를 직접 입력하면 이미지
+            # 요청보다 자연어 입력을 우선한다. 이미지 인식 후보가 아니라 사용자 명시
+            # 입력이므로 별도 확인 없이 확정 재료로 보관한다.
+            try:
+                extracted_ingredients = await self._extract_ingredients(
+                    user_message=request.message,
+                    attachments=(),
+                )
+            except LLMResponseError:
+                return {
+                    "status": "ERROR",
+                    "response": "재료 입력을 해석하는 중 오류가 발생했습니다.",
+                }, 500
+            if extracted_ingredients:
+                candidate_ingredients = tuple()
+                confirmed_ingredients = extracted_ingredients
         elif previous_step == "WAITING_IMAGE" and request.attachments:
             try:
                 extracted_ingredients = await self._extract_ingredients(
@@ -197,42 +397,55 @@ class ChatService:
                 }, 500
             if not extracted_ingredients:
                 return {
-                    "status": "ERROR",
-                    "response": "이미지에서 재료를 확인할 수 없습니다.",
-                }, 500
+                    "status": "NEED_MORE_INFO",
+                    "step": "IMAGE_INPUT",
+                    "response": _UNRECOGNIZED_IMAGE_RESPONSE,
+                    "questions": list(_UNRECOGNIZED_IMAGE_QUESTIONS),
+                }, 200
             candidate_ingredients = extracted_ingredients
         messages = [*session.messages, {"role": "user", "content": request.message}]
         state: ChatState = {
             "step": previous_step,
             "messages": messages,
             "summary": session.summary,
+            "session_id": request.session_id,
+            "confirmed_ingredients": [
+                {"name": ingredient.name, "amount": ingredient.amount}
+                for ingredient in confirmed_ingredients
+            ],
+            "user_conditions": dict(effective_conditions or {}),
             "has_image": bool(request.attachments),
-            "has_conditions": effective_conditions is not None,
+            "has_conditions": condition_ready,
             "has_confirmed_ingredients": bool(confirmed_ingredients),
             "ingredient_confirmation": (
                 confirmation_decision.intent if confirmation_decision is not None else None
             ),
         }
+        if ingredient_edit_summary:
+            state["ingredient_edit_summary"] = ingredient_edit_summary
+        if ingredient_confirmation_message:
+            state["ingredient_confirmation_message"] = ingredient_confirmation_message
         if previous_step == "WAITING_CONDITIONS":
-            state["condition_ready"] = effective_conditions is not None
+            state["condition_ready"] = condition_ready
 
         trace_config = build_langsmith_run_config(
             self._settings,
             session_id=request.session_id,
             workflow_step=previous_step,
             has_image=bool(request.attachments),
-            has_conditions=effective_conditions is not None,
+            has_conditions=condition_ready,
             has_confirmed_ingredients=bool(confirmed_ingredients),
             attachment_count=len(request.attachments or []),
+            tool_enabled=self._tool_provider is not None,
         )
         if trace_config is None:
-            result = await chat_graph.ainvoke(state)
+            result = await self._chat_graph.ainvoke(state)
         else:
-            result = await chat_graph.ainvoke(state, config=trace_config)
+            result = await self._chat_graph.ainvoke(state, config=trace_config)
         next_session = _next_session_state(
             session=session,
             next_step=result["step"],
-            user_conditions=request_conditions,
+            user_conditions=effective_conditions if request_conditions is not None else None,
             ingredient_candidates=(
                 candidate_ingredients
                 if confirmation_decision is not None or extracted_ingredients is not None
@@ -244,23 +457,37 @@ class ChatService:
                 or (extracted_ingredients is not None and not request.attachments)
                 else None
             ),
+            acknowledged_ingredient_names=(
+                acknowledged_ingredient_names
+                if confirmation_decision is not None or extracted_ingredients is not None
+                else None
+            ),
+            pending_ingredient_correction=(
+                pending_ingredient_correction
+                if confirmation_decision is not None or extracted_ingredients is not None
+                else None
+            ),
             messages=tuple(result.get("messages", messages)),
             summary=str(result.get("summary", session.summary)),
         )
         await self._session_repository.save(request.session_id, next_session)
 
         try:
-            if result["step"] == "COMPLETED":
-                tool_error = await self._execute_tool_request(
-                    session_id=request.session_id,
-                    session=next_session,
-                )
-                if tool_error is not None:
-                    return tool_error, 500
-            response = await self._to_response(result, request.message, next_session)
+            if result.get("tool_error"):
+                return {
+                    "status": "ERROR",
+                    "response": "추천 도구 실행 중 오류가 발생했습니다.",
+                }, 500
+            response = await self._to_response(
+                result,
+                request.message,
+                next_session,
+                tool_result=result.get("tool_result"),
+            )
         except LLMResponseError:
             return {"status": "ERROR", "response": "추천 응답 생성 중 오류가 발생했습니다."}, 500
 
+        next_session = _store_recommendation_if_present(next_session, response)
         next_session = replace(
             next_session,
             messages=(
@@ -271,11 +498,130 @@ class ChatService:
         await self._session_repository.save(request.session_id, next_session)
         return response, 200
 
+    async def stream(self, request: ChatRequest) -> AsyncIterator[ChatStreamEvent]:
+        """요청 처리 상태와 검증된 최종 응답을 SSE 이벤트로 전달합니다.
+
+        내부 응답은 구조화된 JSON과 추천 데이터까지 검증해야 하므로 검증 전의 LLM
+        원문을 외부로 흘려보내지 않는다. 대신 처리 중에는 안전한 진행 이벤트를 보내고,
+        검증이 끝난 ``response`` 문구만 delta로 나눈 뒤 전체 ChatResponse를 complete
+        이벤트에 담는다. 사용자가 연결을 끊으면 진행 중인 작업도 취소해 세션 상태를
+        늦게 덮어쓰지 않도록 한다.
+        """
+
+        yield ChatStreamEvent(event="start", data={"phase": "accepted"})
+        task = asyncio.create_task(self.handle(request))
+        try:
+            while not task.done():
+                try:
+                    await asyncio.wait_for(asyncio.shield(task), timeout=0.25)
+                except asyncio.TimeoutError:
+                    yield ChatStreamEvent(event="progress", data={"phase": "processing"})
+            payload, status_code = task.result()
+        except Exception:
+            payload, status_code = (
+                {"status": "ERROR", "response": "요청 처리 중 오류가 발생했습니다."},
+                500,
+            )
+        finally:
+            if not task.done():
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+
+        try:
+            validated_response = _CHAT_RESPONSE_ADAPTER.validate_python(payload)
+            serialized_payload = _CHAT_RESPONSE_ADAPTER.dump_python(
+                validated_response,
+                mode="json",
+                exclude_none=True,
+            )
+        except (TypeError, ValueError):
+            status_code = 500
+            serialized_payload = {
+                "status": "ERROR",
+                "response": "요청 처리 중 오류가 발생했습니다.",
+            }
+
+        response_message = serialized_payload.get("response")
+        if status_code == 200 and isinstance(response_message, str):
+            for index, text in enumerate(_stream_text_chunks(response_message)):
+                yield ChatStreamEvent(
+                    event="delta",
+                    data={"index": index, "text": text},
+                )
+
+        terminal_event = "complete" if status_code == 200 else "error"
+        yield ChatStreamEvent(
+            event=terminal_event,
+            data={"http_status": status_code, "payload": serialized_payload},
+        )
+        yield ChatStreamEvent(event="done", data={"reason": "complete"})
+
+    async def _handle_set_selection(
+        self,
+        *,
+        request: ChatRequest,
+        session: ChatSessionState,
+        recommendation: RecommendationData,
+        selected_set_id: str,
+    ) -> tuple[dict[str, object], int]:
+        """선택 세트의 상세 PDF를 생성하고 다운로드 URL을 반환합니다."""
+
+        selected_set = _find_recipe_set(recommendation, selected_set_id)
+        if selected_set is None:
+            return {"status": "ERROR", "response": "선택한 식단 세트를 찾을 수 없습니다."}, 400
+
+        selected_payload = {"selected_set": selected_set.model_dump()}
+        if not await self._guardrail_validator.validate_tool_result(
+            json.dumps(selected_payload, ensure_ascii=False)
+        ):
+            return {"status": "ERROR", "response": "선택한 식단을 안전하게 처리할 수 없습니다."}, 500
+        try:
+            pdf_url = await self._pdf_service.generate(
+                session_id=request.session_id,
+                recommendation=recommendation,
+                selected_set_id=selected_set_id,
+            )
+        except (OSError, ValueError, RuntimeError):
+            return {"status": "ERROR", "response": "선택한 식단 PDF를 생성하지 못했습니다."}, 500
+
+        response_message = f"{selected_set.set_id} 식단의 상세 PDF를 생성했습니다."
+        if not await self._guardrail_validator.validate_output(response_message):
+            return {"status": "ERROR", "response": "PDF 응답을 안전하게 표시할 수 없습니다."}, 500
+        response = {
+            "status": "SUCCESS",
+            "step": "COMPLETED",
+            "response": response_message,
+            "data": recommendation.model_dump(),
+            "next_action": "PDF_READY",
+            # selected_set_id·available_set_ids는 기존 세션/PDF 계약을 유지하는
+            # 내부 키이고, 화면에 표시할 문구는 data.recipe_sets[*].set_id를 사용한다.
+            "available_set_ids": [
+                get_recipe_set_key(recipe_set, index)
+                for index, recipe_set in enumerate(recommendation.recipe_sets)
+            ],
+            "selected_set_id": selected_set_id,
+            "pdf_url": pdf_url,
+        }
+        next_session = replace(
+            session,
+            selected_set_id=selected_set_id,
+            pdf_url=pdf_url,
+            messages=(
+                *session.messages,
+                _conversation_message("user", request.message),
+                _conversation_message("assistant", response_message),
+            ),
+        )
+        await self._session_repository.save(request.session_id, next_session)
+        return response, 200
+
     async def _to_response(
         self,
         state: Mapping[str, object],
         user_message: str,
         session: ChatSessionState,
+        tool_result: object = None,
     ) -> dict[str, object]:
         """LangGraph의 내부 단계를 외부 Chat API 응답 형식으로 변환합니다."""
 
@@ -289,9 +635,8 @@ class ChatService:
                     "그 재료를 기준으로 추천해드릴게요."
                 )
                 fallback_questions = [
-                    "사용 가능한 재료와 수량을 알려주세요.",
+                    "사용 가능한 재료를 알려주세요.",
                     "식단 목표는 무엇인가요? 예: 다이어트, 고단백, 채식",
-                    "조리 가능한 시간은 얼마나 되나요? 예: 20분 이내",
                 ]
             else:
                 fallback_response = "정확한 재료 확인을 위해 냉장고 또는 영수증 이미지를 첨부해주세요."
@@ -335,7 +680,6 @@ class ChatService:
                 fallback_questions=[
                     "냉장고, 냉동실 또는 영수증 이미지를 첨부해주세요.",
                     "메시지에 식단 목표를 알려주세요. 예: 다이어트, 고단백, 채식",
-                    "메시지에 조리 가능한 시간을 알려주세요. 예: 20분 이내",
                 ],
             )
             return {
@@ -346,12 +690,29 @@ class ChatService:
             }
         if response_kind == "INGREDIENT_CONFIRM":
             confirmation = state.get("ingredient_confirmation")
-            if confirmation == "edited":
-                message = "수정된 재료 목록을 확인해주세요."
+            guided_message = state.get("ingredient_confirmation_message")
+            if isinstance(guided_message, str) and guided_message.strip():
+                message = guided_message.strip()
+            elif confirmation == "edited":
+                edit_summary = _ingredient_edit_summary_from_state(state)
+                summary_message = (
+                    "\n".join(edit_summary)
+                    if edit_summary
+                    else "말씀하신 재료 수정 내용을 반영했습니다."
+                )
+                message = (
+                    f"{summary_message}\n\n이 목록으로 재료를 확정할까요? "
+                    "더 추가하거나 수정할 내용이 있다면 말씀해주세요."
+                )
             elif confirmation == "unclear":
-                message = "재료가 모두 맞는지, 수정할 재료가 있는지 알려주세요."
+                message = (
+                    "현재 재료 목록으로 확정할까요? 수정하거나 추가할 재료가 있다면 말씀해주세요."
+                )
             else:
-                message = "AI가 인식한 재료를 확인해주세요."
+                message = (
+                    "AI가 인식한 재료 목록입니다. 이 재료로 확정할까요? "
+                    "추가하거나 수정할 재료가 있다면 말씀해주세요."
+                )
             return {
                 "status": "NEED_MORE_INFO",
                 "step": "INGREDIENT_CONFIRM",
@@ -365,7 +726,7 @@ class ChatService:
                 state=state,
                 session=session,
                 fallback_response="추천을 위해 몇 가지 정보를 더 알려주세요.",
-                fallback_questions=["식단 목표가 무엇인가요?", "조리 가능한 시간은 얼마나 되나요?"],
+                fallback_questions=["식단 목표가 무엇인가요? 예: 다이어트, 고단백, 채식"],
             )
             return {
                 "status": "NEED_MORE_INFO",
@@ -373,11 +734,24 @@ class ChatService:
                 "response": message,
                 "questions": questions,
             }
+        if tool_result is not None:
+            return await self._response_from_tool_hub(
+                tool_result,
+                regenerated=_is_regenerated_recipe_request(session.user_conditions),
+                ingredient_edit_summary=_ingredient_edit_summary_from_state(state),
+            )
+
         generated_recommendation = await self._generate_recommendation(
             user_message=user_message,
             session=session,
         )
-        completion_message, recipe_sets = generated_recommendation
+        _generated_message, recipe_sets = generated_recommendation
+        completion_message = _with_ingredient_edit_confirmation(
+            _completion_selection_message(
+                regenerated=_is_regenerated_recipe_request(session.user_conditions)
+            ),
+            _ingredient_edit_summary_from_state(state),
+        )
         if not await self._guardrail_validator.validate_output(completion_message):
             raise LLMResponseError("NeMo Guardrails가 최종 응답을 차단했습니다.")
         return {
@@ -385,6 +759,60 @@ class ChatService:
             "step": "COMPLETED",
             "response": completion_message,
             "data": {"recipe_sets": recipe_sets},
+            "next_action": "FEEDBACK_OR_SET_SELECTION",
+            "available_set_ids": [
+                recipe_set["set_key"]
+                for recipe_set in recipe_sets
+                if isinstance(recipe_set.get("set_key"), str)
+            ],
+        }
+
+    async def _response_from_tool_hub(
+        self,
+        raw_result: object,
+        *,
+        regenerated: bool = False,
+        ingredient_edit_summary: Sequence[str] = (),
+    ) -> dict[str, object]:
+        """Tool Hub 결과를 기존 ChatResponse 계약으로 검증·변환합니다.
+
+        Tool 결과는 외부 입력과 같은 비신뢰 경계로 취급한다. 따라서 FE에 반환하기
+        전에 NeMo rail과 기존 Pydantic DTO를 모두 통과시킨다.
+        """
+
+        if not isinstance(raw_result, Mapping):
+            raise LLMResponseError("Tool Hub 결과 형식이 올바르지 않습니다.")
+        tool_result_payload = json.dumps(raw_result, ensure_ascii=False, default=str)
+        if not await self._guardrail_validator.validate_tool_result(tool_result_payload):
+            raise LLMResponseError("Tool Hub 결과가 안전성 검사를 통과하지 못했습니다.")
+
+        completion_message = raw_result.get("response")
+        raw_data = raw_result.get("data")
+        if not isinstance(completion_message, str) or not isinstance(raw_data, Mapping):
+            raise LLMResponseError("Tool Hub 결과 형식이 올바르지 않습니다.")
+        try:
+            validate_completion_output(completion_message)
+            recommendation = RecommendationData.model_validate(raw_data)
+        except (SafetyViolationError, ValueError) as error:
+            raise LLMResponseError("Tool Hub 결과 검증에 실패했습니다.") from error
+        completion_message = _with_ingredient_edit_confirmation(
+            _completion_selection_message(regenerated=regenerated),
+            ingredient_edit_summary,
+        )
+        validate_completion_output(completion_message)
+        if not await self._guardrail_validator.validate_output(completion_message):
+            raise LLMResponseError("NeMo Guardrails가 Tool Hub 완료 응답을 차단했습니다.")
+
+        return {
+            "status": "SUCCESS",
+            "step": "COMPLETED",
+            "response": completion_message,
+            "data": recommendation.model_dump(),
+            "next_action": "FEEDBACK_OR_SET_SELECTION",
+            "available_set_ids": [
+                get_recipe_set_key(recipe_set, index)
+                for index, recipe_set in enumerate(recommendation.recipe_sets)
+            ],
         }
 
     async def _clarification_response(
@@ -413,6 +841,7 @@ class ChatService:
             "has_confirmed_ingredients": bool(state.get("has_confirmed_ingredients")),
             "ingredient_confirmation": state.get("ingredient_confirmation"),
             "ingredient_candidates": _ingredient_payload(session.ingredient_candidates),
+            "user_conditions": dict(session.user_conditions or {}),
             "image_request_already_sent": bool(session.messages),
         }
         try:
@@ -435,6 +864,19 @@ class ChatService:
                 raise ValueError("추가 입력 안내 응답 형식이 올바르지 않습니다.")
             message = message.strip()
             normalized_questions = [question.strip() for question in questions]
+            # 재료·목적만 필수값이다. 생성 모델이 수량·시간·끼니·선호 같은 선택값을
+            # 필수 질문처럼 되살려도 FE에 노출하지 않도록 단계와 무관하게 제거한다.
+            normalized_questions = [
+                question
+                for question in normalized_questions
+                if not _is_optional_condition_question(question)
+            ]
+            if _contains_optional_condition_question(message):
+                # 본문에 선택값을 요구하는 문장이 남으면 질문 목록만 고쳐도 UX가
+                # 일관되지 않으므로, 서버가 보장하는 단계별 fallback 문구를 사용한다.
+                return fallback_response, fallback_questions
+            if not normalized_questions:
+                return fallback_response, fallback_questions
             validate_completion_output(message)
             for question in normalized_questions:
                 validate_completion_output(question)
@@ -454,9 +896,9 @@ class ChatService:
     ) -> tuple[str, list[dict[str, object]]]:
         """기본 LLM 응답기가 제공하는 구조화 추천을 API 응답 데이터로 검증합니다.
 
-        BE2가 준비되면 이 메서드의 호출 경계를 Recipe·Nutrition·Shopping·RAG 결과
-        어댑터로 교체한다. 추천 데이터는 코드에 내장하지 않고 LLM 또는 BE2 결과에서
-        받아 서버 DTO로 검증한다.
+        ``TOOL_HUB_ENABLED=false``이거나 provider가 주입되지 않은 fallback 경로에서만
+        호출한다. 기본 완료 흐름은 Tool Hub 결과를 사용하며, 두 경로 모두 서버 DTO로
+        다시 검증한다.
         """
 
         generator = getattr(self._llm_responder, "generate_recommendation", None)
@@ -517,78 +959,212 @@ class ChatService:
             amount = item.get("amount")
             if not isinstance(name, str) or not name.strip():
                 raise LLMResponseError("재료 추출 응답 형식이 올바르지 않습니다.")
-            if not isinstance(amount, str) or not amount.strip():
+            if amount is None or (isinstance(amount, str) and not amount.strip()):
+                amount = "수량 미정"
+            if not isinstance(amount, str):
                 raise LLMResponseError("재료 추출 응답 형식이 올바르지 않습니다.")
             normalized.append(IngredientCandidate(name=name, amount=amount))
         return tuple(normalized)
 
     async def _read_ingredient_confirmation(
-        self, user_message: str
-    ) -> IngredientConfirmationDecision:
-        """Jev 판정을 우선하고, 장애·비활성 시 제한적인 로컬 판정으로 fallback합니다."""
+        self,
+        user_message: str,
+        proposed_ingredients: Sequence[IngredientCandidate],
+        *,
+        acknowledged_ingredient_names: Sequence[str] = (),
+        pending_ingredient_correction: str | None = None,
+    ) -> IngredientConfirmationRead:
+        """재료 확인 답변의 주어·긍정/부정을 구분해 다음 동작을 정합니다.
+        명시적인 재료 수정은 로컬로 먼저 확정하고, 나머지는 Jev로 판정합니다.
 
-        decision = await self._ingredient_confirmation_evaluator.evaluate(user_message)
-        if decision is not None:
-            return decision
-        return _fallback_ingredient_confirmation(user_message)
+        ``빼줘``·``제거해줘``처럼 의도가 분명한 재료 수정 표현까지 외부 판정에
+        맡기면 모델이 ``unclear``로 반환해 후보 목록이 그대로 남을 수 있다. 명시적인
+        수정 명령은 로컬 판정을 우선하고, 긍정·거절·모호한 표현만 Jev에 위임한다.
 
-    async def _execute_tool_request(
-        self, *, session_id: str, session: ChatSessionState
-    ) -> dict[str, str] | None:
-        """확정 재료와 조건을 BE2 계약으로 만들어 provider에 전달합니다."""
-
-        if self._tool_provider is None:
-            # BE2 endpoint가 아직 없을 때는 임의의 fake 결과를 만들지 않고, 추천 생성기가
-            # 확정 재료·조건을 직접 처리하도록 둔다.
-            return None
-
-        try:
-            request = build_tool_request(
-                session_id=session_id,
-                tool_name="recipe_recommendation",
-                session=session,
-            )
-            result = await self._tool_provider.execute(request)
-        except ToolRequestPreparationError:
-            return {
-                "status": "ERROR",
-                "response": "재료 확인이 완료되지 않아 추천을 진행할 수 없습니다.",
-            }
-        if result.error:
-            return {"status": "ERROR", "response": "추천 도구 실행 중 오류가 발생했습니다."}
-        tool_result_payload = json.dumps(
-            {
-                "result": result.result,
-                "source_metadata": result.source_metadata,
-            },
-            ensure_ascii=False,
-            default=str,
-        )
-        if not await self._guardrail_validator.validate_tool_result(tool_result_payload):
-            return {"status": "ERROR", "response": "추천 도구 결과를 검증할 수 없습니다."}
-        return None
-
-    async def _read_conditions_from_message(
-        self, user_message: str
-    ) -> Mapping[str, object] | None:
-        """자연어 메시지에서 추천 조건의 충분성을 판단해 내부 전달값으로 보관합니다.
-
-        외부 API에 구조화된 ``conditions`` 필드를 노출하지 않는다. Jev의 고신뢰 판단을
-        우선하며, 비활성화·장애·저신뢰 상황에서는 개발 환경에서도 동작하도록 최소한의
-        목표·시간 표현만 확인한다. Tool Hub에는 원문만 전달해 별도 계약 합의 전 임의의
-        추출 필드를 강제하지 않는다.
+        단독 ``맞아``·``없어``는 바로 전의 "더 수정할 내용이 있나요?"라는 질문에 대한
+        목록 전체 확인으로 본다. 반면 특정 후보명에 붙은 긍정·부정은 그 후보 하나에만
+        적용하며, 부정한 후보는 무엇으로 바꿀지 후속 턴에서 받는다.
         """
 
-        # 외부 I/O는 세션 저장소 잠금 밖에서 실행한다.
-        decision = await self._condition_evaluator.evaluate(user_message)
-        if decision is not None:
-            if not decision.is_ready:
-                return None
-            return {"message": user_message}
+        acknowledged_names = _known_acknowledged_ingredients(
+            acknowledged_ingredient_names,
+            proposed_ingredients,
+        )
 
-        if _has_fallback_conditions(user_message):
-            return {"message": user_message}
-        return None
+        def read(
+            intent: Literal["confirmed", "rejected", "edited", "unclear"],
+            *,
+            confidence: float = 1.0,
+            guidance: str | None = None,
+            acknowledged: Sequence[str] = acknowledged_names,
+            pending: str | None = pending_ingredient_correction,
+            extraction_message: str | None = None,
+        ) -> IngredientConfirmationRead:
+            return IngredientConfirmationRead(
+                decision=IngredientConfirmationDecision(intent=intent, confidence=confidence),
+                guidance=guidance,
+                acknowledged_ingredient_names=tuple(acknowledged),
+                pending_ingredient_correction=pending,
+                extraction_message=extraction_message,
+            )
+
+        if pending_ingredient_correction:
+            if _is_replacement_answer(user_message):
+                # 후속 답변이 "소고기"처럼 짧아도 추출 모델에는 교체 문맥을 명시해
+                # 기존 목록 전체를 유지하면서 해당 후보만 바꾸도록 한다.
+                extraction_message = (
+                    f"{pending_ingredient_correction} 대신 "
+                    f"{user_message.strip()}로 바꿔줘."
+                )
+                return read(
+                    "edited",
+                    pending=None,
+                    acknowledged=(),
+                    extraction_message=extraction_message,
+                )
+            return read(
+                "unclear",
+                guidance=(
+                    f"{pending_ingredient_correction} 대신 어떤 재료인지 알려주세요."
+                ),
+            )
+
+        candidate_replies = _candidate_subject_replies(user_message, proposed_ingredients)
+        negative_names = [name for name, sentiment in candidate_replies if sentiment == "negative"]
+        positive_names = [name for name, sentiment in candidate_replies if sentiment == "positive"]
+        if negative_names and not _has_explicit_ingredient_mutation_expression(user_message):
+            acknowledged_names = _merge_acknowledged_ingredient_names(
+                acknowledged_names,
+                positive_names,
+                proposed_ingredients,
+            )
+            incorrect_name = negative_names[0]
+            prefix = _acknowledgement_prefix(positive_names)
+            return read(
+                "unclear",
+                guidance=(
+                    f"{prefix}{_with_subject_particle(incorrect_name)} 아니군요. "
+                    f"{incorrect_name} 대신 어떤 재료인지 알려주세요."
+                ),
+                acknowledged=acknowledged_names,
+                pending=incorrect_name,
+            )
+
+        if positive_names and not _has_explicit_ingredient_mutation_expression(user_message):
+            acknowledged_names = _merge_acknowledged_ingredient_names(
+                acknowledged_names,
+                positive_names,
+                proposed_ingredients,
+            )
+            if _all_candidates_acknowledged(acknowledged_names, proposed_ingredients):
+                return read("confirmed", acknowledged=(), pending=None)
+            return read(
+                "unclear",
+                guidance=(
+                    f"{_acknowledgement_prefix(positive_names)}"
+                    "나머지 재료도 모두 맞는지 알려주세요. 모두 맞다면 '맞아'라고 답하거나 "
+                    "수정할 재료를 말씀해주세요."
+                ),
+                acknowledged=acknowledged_names,
+                pending=None,
+            )
+
+        if _is_explicit_final_ingredient_confirmation(user_message):
+            return read("confirmed", acknowledged=(), pending=None)
+        if _is_generic_ingredient_rejection(user_message):
+            return read(
+                "unclear",
+                guidance=(
+                    "어떤 재료를 수정할지 알려주세요. "
+                    "예: '돼지고기는 아니고 소고기예요.'"
+                ),
+            )
+
+        candidate_payload = [
+            {"name": ingredient.name, "amount": ingredient.amount}
+            for ingredient in proposed_ingredients
+        ]
+        decision = await self._ingredient_confirmation_evaluator.evaluate(
+            user_message,
+            candidate_payload,
+        )
+        if decision is None:
+            decision = _fallback_ingredient_confirmation(user_message)
+        if decision.intent in {"confirmed", "unclear"} and _has_ingredient_edit_expression(
+            user_message
+        ):
+            # 수정 표현이 있는 복합 답변은 Jev가 실수로 confirmed라고 해도 먼저
+            # 갱신해야 한다. 그 뒤에만 "확정지어줘" 의도를 처리할 수 있다.
+            return read("edited", confidence=decision.confidence, acknowledged=(), pending=None)
+        if (
+            decision.intent == "unclear"
+            and _is_explicit_final_ingredient_confirmation(user_message)
+        ):
+            # Jev가 짧은 확정 표현을 불명확하게 분류하더라도, 서버가 허용한
+            # 목록 전체 확정 문구라면 후보를 확정한다. 이 검사는 수정 표현을
+            # 우선 처리한 뒤에 수행하므로 "바꾸고 확정해줘"에는 적용되지 않는다.
+            return read("confirmed", confidence=decision.confidence, acknowledged=(), pending=None)
+        if (
+            decision.intent == "confirmed"
+            and not _is_explicit_final_ingredient_confirmation(user_message)
+        ):
+            # '재료', '없음'처럼 전체 목록을 확정했다고 보기 어려운 답변은 후보를
+            # 유지하고 최종 확인 문구를 다시 안내한다.
+            return read("unclear", confidence=decision.confidence)
+        return read(
+            decision.intent,
+            confidence=decision.confidence,
+            acknowledged=() if decision.intent in {"confirmed", "rejected", "edited"} else acknowledged_names,
+            pending=None if decision.intent in {"confirmed", "rejected", "edited"} else pending_ingredient_correction,
+        )
+
+
+    async def _read_condition_state(
+        self,
+        user_message: str,
+        previous_conditions: Mapping[str, object] | None,
+    ) -> tuple[Mapping[str, object] | None, bool]:
+        """현재 메시지와 기존 세션 조건을 병합하고 필수 조건 충족 여부를 반환합니다.
+
+        조건은 여러 턴에 나뉘어 입력될 수 있다. 따라서 한 메시지에 목적과 시간이 모두
+        있어야만 저장하던 방식 대신, 목적·조리 시간 슬롯을 세션에 누적한다. 목적만
+        확보되면 추천 단계로 진행하고, 조리 시간은 있으면 필터에 사용하는 선택값이다.
+        """
+
+        extracted_slots = _extract_condition_slots(user_message)
+        has_previous_conditions = bool(previous_conditions)
+        if not extracted_slots and not has_previous_conditions:
+            # Jev가 활성화된 경우 로컬 키워드에 없는 목적 표현도 판정할 수 있도록
+            # 평가만 시도한다. 비활성화 상태에서는 아래에서 None으로 빠진다.
+            decision = await self._condition_evaluator.evaluate(user_message)
+            if decision is None or not decision.is_ready:
+                return None, False
+            merged_conditions: dict[str, object] = {
+                "message": user_message,
+                "purpose": user_message,
+            }
+            return merged_conditions, True
+
+        merged_conditions = _merge_condition_state(
+            previous_conditions,
+            user_message,
+            extracted_slots,
+        )
+        if merged_conditions is None:
+            return None, False
+
+        # 외부 I/O는 세션 저장소 잠금 밖에서 실행한다. 평가 입력은 누적된 원문이므로
+        # 앞선 턴에서 받은 목적을 현재 턴의 시간 입력과 함께 판단할 수 있다.
+        decision = await self._condition_evaluator.evaluate(
+            str(merged_conditions.get("message", user_message))
+        )
+        if decision is not None:
+            if decision.is_ready and not _has_required_condition(merged_conditions):
+                # Jev가 로컬 키워드로 포착하지 못한 목적을 고신뢰로 판정한 경우에도
+                # 다음 턴에서 잃지 않도록 원문을 purpose 슬롯에 보존한다.
+                merged_conditions["purpose"] = user_message.strip()
+            return merged_conditions, decision.is_ready
+        return merged_conditions, _has_required_condition(merged_conditions)
 
 
 def _next_session_state(
@@ -598,6 +1174,8 @@ def _next_session_state(
     user_conditions: Mapping[str, object] | None,
     ingredient_candidates: tuple[IngredientCandidate, ...] | None = None,
     confirmed_ingredients: tuple[IngredientCandidate, ...] | None = None,
+    acknowledged_ingredient_names: tuple[str, ...] | None = None,
+    pending_ingredient_correction: str | None = None,
     messages: tuple[ConversationMessage, ...] | None = None,
     summary: str | None = None,
 ) -> ChatSessionState:
@@ -609,18 +1187,41 @@ def _next_session_state(
     if summary is not None:
         next_session = replace(next_session, summary=summary)
     if ingredient_candidates is not None:
-        next_session = replace(next_session, ingredient_candidates=ingredient_candidates)
+        next_session = replace(
+            next_session,
+            ingredient_candidates=ingredient_candidates,
+            pending_ingredient_correction=pending_ingredient_correction,
+        )
     if confirmed_ingredients is not None:
         next_session = replace(next_session, confirmed_ingredients=confirmed_ingredients)
+    if acknowledged_ingredient_names is not None:
+        next_session = replace(
+            next_session,
+            acknowledged_ingredient_names=acknowledged_ingredient_names,
+        )
     if next_step == "WAITING_IMAGE":
         next_session = replace(
             next_session,
             ingredient_candidates=tuple(),
             confirmed_ingredients=tuple(),
+            acknowledged_ingredient_names=tuple(),
+            pending_ingredient_correction=None,
         )
     if user_conditions is not None:
         return replace(next_session, user_conditions=user_conditions)
     return next_session
+
+
+def _stream_text_chunks(
+    value: str, chunk_size: int = _STREAM_TEXT_CHUNK_SIZE
+) -> list[str]:
+    """검증된 사용자 표시 문구를 SSE delta 크기로 나눕니다."""
+
+    if chunk_size <= 0:
+        raise ValueError("stream chunk size must be positive")
+    return [
+        value[index : index + chunk_size] for index in range(0, len(value), chunk_size)
+    ]
 
 
 def _conversation_message(
@@ -629,6 +1230,171 @@ def _conversation_message(
     """응답을 세션 이력에 저장할 메시지 DTO로 정규화합니다."""
 
     return {"role": role, "content": str(content)}
+
+
+def _stored_recommendation(session: ChatSessionState) -> RecommendationData | None:
+    """세션에 저장된 최신 추천 결과를 서버 DTO로 다시 검증합니다."""
+
+    if not isinstance(session.recommendation_data, Mapping):
+        return None
+    try:
+        return RecommendationData.model_validate(session.recommendation_data)
+    except ValueError:
+        return None
+
+
+def _store_recommendation_if_present(
+    session: ChatSessionState, response: Mapping[str, object]
+) -> ChatSessionState:
+    """성공 추천을 저장해 다음 턴의 피드백·세트 선택 기준으로 사용합니다."""
+
+    if response.get("status") != "SUCCESS":
+        return session
+    raw_data = response.get("data")
+    if not isinstance(raw_data, Mapping):
+        return session
+    try:
+        recommendation = RecommendationData.model_validate(raw_data)
+    except ValueError:
+        return session
+    return replace(
+        session,
+        recommendation_data=recommendation.model_dump(),
+        selected_set_id=None,
+        pdf_url=None,
+    )
+
+
+def _find_recipe_set(
+    recommendation: RecommendationData, set_id: str
+) -> RecipeSet | None:
+    """추천 DTO에서 내부 키 또는 표시 문구에 해당하는 세트를 찾습니다."""
+
+    return next(
+        (
+            recipe_set
+            for index, recipe_set in enumerate(recommendation.recipe_sets)
+            if get_recipe_set_key(recipe_set, index) == set_id or recipe_set.set_id == set_id
+        ),
+        None,
+    )
+
+
+def _parse_selected_set_id(
+    user_message: str, recommendation: RecommendationData
+) -> str | None:
+    """자연어 세트 선택을 검증된 추천 세트의 내부 키로 변환합니다."""
+
+    available = [
+        get_recipe_set_key(recipe_set, index)
+        for index, recipe_set in enumerate(recommendation.recipe_sets)
+    ]
+    normalized_message = re.sub(r"[\s_-]+", "", user_message).upper()
+    has_selection_intent = bool(_SELECTION_INTENT_PATTERN.search(user_message))
+    for index, recipe_set in enumerate(recommendation.recipe_sets):
+        set_key = get_recipe_set_key(recipe_set, index)
+        normalized_key = re.sub(r"[\s_-]+", "", set_key).upper()
+        normalized_display_id = re.sub(r"[\s_-]+", "", recipe_set.set_id).upper()
+        if (
+            normalized_key in normalized_message
+            or normalized_display_id in normalized_message
+        ) and (has_selection_intent or normalized_message in {normalized_key, normalized_display_id}):
+            return set_key
+        canonical_key_by_position = tuple(RECIPE_SET_DISPLAY_LABELS)[index]
+        normalized_canonical_key = re.sub(r"[\s_-]+", "", canonical_key_by_position).upper()
+        aliases = (
+            *_KOREAN_SET_ID_ALIASES.get(normalized_key, ()),
+            *_KOREAN_SET_ID_ALIASES.get(normalized_canonical_key, ()),
+            recipe_set.set_id,
+            recipe_set.label or "",
+        )
+        if has_selection_intent and any(
+            re.sub(r"[\s_-]+", "", alias).upper() in normalized_message
+            for alias in aliases
+        ):
+            return set_key
+
+    number_match = re.search(
+        r"(?<!\d)([1-9])\s*(?:번|번째)\s*(?:세트|걸|것)?\s*(?:으로|로)?",
+        user_message,
+    )
+    if number_match and has_selection_intent:
+        index = int(number_match.group(1)) - 1
+        if 0 <= index < len(available):
+            return available[index]
+    if has_selection_intent and re.search(
+        r"첫\s*(?:번째|번)(?:\s*(?:세트|걸|것))?\s*(?:으로|로)?", user_message
+    ):
+        return available[0] if available else None
+    if has_selection_intent and re.search(
+        r"둘째|두\s*(?:번째|번)(?:\s*(?:세트|걸|것))?\s*(?:으로|로)?",
+        user_message,
+    ):
+        return available[1] if len(available) > 1 else None
+    return None
+
+
+def _merge_feedback_conditions(
+    previous_conditions: Mapping[str, object] | None,
+    user_message: str,
+    feedback_plan: FeedbackPlan,
+) -> dict[str, object]:
+    """Jev Plan 이후 피드백 원문과 새 조건 슬롯을 기존 조건에 누적합니다."""
+
+    merged = dict(previous_conditions or {})
+    previous_message = merged.get("message", "")
+    feedback_message = user_message.strip()
+    if isinstance(previous_message, str) and previous_message.strip():
+        merged["message"] = "\n".join(
+            [previous_message.strip(), f"[사용자 피드백] {feedback_message}"]
+        )
+    else:
+        merged["message"] = feedback_message
+    merged.update(_extract_condition_slots(feedback_message))
+    history = merged.get("feedback_history", [])
+    history_values = list(history) if isinstance(history, list) else []
+    history_values.append(feedback_message)
+    merged["feedback_history"] = history_values[-10:]
+    merged["feedback_plan"] = feedback_plan.intent
+    return merged
+
+
+def _is_recipe_regeneration_request(user_message: str) -> bool:
+    """현재 추천이 마음에 들지 않아 새 레시피를 원하는 의도를 제한적으로 찾습니다."""
+
+    return bool(
+        re.search(
+            r"마음에\s*(?:안|들지)|별로|다른\s*(?:레시피|식단|메뉴)|"
+            r"(?:다시|새로)\s*(?:추천|만들|짜|보여)",
+            user_message,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _exclude_previously_recommended_recipes(
+    conditions: Mapping[str, object], recommendation: RecommendationData
+) -> dict[str, object]:
+    """재생성 시 이전 카드의 레시피 ID를 Tool Hub 후보에서 제외합니다."""
+
+    existing = conditions.get("excluded_recipe_ids", [])
+    excluded_ids = [item for item in existing if isinstance(item, str) and item]
+    excluded_ids.extend(
+        recipe.recipe_id
+        for recipe_set in recommendation.recipe_sets
+        for recipe in recipe_set.recipes
+    )
+    return {
+        **conditions,
+        "excluded_recipe_ids": list(dict.fromkeys(excluded_ids)),
+        "regenerated_recipe_request": True,
+    }
+
+
+def _is_regenerated_recipe_request(conditions: Mapping[str, object] | None) -> bool:
+    """현재 완료 응답이 기존 레시피를 제외해 만든 재추천인지 반환합니다."""
+
+    return bool(conditions and conditions.get("regenerated_recipe_request") is True)
 
 
 def _apply_confirmation_decision(
@@ -652,13 +1418,263 @@ def _apply_confirmation_decision(
 def _fallback_ingredient_confirmation(user_message: str) -> IngredientConfirmationDecision:
     """Jev를 사용할 수 없을 때 확인 의도를 결정하는 최소 fallback입니다."""
 
-    if re.search(r"추가|더 넣|빼고|삭제|제외|교체|바꿔|수정|없고|없는|대신", user_message):
+    if re.search(
+        rf"추가|더 넣|{_INGREDIENT_REMOVAL_PATTERN}|교체|바꿔|수정|없고|없는|대신",
+        user_message,
+    ):
+    if _has_ingredient_edit_expression(user_message):
         return IngredientConfirmationDecision(intent="edited", confidence=1.0)
+    if _is_generic_ingredient_rejection(user_message):
+        return IngredientConfirmationDecision(intent="unclear", confidence=1.0)
     if re.search(r"아니|틀렸|잘못|다시|전혀", user_message):
         return IngredientConfirmationDecision(intent="rejected", confidence=1.0)
+    if _is_explicit_final_ingredient_confirmation(user_message):
+        return IngredientConfirmationDecision(intent="confirmed", confidence=1.0)
     if re.search(r"맞아요|맞습니다|맞아|전부 맞|다 맞|네[, ]*(맞|그렇)|확인했", user_message):
         return IngredientConfirmationDecision(intent="confirmed", confidence=1.0)
     return IngredientConfirmationDecision(intent="unclear", confidence=1.0)
+
+
+def _has_ingredient_edit_expression(user_message: str) -> bool:
+    """후보를 수정해야 하는 추가·삭제·교체 표현이 있는지 보수적으로 확인합니다."""
+
+    return _has_explicit_ingredient_mutation_expression(user_message)
+
+
+def _has_explicit_ingredient_mutation_expression(user_message: str) -> bool:
+    """교체 대상·삭제·추가가 실제로 주어진 표현인지 확인합니다.
+
+    ``계란은 아니고 삼겹살은 맞아``처럼 어떤 후보가 틀렸다는 말만 있는 경우에는
+    목록을 추측해 바꾸지 않고, 무엇으로 바꿀지 추가로 질문해야 한다.
+    """
+
+    return bool(
+        re.search(
+            r"추가|더 넣|빼고|삭제|제외|교체|바꾸|바꿔|수정|없어|없고|없는|대신|"
+            r"자리(?:에는|는|에)?",
+            user_message,
+        )
+    )
+
+
+def _candidate_subject_replies(
+    user_message: str,
+    candidates: Sequence[IngredientCandidate],
+) -> list[tuple[str, Literal["positive", "negative"]]]:
+    """후보명에 직접 붙은 긍정·부정 답변만 찾아 목록 전체 판정과 분리합니다."""
+
+    replies: list[tuple[str, Literal["positive", "negative"]]] = []
+    for candidate in candidates:
+        name = candidate.name.strip()
+        if not name:
+            continue
+        escaped_name = re.escape(name)
+        # "계란은 아니고", "돼지고기가 틀려"처럼 후보 바로 뒤에 나타난 부정만
+        # 잡는다. 임의의 문장 속 같은 글자가 후보 확인으로 오인되지 않게 한다.
+        if re.search(
+            rf"{escaped_name}\s*(?:은|는|이|가)?\s*"
+            r"(?:아니(?:야|에요|예요|고|라|ㄴ데)|틀려|틀렸|잘못)",
+            user_message,
+        ):
+            replies.append((name, "negative"))
+        elif re.search(
+            rf"{escaped_name}\s*(?:은|는|이|가)?\s*"
+            r"(?:맞아|맞아요|맞습니다|맞지)",
+            user_message,
+        ):
+            replies.append((name, "positive"))
+    return replies
+
+
+def _known_acknowledged_ingredients(
+    names: Sequence[str], candidates: Sequence[IngredientCandidate]
+) -> tuple[str, ...]:
+    """수정 뒤 사라진 후보는 개인 확인 기록에서도 제거합니다."""
+
+    known_by_key = {_ingredient_candidate_key(candidate.name): candidate.name for candidate in candidates}
+    return tuple(
+        known_by_key[key]
+        for name in names
+        if (key := _ingredient_candidate_key(name)) in known_by_key
+    )
+
+
+def _merge_acknowledged_ingredient_names(
+    existing_names: Sequence[str],
+    added_names: Sequence[str],
+    candidates: Sequence[IngredientCandidate],
+) -> tuple[str, ...]:
+    """후보 목록 순서대로 개인 확인 완료 재료를 병합합니다."""
+
+    acknowledged_keys = {
+        _ingredient_candidate_key(name) for name in (*existing_names, *added_names)
+    }
+    return tuple(
+        candidate.name
+        for candidate in candidates
+        if _ingredient_candidate_key(candidate.name) in acknowledged_keys
+    )
+
+
+def _all_candidates_acknowledged(
+    acknowledged_names: Sequence[str], candidates: Sequence[IngredientCandidate]
+) -> bool:
+    """현재 후보 전부를 하나씩 확인했는지 반환합니다."""
+
+    candidate_keys = {_ingredient_candidate_key(candidate.name) for candidate in candidates}
+    acknowledged_keys = {_ingredient_candidate_key(name) for name in acknowledged_names}
+    return bool(candidate_keys) and candidate_keys.issubset(acknowledged_keys)
+
+
+def _is_replacement_answer(user_message: str) -> bool:
+    """교체 대기 질문에 대한 실제 재료 답변인지 최소한으로 검증합니다."""
+
+    normalized = _normalize_confirmation_message(user_message)
+    if not normalized or _is_explicit_final_ingredient_confirmation(user_message):
+        return False
+    if _is_generic_ingredient_rejection(user_message):
+        return False
+    return not bool(re.fullmatch(r"(?:모르겠어|모르겠어요|없어|없어요|없습니다|다시)", normalized))
+
+
+def _is_generic_ingredient_rejection(user_message: str) -> bool:
+    """대상을 말하지 않은 부정 또는 '재료 전체'에 대한 부정을 판별합니다."""
+
+    normalized = _normalize_confirmation_message(user_message)
+    generic_rejections = {
+        "틀려",
+        "틀렸어",
+        "틀렸어요",
+        "아니야",
+        "아니에요",
+        "아닙니다",
+        "잘못됐어",
+        "잘못됐어요",
+    }
+    if normalized in generic_rejections:
+        return True
+    return bool(
+        re.fullmatch(
+            r"재료(?:목록)?(?:가|은|는)?(?:아니야|아니에요|아닙니다|틀려|틀렸어|틀렸어요|잘못됐어|잘못됐어요)",
+            normalized,
+        )
+    )
+
+
+def _acknowledgement_prefix(ingredient_names: Sequence[str]) -> str:
+    """같은 답변에서 맞다고 확인된 후보를 짧게 복명복창합니다."""
+
+    if not ingredient_names:
+        return ""
+    return f"{_with_topic_particle(', '.join(ingredient_names))} 맞는 재료로 확인했습니다. "
+
+
+def _with_topic_particle(name: str) -> str:
+    """간단한 한국어 조사 처리를 적용한 주제어를 반환합니다."""
+
+    last_character = name[-1] if name else ""
+    if "가" <= last_character <= "힣" and (ord(last_character) - ord("가")) % 28:
+        return f"{name}은"
+    return f"{name}는"
+
+
+def _with_subject_particle(name: str) -> str:
+    """간단한 한국어 조사 처리를 적용한 주어를 반환합니다."""
+
+    last_character = name[-1] if name else ""
+    if "가" <= last_character <= "힣" and (ord(last_character) - ord("가")) % 28:
+        return f"{name}이"
+    return f"{name}가"
+
+
+def _normalize_confirmation_message(user_message: str) -> str:
+    """확인 표현 비교용으로 공백·문장 부호를 제거합니다."""
+
+    return re.sub(r"[\s,.!~?]+", "", user_message).lower()
+
+
+def _is_explicit_final_ingredient_confirmation(user_message: str) -> bool:
+    """목록 전체를 확정했다는 짧고 명시적인 답변만 허용합니다.
+
+    이 단계의 입력은 바로 앞 응답에서 보여 준 후보 목록에 대한 답변이다. 그래도
+    특정 재료 하나에 대한 긍정이나 단어 하나만으로 목록 전체를 확정하지 않도록,
+    완전 일치하는 확인 표현만 사용한다.
+    """
+
+    normalized = _normalize_confirmation_message(user_message)
+    return normalized in {
+        "네",
+        "예",
+        "응",
+        "그래",
+        "맞아",
+        "맞아요",
+        "맞습니다",
+        "네맞아",
+        "네맞아요",
+        "네맞습니다",
+        "네모두맞아요",
+        "네모두맞습니다",
+        "모두맞아",
+        "모두맞아요",
+        "모두맞습니다",
+        "전부맞아",
+        "전부맞아요",
+        "전부맞습니다",
+        "다맞아",
+        "다맞아요",
+        "다맞습니다",
+        "없어",
+        "없어요",
+        "없습니다",
+        "재료맞아",
+        "재료맞아요",
+        "재료맞습니다",
+        "재료가맞아",
+        "재료가맞아요",
+        "재료가맞습니다",
+        "목록확정",
+        "재료목록확정",
+        "확정",
+        "확정해",
+        "확정해줘",
+        "확정해주세요",
+        "확정할게",
+        "확정할게요",
+        "확정합니다",
+        "네확정",
+        "네확정할게요",
+        "이대로확정",
+        "이대로확정할게요",
+        "이대로진행",
+        "이대로진행할게요",
+        "그대로진행",
+        "그대로진행해주세요",
+        "확정지어줘",
+        "확정지어주세요",
+        "확정지을게",
+        "확정지을게요",
+    }
+
+
+def _requests_finalization_after_edit(user_message: str) -> bool:
+    """수정과 함께 갱신된 목록의 확정까지 요청했는지 판별합니다."""
+
+    normalized = re.sub(r"[\s,.!~]+", "", user_message).lower()
+    if any(marker in normalized for marker in ("확정하지마", "확정하지말", "확정하지않")):
+        return False
+    return any(
+        marker in normalized
+        for marker in (
+            "목록확정",
+            "재료확정",
+            "확정지어",
+            "확정해",
+            "확정할게",
+            "확정합니다",
+            "이대로진행",
+        )
+    )
 
 
 def _apply_ingredient_edit(
@@ -670,11 +1686,67 @@ def _apply_ingredient_edit(
     for candidate in tuple(updated):
         name = re.escape(candidate.name)
         if re.search(
-            rf"(?:{name}).{{0,12}}(?:없|빼|삭제|제외)|(?:없|빼|삭제|제외).{{0,12}}(?:{name})",
+            rf"(?:{name}).{{0,16}}(?:{_INGREDIENT_REMOVAL_PATTERN})|"
+            rf"(?:{_INGREDIENT_REMOVAL_PATTERN}).{{0,16}}(?:{name})",
             user_message,
         ):
             updated = [item for item in updated if item.name != candidate.name]
     return tuple(updated)
+
+
+def _summarize_ingredient_changes(
+    *,
+    before: Sequence[IngredientCandidate],
+    after: Sequence[IngredientCandidate],
+    user_message: str,
+) -> list[str]:
+    """수정 전·후 후보를 비교해 사용자가 검증할 수 있는 변경 요약을 만듭니다."""
+
+    before_by_key = {_ingredient_candidate_key(item.name): item for item in before}
+    after_by_key = {_ingredient_candidate_key(item.name): item for item in after}
+    added = [item.name for item in after if _ingredient_candidate_key(item.name) not in before_by_key]
+    removed = [item.name for item in before if _ingredient_candidate_key(item.name) not in after_by_key]
+    amount_changes = [
+        f"{item.name}({before_by_key[_ingredient_candidate_key(item.name)].amount} → {item.amount})"
+        for item in after
+        if (
+            _ingredient_candidate_key(item.name) in before_by_key
+            and before_by_key[_ingredient_candidate_key(item.name)].amount != item.amount
+        )
+    ]
+
+    summary: list[str] = []
+    if len(added) == 1 and len(removed) == 1 and _is_replacement_request(user_message):
+        summary.append(f"변경한 재료: {removed[0]} → {added[0]}.")
+    else:
+        if added:
+            summary.append(f"추가한 재료: {', '.join(added)}.")
+        if removed:
+            summary.append(f"제외한 재료: {', '.join(removed)}.")
+    if amount_changes:
+        summary.append(f"수량 변경: {', '.join(amount_changes)}.")
+    return summary
+
+
+def _is_replacement_request(user_message: str) -> bool:
+    """추가·제외 조합을 단순 삭제가 아닌 교체로 표현할 수 있는지 확인합니다."""
+
+    return bool(re.search(r"교체|바꾸|바꿔|대신|자리", user_message))
+
+
+def _ingredient_edit_summary_from_state(state: Mapping[str, object]) -> list[str]:
+    """Graph 상태에 든 이번 턴의 안전한 변경 요약만 사용자 문구에 사용합니다."""
+
+    raw_summary = state.get("ingredient_edit_summary")
+    if isinstance(raw_summary, (str, bytes)) or not isinstance(raw_summary, Sequence):
+        return []
+    return [item for item in raw_summary if isinstance(item, str) and item.strip()]
+
+
+def _ingredient_candidate_key(name: str) -> str:
+    """후보 전·후 비교에만 쓰는 재료명 정규화 키를 반환합니다."""
+
+    return "".join(name.split()).lower()
 
 
 def _ingredient_payload(
@@ -685,21 +1757,147 @@ def _ingredient_payload(
     return [{"name": candidate.name, "amount": candidate.amount} for candidate in candidates]
 
 
-def _has_fallback_conditions(user_message: str) -> bool:
-    """Jev를 사용할 수 없을 때만 적용할 보수적인 자연어 조건 확인 규칙입니다."""
+_PURPOSE_PATTERN = re.compile(
+    r"다이어트|체중.?감량|저칼로리|저탄고지|저탄수|고단백|벌크업|건강식|건강한|"
+    r"채식|비건|당.?조절|일반식",
+    flags=re.IGNORECASE,
+)
+_COOKING_TIME_PATTERN = re.compile(r"(?P<value>\d+)\s*(?P<unit>분|시간)")
+_COOKING_TIME_QUESTION_PATTERN = re.compile(
+    r"조리.{0,8}시간|요리.{0,8}시간|몇\s*분|몇\s*시간",
+    flags=re.IGNORECASE,
+)
+_OPTIONAL_CONDITION_QUESTION_PATTERN = re.compile(
+    r"수량|몇\s*(?:개|명|인분|끼|팩|봉|캔|모)|\b양\b|"
+    r"조리.{0,8}시간|요리.{0,8}시간|몇\s*분|몇\s*시간|"
+    r"하루.{0,8}(?:몇|끼)|끼니|선호|좋아하는|피하고\s*싶|제외하고\s*싶",
+    flags=re.IGNORECASE,
+)
 
-    has_goal = bool(
+
+def _extract_condition_slots(user_message: str) -> dict[str, object]:
+    """현재 메시지에서 목적과 선택 조리 시간 슬롯을 추출합니다."""
+
+    slots: dict[str, object] = {}
+    if _PURPOSE_PATTERN.search(user_message):
+        slots["purpose"] = user_message.strip()
+
+    time_match = _COOKING_TIME_PATTERN.search(user_message)
+    if time_match:
+        value = int(time_match.group("value"))
+        if time_match.group("unit") == "시간":
+            value *= 60
+        slots["cooking_time_minutes"] = value
+    return slots
+
+
+def _merge_condition_state(
+    previous_conditions: Mapping[str, object] | None,
+    user_message: str,
+    extracted_slots: Mapping[str, object],
+) -> dict[str, object] | None:
+    """조건 슬롯과 자연어 원문을 세션 단위로 누적합니다."""
+
+    if not previous_conditions and not extracted_slots:
+        return None
+
+    merged = dict(previous_conditions or {})
+    if extracted_slots:
+        previous_message = merged.get("message", "")
+        if isinstance(previous_message, str) and previous_message.strip():
+            messages = [previous_message.strip(), user_message.strip()]
+            merged["message"] = "\n".join(dict.fromkeys(messages))
+        else:
+            merged["message"] = user_message.strip()
+        merged.update(extracted_slots)
+    return merged
+
+
+def _has_required_condition(conditions: Mapping[str, object] | None) -> bool:
+    """추천 실행에 필요한 식단 목적이 누적됐는지 확인합니다.
+
+    이전 세션이나 테스트 fixture가 ``message``만 저장한 경우도 호환하기 위해 목적
+    슬롯이 없으면 원문에서 목적 표현을 한 번 더 확인한다. 조리 시간은 필수가 아니다.
+    """
+
+    if not conditions:
+        return False
+    purpose = conditions.get("purpose")
+    if isinstance(purpose, str) and purpose.strip():
+        return True
+    message = conditions.get("message", "")
+    return isinstance(message, str) and bool(_PURPOSE_PATTERN.search(message))
+
+
+def _completion_selection_message(*, regenerated: bool = False) -> str:
+    """완료 응답에서 두 추천 세트 중 하나를 선택하도록 안내합니다."""
+
+    prefix = (
+        "기존 추천과 다른 레시피로 식단을 다시 추천했습니다. "
+        if regenerated
+        else "확정한 재료와 조건에 맞는 메인·반찬 식단을 추천했습니다. "
+    )
+    return f"{prefix}두 세트 중 하나를 선택해 주세요. 선택한 레시피의 상세 PDF를 생성해드릴게요."
+
+
+def _with_ingredient_edit_confirmation(
+    completion_message: str, ingredient_edit_summary: Sequence[str]
+) -> str:
+    """수정과 확정을 같은 답변에서 요청한 경우 완료 문구에 변경 내역을 보존합니다."""
+
+    summary = [item.strip() for item in ingredient_edit_summary if item.strip()]
+    if not summary:
+        return completion_message
+    return f"{' '.join(summary)} 변경 내용을 반영해 재료를 확정했습니다. {completion_message}"
+
+
+def _is_cooking_time_question(question: str) -> bool:
+    """선택값인 조리 시간을 필수 질문으로 요구하는 문구인지 확인합니다."""
+
+    return bool(_COOKING_TIME_QUESTION_PATTERN.search(question))
+
+
+def _is_optional_condition_question(question: str) -> bool:
+    """필수값이 아닌 식단 조건을 요구하는 질문인지 확인합니다."""
+
+    return bool(_OPTIONAL_CONDITION_QUESTION_PATTERN.search(question))
+
+
+def _contains_optional_condition_question(text: str) -> bool:
+    """안내 본문에 선택 조건을 필수처럼 요구하는 표현이 포함됐는지 확인합니다."""
+
+    return _is_optional_condition_question(text) and bool(
+        re.search(r"(?:알려|원하|있으신|얼마|몇|어떤|무엇|선호|피하|제외)", text)
+    )
+
+
+def _looks_like_ingredient_replacement(user_message: str) -> bool:
+    """완료 후 메시지가 기존 재료 전체 교체를 명시하는지 판정합니다.
+
+    ``스팸을 빼줘`` 같은 제외 피드백은 기존 Jev Plan 경로로 보내야 하므로,
+    재료를 새 목록으로 바꾸겠다는 표현만 교체 분기로 보낸다.
+    """
+
+    if re.search(r"(?:빼|삭제|제외|피하|싫)", user_message):
+        return False
+    return bool(
         re.search(
-            r"다이어트|체중.?감량|저칼로리|저탄고지|저탄수|고단백|벌크업|건강식|건강한|"
-            r"채식|비건|당.?조절|일반식",
+            r"(?:재료|식재료).{0,20}(?:바꾸|변경|교체|대체)|"
+            r"(?:바꾸|변경|교체|대체).{0,20}(?:재료|식재료)|"
+            r"(?:바꿔|변경|교체|대체).{0,30}(?:다시|새로)?\s*(?:추천|만들|짜|해줘)|"
+            r"(?:새|다른)\s*(?:재료|식재료)",
             user_message,
-            flags=re.IGNORECASE,
         )
     )
-    has_time = bool(
-        re.search(r"\d+\s*분(?:\s*(?:안|이내|내))?|\d+\s*시간", user_message)
-    )
-    return has_goal and has_time
 
 
-chat_service = ChatService()
+def _build_default_tool_provider() -> ToolRequestExecutor | None:
+    """기본 앱에 연결할 Tool Hub provider를 설정에 따라 조립합니다."""
+
+    settings = get_settings()
+    if not settings.tool_hub_enabled:
+        return None
+    return build_default_tool_hub(settings)
+
+
+chat_service = ChatService(tool_provider=_build_default_tool_provider())

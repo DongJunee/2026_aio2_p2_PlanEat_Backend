@@ -10,7 +10,7 @@ PlanEat의 운영 프롬프트는 이 폴더에서 Git으로 버전 관리한다
 | `chat/completion.md` | 추천 완료 단계의 역할·맥락·출력 규칙 | `COMPLETED` |
 | `chat/ingredient-extraction.md` | 이미지·자연어 재료 구조화 추출 | 재료 입력 단계 |
 | `chat/clarification.md` | 부족한 입력에 맞는 안내 문구·질문 생성 | `INPUT_REQUIREMENTS`, `IMAGE_INPUT`, `CONDITION_INPUT` |
-| `chat/recommendation.md` | BE2 연결 전 임시 레시피 생성과 JSON 출력 규칙 | `COMPLETED` |
+| `chat/recommendation.md` | Tool Hub 비활성화 시 임시 레시피 생성과 JSON 출력 규칙 | `COMPLETED` |
 
 `COMPLETED`의 임시 LLM 추천 단계는 `security.md`, `output-korean.md`,
 `recommendation.md`를 표의 순서대로 조합합니다. 기존 안내 문구 fallback은
@@ -43,7 +43,7 @@ PlanEat의 운영 프롬프트는 이 폴더에서 Git으로 버전 관리한다
 
 - 프롬프트는 애플리케이션 코드와 같은 PR에서 검토한다.
 - 동적 값은 프롬프트 파일에 문자열 치환하지 않고, 검증된 Python 인자로 별도 전달한다.
-- 사용자 메시지·BE2 Tool Hub 결과·RAG 문서는 비신뢰 입력으로 취급한다. 이 텍스트를
+- 사용자 메시지·Tool Hub 결과·RAG 문서는 비신뢰 입력으로 취급한다. 이 텍스트를
   개발자 지시 위치에 붙여 넣지 않는다.
 - 프롬프트 변경 시 대표 정상 입력과 프롬프트 인젝션 입력을 fake LLM 테스트로 검증한다.
 - 프롬프트 파일에는 API 키, 개인정보, 운영 데이터, 비공개 시스템 정보를 넣지 않는다.

@@ -49,6 +49,7 @@ def test_langsmith_config_contains_only_non_sensitive_metadata(monkeypatch) -> N
         has_conditions=False,
         has_confirmed_ingredients=False,
         attachment_count=1,
+        tool_enabled=True,
     )
 
     assert config is not None
@@ -60,6 +61,8 @@ def test_langsmith_config_contains_only_non_sensitive_metadata(monkeypatch) -> N
         "has_conditions": False,
         "has_confirmed_ingredients": False,
         "attachment_count": 1,
+        "tool_enabled": True,
+        "tool_name": "recipe_recommendation",
     }
     assert "session-001" not in str(config["metadata"])
     assert "LANGSMITH_API_KEY" not in os.environ

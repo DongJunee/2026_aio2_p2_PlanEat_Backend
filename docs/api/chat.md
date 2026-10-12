@@ -35,21 +35,57 @@ Content-Type: application/json
 `attachments[].type`은 현재 `image`만 지원합니다.
 
 `attachments`는 생략해도 됩니다. 이미지 없이 시작하거나 이미지 요청 후에도 사용자가
-이미지 요청 후 `"두부 1모와 계란이 있어요"`처럼 재료를 `message`에 직접 입력하면, BE1은 지원하는
+이미지 요청 후 `"두부 1모와 계란이 있어요"`처럼 재료를 `message`에 직접 입력하면, Orchestrator는 지원하는
 모델이 실제로 확인한 재료명만 구조화해 사용자 입력 확정 재료로 사용합니다. 이미지 인식 후보가 아니므로
 별도 `INGREDIENT_CONFIRM` 단계 없이 조건이 준비된 경우 추천 단계로 진행합니다.
 
-식단 목표와 조리 가능 시간은 별도 JSON 필드가 아닌 `message`의 자연어로 전달합니다. 예를 들어
-`"다이어트 식단으로 20분 안에 만들고 싶어요."`처럼 이미지와 함께 보낼 수 있습니다. 서버는 Jev
-판정과 보수적 fallback 규칙으로 조건이 충분한지 판단합니다. 이미지가 없는 첫 요청에는
-`IMAGE_INPUT`으로 사진을 먼저 요청하고, 사용자가 사진이 없다고 다시 답하면 자연어 재료 입력을
-안내합니다.
+식단 목적은 필수이고 조리 가능 시간은 선택 입력이며, 둘 다 별도 JSON 필드가 아닌 `message`의
+자연어로 전달합니다. 예를 들어 `"다이어트 식단으로 20분 안에 만들고 싶어요."`처럼 이미지와
+함께 보낼 수 있습니다. 서버는 Jev 판정과 보수적 fallback 규칙으로 목적이 충분한지 판단하며,
+여러 턴의 조건을 같은 세션에 누적합니다. 재료가 없는 요청에는 `IMAGE_INPUT`으로 사진 또는
+자연어 재료 입력을 안내하며, 첫 요청이라도 재료가 자연어로 포함되면 이미지 요청을 건너뜁니다.
+
+## Streaming Response
+
+기존 FE 호환성을 위해 `Accept` 헤더가 없거나 `application/json`이면 기존 JSON 응답을 반환합니다.
+스트리밍이 필요한 클라이언트는 같은 `POST /chat`에 `Accept: text/event-stream`을 지정합니다.
+
+```http
+POST /chat HTTP/1.1
+Accept: text/event-stream
+Content-Type: application/json
+```
+
+SSE 응답의 전송 상태는 스트림이 시작되면 HTTP `200`이며, 실제 요청 처리 결과의 상태 코드는
+`complete` 또는 `error` 이벤트의 `data.http_status`에서 확인합니다. `data.payload`에는 기존
+`ChatResponse`와 동일한 JSON 객체가 들어 있으므로, 최종 화면 상태·`step`·`data`·`questions`는
+기존 응답 처리 코드를 재사용할 수 있습니다.
+
+| Event | `data` | 설명 |
+|---|---|---|
+| `start` | `{ "phase": "accepted" }` | 서버가 요청을 수락함 |
+| `progress` | `{ "phase": "processing" }` | 처리가 오래 걸릴 때 선택적으로 반복 전송 |
+| `delta` | `{ "index": 0, "text": "..." }` | 검증된 표시 문구를 순서대로 나눈 조각 |
+| `complete` | `{ "http_status": 200, "payload": ChatResponse }` | 정상 처리의 최종 응답 |
+| `error` | `{ "http_status": 400\|500, "payload": ChatErrorResponse }` | 처리 오류의 최종 응답 |
+| `done` | `{ "reason": "complete" }` | 스트림 종료 |
+
+`delta`는 `index` 순서대로 이어 붙여 미리 표시할 수 있고, 최종 상태 반영은 반드시
+`complete.data.payload`를 기준으로 합니다. 구조화된 추천 데이터와 LLM 출력은 서버 검증이 끝난
+뒤에만 스트림에 포함되므로 검증 전 원문 토큰은 외부로 노출하지 않습니다. 요청 본문 DTO 검증처럼
+라우터 진입 전에 발생하는 오류는 기존과 같이 HTTP `400` JSON 오류로 반환될 수 있습니다.
+
+FE용 이벤트 예시는 [`mocks/chat/stream-events.json`](../../mocks/chat/stream-events.json)을 참고합니다.
 
 ## Response
 
-`status`와 `step`은 FE 분기 처리에 사용하는 고정 코드입니다. 사용자에게 표시하는 `response`와
-추가 입력 `questions`는 현재 사용자 메시지와 세션에 부족한 정보를 반영해 LLM이 생성하며,
-호출 실패·응답 검증 실패 시 단계별 고정 fallback을 사용합니다. FE는 `questions`·`ingredients`·`data`를 사용합니다.
+`status`와 `step`은 FE의 기본 분기 처리에 사용하는 고정 코드입니다. `SUCCESS / COMPLETED` 후속
+흐름은 `next_action`으로 구분합니다. `NEED_MORE_INFO`의 `response`와 `questions`는 현재 사용자
+메시지와 세션에 부족한 정보를 반영해 LLM이 생성할 수 있지만, 서버가 필수 질문만 남기도록
+후처리합니다. 완료 응답의 `response`는 세트 선택·PDF 발급을 안내하는 서버 템플릿이며,
+직전 추천을 제외한 재생성일 때는 새 레시피 추천임을 알리는 별도 템플릿을 사용합니다.
+호출 실패·응답 검증 실패 시 단계별 고정 fallback을 사용합니다. FE는
+`questions`·`ingredients`·`data`를 사용합니다.
 
 ### 상태 코드
 
@@ -57,7 +93,7 @@ Content-Type: application/json
 |---:|---|---|
 | 200 | `SUCCESS` | 레시피 추천이 완료되었습니다. |
 | 200 | `NEED_MORE_INFO` | 다음 진행을 위해 사용자 입력 또는 확인이 필요합니다. |
-| 400 | `ERROR` | 요청 형식이 올바르지 않거나, 정규화된 입력 검증에서 안전하지 않은 요청으로 판단되었습니다. |
+| 400 | `ERROR` | 요청 형식이 올바르지 않거나, 프롬프트 공개 요청 이외의 입력 안전성 검증에서 안전하지 않은 요청으로 판단되었습니다. |
 | 500 | `ERROR` | 요청 처리 중 서버 오류가 발생했습니다. |
 
 ### 진행 단계 코드
@@ -68,15 +104,15 @@ Content-Type: application/json
 |---|---|---|
 | `SUCCESS` | `COMPLETED` | `data.recipe_sets`를 표시합니다. |
 | `NEED_MORE_INFO` | `INPUT_REQUIREMENTS` | 이미지와 조건을 동시에 수집해야 하는 호환 응답입니다. |
-| `NEED_MORE_INFO` | `IMAGE_INPUT` | 첫 요청에서는 이미지를 요청하고, 재요청에서는 자연어 재료 입력도 안내합니다. |
-| `NEED_MORE_INFO` | `CONDITION_INPUT` | `questions`를 표시하고 추가 조건을 입력받습니다. |
+| `NEED_MORE_INFO` | `IMAGE_INPUT` | 재료가 없을 때 이미지 또는 자연어 재료 입력을 안내합니다. |
+| `NEED_MORE_INFO` | `CONDITION_INPUT` | `questions`를 표시하고 추가 조건을 입력받습니다. 프롬프트 공개 요청도 FE 호환을 위해 이 단계의 안전한 안내로 반환합니다. |
 | `NEED_MORE_INFO` | `INGREDIENT_CONFIRM` | `ingredients`를 표시하고 인식 재료를 확인받습니다. |
 
 `ERROR` 응답에는 `step`을 포함하지 않습니다.
 
-### 첫 이미지 요청: `200 NEED_MORE_INFO`
+### 재료가 없는 요청: `200 NEED_MORE_INFO`
 
-이미지가 없는 첫 요청에서는 사진을 먼저 요청합니다. 아래 문구는 대표 예시이며 실제 `response`와
+재료가 없는 요청에서는 사진 또는 자연어 재료 입력을 요청합니다. 아래 문구는 대표 예시이며 실제 `response`와
 `questions`는 LLM이 생성하고, 실패하면 고정 fallback을 사용합니다.
 
 ```json
@@ -90,44 +126,81 @@ Content-Type: application/json
 }
 ```
 
-### 사진 없이 자연어 재료 입력: `200 NEED_MORE_INFO`
+### 인식할 수 없는 이미지: `200 NEED_MORE_INFO`
 
-이미지 요청 후에도 사진이 없으면 `message`에 보유 재료와 수량을 자연어로 입력합니다. 서버는
-LLM으로 재료를 추출해 확정 재료로 저장하고, 식단 조건이 함께 있으면 추천을 진행합니다. 조건이
-없으면 `CONDITION_INPUT`으로 식단 목표와 조리 시간을 추가로 요청합니다.
+첨부 이미지에서 재료나 영수증을 확인하지 못한 경우에는 서버 오류 화면으로 전환하지 않고,
+세션을 `IMAGE_INPUT` 단계에 유지한 채 냉장고 또는 영수증 사진을 다시 요청합니다.
 
 ```json
 {
   "status": "NEED_MORE_INFO",
   "step": "IMAGE_INPUT",
-  "response": "사진이 없어도 괜찮아요. 냉장고에 있는 재료를 텍스트로 알려주세요.",
+  "response": "올려주신 사진은 냉장고 재료나 영수증 사진으로 확인하기 어려워요. 냉장고 속 재료가 보이는 사진 또는 영수증 사진을 올려주세요.",
   "questions": [
-    "사용 가능한 재료와 수량을 알려주세요.",
-    "식단 목표는 무엇인가요? 예: 다이어트, 고단백, 채식",
-    "조리 가능한 시간은 얼마나 되나요? 예: 20분 이내"
+    "냉장고 안 재료가 잘 보이는 사진이나 영수증 사진을 첨부해주세요."
   ]
 }
 ```
 
+### 자연어 재료만 입력: `200 NEED_MORE_INFO`
+
+이미지가 없거나 이미지 요청 후 사진을 사용하지 않는 경우 `message`에 보유 재료를 자연어로 입력합니다.
+첫 요청이라도 재료가 포함되면 이미지 요청을 건너뛰고, 서버는 LLM으로 재료를 추출해 확정 재료로
+저장합니다. 식단 목적이 없으면 `CONDITION_INPUT`에서 목적만 추가로 요청합니다. 수량·조리 시간은
+선택 입력이며, 여러 턴에 나뉘어 입력된 목적·조리 시간은 같은 `session_id`에 누적합니다.
+
+```json
+{
+  "status": "NEED_MORE_INFO",
+  "step": "CONDITION_INPUT",
+  "response": "확정한 재료를 확인했습니다. 식단 목적을 알려주세요.",
+  "questions": [
+    "식단 목표는 무엇인가요? 예: 다이어트, 고단백, 채식"
+  ]
+}
+```
+
+재료와 식단 목적을 같은 메시지에 함께 입력하면 `NEED_MORE_INFO` 없이 바로
+`SUCCESS / COMPLETED`와 추천 세트를 반환합니다. 수량을 입력하지 않은 재료는 `수량 미정`으로
+보정되며 수량을 다시 묻지 않습니다.
+
 ### Success: `200`
 
-성공 응답은 `recipe_sets` 2개를 반환하며, 각 세트는 레시피 5개를 포함합니다.
+성공 응답은 `recipe_sets` 2개를 반환하며, 각 세트는 레시피 5개를 포함합니다. 화면에 보여줄
+세트 문구는 각 `recipe_sets` 항목의 `set_id`에서 바로 읽습니다. 서버 내부 선택·PDF 발급에
+사용하는 키는 `set_key`에 보존하며, 기존 FE 호환을 위해 최상위 `available_set_ids`와
+`selected_set_id`는 내부 키로 유지합니다. `label`은 이전 FE와의 호환을 위해 `set_id`와 같은
+표시 문구를 함께 제공합니다. 기본 Tool Hub 응답의 매핑은 다음과 같습니다.
+
+| 내부 키 | `set_id` / `label` |
+|---|---|
+| `BEST_MATCH` | `냉장고 재료와 가장 잘 맞아요` |
+| `MORE_OPTIONS` | `이런 식단도 있어요` |
+
+fallback 또는 테스트 응답처럼 다른 ID를 사용하는 경우에도 첫 번째·두 번째 세트 순서로 같은
+라벨을 채웁니다.
 
 ```json
 {
   "status": "SUCCESS",
   "step": "COMPLETED",
-  "response": "조건에 맞는 레시피 2세트(세트당 5개)를 추천했습니다.",
+  "response": "확정한 재료와 조건에 맞는 메인·반찬 식단을 추천했습니다. 두 세트 중 하나를 선택해 주세요. 선택한 레시피의 상세 PDF를 생성해드릴게요.",
+  "next_action": "FEEDBACK_OR_SET_SELECTION",
+  "available_set_ids": ["SET001", "SET002"],
   "data": {
     "recipe_sets": [
       {
-        "set_id": "SET001",
+        "set_id": "냉장고 재료와 가장 잘 맞아요",
+        "set_key": "SET001",
+        "label": "냉장고 재료와 가장 잘 맞아요",
         "recipes": [
           "Recipe 객체 5개"
         ]
       },
       {
-        "set_id": "SET002",
+        "set_id": "이런 식단도 있어요",
+        "set_key": "SET002",
+        "label": "이런 식단도 있어요",
         "recipes": [
           "Recipe 객체 5개"
         ]
@@ -136,6 +209,45 @@ LLM으로 재료를 추출해 확정 재료로 저장하고, 식단 조건이 �
   }
 }
 ```
+
+`next_action=FEEDBACK_OR_SET_SELECTION`이면 FE는 최종 추천을 먼저 표시한 뒤 같은
+`session_id`로 사용자의 개선 의견 또는 세트 선택을 받습니다. 예를 들어
+`"단백질을 더 높여줘"`는 Jev Plan을 거쳐 조건을 누적하고 재추천·재검증합니다.
+`"SET001 선택"`, `"1번 세트 선택"`처럼 세트를 지정하면 선택 세트의 상세 PDF를 생성합니다.
+선택 의도와 대상이 함께 있으면 자연어 표현도 처리합니다. 예를 들어
+`"베스트 매치로 진행할게"`, `"가장 잘 맞는 걸로 해줘"`, `"1번으로 발급해줘"`는
+해당 세트의 상세 PDF를 생성합니다. 대상이 없는 `"그걸로 해줘"`는 임의 발급을 막기 위해
+세트 선택으로 처리하지 않습니다.
+
+현재 추천이 마음에 들지 않아 `"다시 만들어줘"`, `"다른 식단으로 추천해줘"`처럼
+재생성을 요청하면, 서버는 직전 추천에 포함된 레시피 ID를 제외하고 새 후보를 찾아 두 세트를
+반환합니다. 이때 `response`는 `"기존 추천과 다른 레시피로 식단을 다시 추천했습니다."`로
+시작하며, 새 추천에도 동일한 세트 선택·PDF 발급 흐름이 적용됩니다.
+
+완료 후 `"닭가슴살과 고구마로 바꿔서 다시 추천해줘"`처럼 새 재료로 교체하겠다는 의도가
+명확하면 기존 `confirmed_ingredients`를 새 목록으로 교체한 뒤 같은 식단 조건으로 Tool Hub를
+다시 실행합니다. 단순히 `"스팸을 빼줘"`처럼 제외하는 피드백은 기존 Jev Plan의 조건 갱신·재추천
+경로로 처리합니다.
+
+PDF 생성이 완료되면 기존 추천 데이터와 함께 아래 필드를 반환합니다.
+
+```json
+{
+  "status": "SUCCESS",
+  "step": "COMPLETED",
+  "response": "냉장고 재료와 가장 잘 맞아요 식단의 상세 PDF를 생성했습니다.",
+  "next_action": "PDF_READY",
+  "available_set_ids": ["SET001", "SET002"],
+  "selected_set_id": "SET001",
+  "pdf_url": "/pdfs/<generated-file>.pdf",
+  "data": { "recipe_sets": ["기존 추천 결과"] }
+}
+```
+
+`pdf_url`은 `GET /pdfs/{filename}`으로 다운로드할 수 있습니다. 배포 환경에서
+`PDF_PUBLIC_BASE_URL`을 설정하면 이 경로 대신 공개 도메인을 포함한 URL을 반환합니다.
+새 PDF 파일명은 UTC 발급 시각과 충돌 방지 난수, 세트 ID를 포함한
+`YYYYMMDDTHHMMSSZ-<8자리 난수>-<set_id>.pdf` 형식입니다.
 
 FE에서 사용할 수 있는 전체 성공 응답은 [`mocks/chat/response-success.json`](../../mocks/chat/response-success.json)을 참고합니다.
 
@@ -147,8 +259,7 @@ FE에서 사용할 수 있는 전체 성공 응답은 [`mocks/chat/response-succ
   "step": "CONDITION_INPUT",
   "response": "추천을 위해 몇 가지 정보를 더 알려주세요.",
   "questions": [
-    "식단 목표가 무엇인가요?",
-    "조리 가능한 시간은 얼마나 되나요?"
+    "식단 목표가 무엇인가요? 예: 다이어트, 고단백, 채식"
   ]
 }
 ```
@@ -159,7 +270,7 @@ FE에서 사용할 수 있는 전체 성공 응답은 [`mocks/chat/response-succ
 {
   "status": "NEED_MORE_INFO",
   "step": "INGREDIENT_CONFIRM",
-  "response": "AI가 인식한 재료를 확인해주세요.",
+  "response": "AI가 인식한 재료 목록입니다. 이 재료로 확정할까요? 추가하거나 수정할 재료가 있다면 말씀해주세요.",
   "ingredients": [
     { "name": "두부", "amount": "1모" },
     { "name": "양배추", "amount": "반 통" },
@@ -169,21 +280,48 @@ FE에서 사용할 수 있는 전체 성공 응답은 [`mocks/chat/response-succ
 ```
 
 FE는 별도 확인 DTO를 보내지 않고 사용자의 자연어 답변을 `message`로 다시 전송합니다.
-BE1은 Jev의 `choice` 판정으로 답변 의도를 분류합니다.
+Orchestrator는 Jev의 `choice` 판정으로 답변 의도를 분류합니다.
 
 | 내부 판정 | 처리 | 외부 응답 |
 |---|---|---|
 | `confirmed` | 후보를 확정 재료로 이동하고, 조건이 있으면 ToolRequest를 준비합니다. | `COMPLETED` 또는 `CONDITION_INPUT` |
+| `edited` | 추가·삭제·제거·빼기·제외·없애기·수량 변경을 후보에 반영하고 다시 확인받습니다. | `INGREDIENT_CONFIRM` |
+| `rejected` | 후보를 폐기하고 이미지를 다시 요청합니다. | `IMAGE_INPUT` |
+| `unclear` | 후보를 유지하고 확인 답변을 다시 요청합니다. | `INGREDIENT_CONFIRM` |
+
+예를 들어 `"계란은 빼고 양파 1개 추가해줘"`, `"방울토마토 제거해줘"`,
+`"닭가슴살 빼줘"`처럼 표현해도 `edited`로 분류되어 수정된 후보 목록이 다시 반환됩니다.
+`"네, 모두 맞아요"`는 `confirmed`로 분류됩니다.
+| `confirmed` | 목록 전체를 명시적으로 최종 확인한 경우에만 후보를 확정 재료로 이동하고, 조건이 있으면 ToolRequest를 준비합니다. | `COMPLETED` 또는 `CONDITION_INPUT` |
 | `edited` | 추가·삭제·수량 변경을 후보에 반영하고 다시 확인받습니다. | `INGREDIENT_CONFIRM` |
 | `rejected` | 후보를 폐기하고 이미지를 다시 요청합니다. | `IMAGE_INPUT` |
 | `unclear` | 후보를 유지하고 확인 답변을 다시 요청합니다. | `INGREDIENT_CONFIRM` |
 
 예를 들어 `"계란은 빼고 양파 1개 추가해줘"`는 `edited`로 분류되어 수정된 후보 목록이
-다시 반환됩니다. `"네, 모두 맞아요"`는 `confirmed`로 분류됩니다.
+다시 반환됩니다. 이때 응답 문구에는 아래처럼 이번 턴에 반영한 변경을 먼저 복명복창합니다.
+
+```text
+추가한 재료: 양파.
+제외한 재료: 계란.
+
+이 목록으로 재료를 확정할까요? 더 추가하거나 수정할 내용이 있다면 말씀해주세요.
+```
+
+바로 앞 질문이 이 확인 질문인 경우, 주어 없는 `"맞아"`, `"없어"`와 `"재료 맞아"`는
+목록 전체 `confirmed`로 처리합니다. `"확정해줘"`, `"목록 확정"`, `"네, 모두 맞아요"`도
+동일합니다. 반면 `"틀려"`, `"재료 아니야"`는 어떤 재료를 수정할지 되묻고, `"돼지고기 맞아"`는
+돼지고기만 확인한 뒤 나머지 재료도 맞는지 묻습니다. `"돼지고기 아니야"`는 돼지고기 대신 어떤
+재료인지 확인한 뒤에만 후보 목록을 수정합니다.
+
+단, `"참치를 연어로 바꾸고 확정지어줘"`처럼 수정과 확정을 함께 요청하면 먼저 수정 결과를
+만든 뒤 `"변경한 재료: 참치 → 연어. 변경 내용을 반영해 재료를 확정했습니다."`를 안내하고,
+수정된 목록만 ToolRequest에 담습니다. `"재료"`, `"없음"`처럼 이 확인 문맥과 맞지 않는 답변만으로는
+후보를 확정하거나 ToolRequest를 만들지 않습니다.
 
 재료가 확정되고 식단 조건도 준비되면 내부적으로 아래 요청을 생성합니다. 이 DTO는 FE에
-노출되지 않으며, BE2 provider가 주입된 경우에만 실행합니다. BE2 provider가 없으면
-확정 재료·조건을 OpenAI 추천 생성기에 직접 전달합니다.
+노출되지 않으며, 기본 설정에서는 LangGraph의 Tool Hub node가 실행합니다.
+`TOOL_HUB_ENABLED=false`이거나 테스트용 provider가 없으면 확정 재료·조건을 OpenAI
+임시 추천 생성기에 직접 전달합니다.
 
 ```text
 ToolRequest = {
@@ -208,9 +346,11 @@ ToolRequest = {
 있습니다.
 
 서버는 `app/core/safety.py`의 정규화 검사와 NeMo Guardrails 입력 rail을 순서대로 적용합니다.
-둘 중 하나가 프롬프트 인젝션·내부 정보 요청을 차단해도 같은 `400 ERROR` 형식을 반환합니다.
-최종 LLM 문구와 ToolResult의 NeMo 출력 rail 검사가 실패하면 원문을 반환하지 않고 `500 ERROR`로
-처리합니다. 이 검사는 외부 요청·응답 필드나 `status`·`step` 계약을 변경하지 않습니다.
+시스템·개발자·내부 프롬프트/지시/규칙/메시지 공개 요청이 차단되면 FE가 오류 화면으로 이동하지
+않도록 `200 NEED_MORE_INFO / CONDITION_INPUT`과 안전한 안내 문구·질문을 반환합니다. 그 외
+프롬프트 인젝션 등 안전하지 않은 입력은 `400 ERROR`로 처리합니다. 최종 LLM 문구와
+ToolResult의 NeMo 출력 rail 검사가 실패하면 원문을 반환하지 않고 `500 ERROR`로 처리합니다.
+이 검사는 외부 요청·응답 필드나 기존 `status`·`step` 계약을 변경하지 않습니다.
 
 ```json
 {
@@ -223,7 +363,9 @@ ToolRequest = {
 
 | Field | Type | Description |
 |---|---|---|
-| `set_id` | string | 추천 세트 ID |
+| `set_id` | string | FE에 표시할 추천 세트 문구 |
+| `set_key` | string | 서버 내부 선택·PDF 발급 키 |
+| `label` | string/null | `set_id`와 같은 FE 표시 문구(이전 FE 호환용) |
 | `recipes` | Recipe[5] | 세트에 포함된 레시피 5개 |
 
 ## Recipe 객체
@@ -234,7 +376,10 @@ ToolRequest = {
 | `title` | string | 레시피명 |
 | `image` | string/null | 대표 이미지 |
 | `cook_time` | number | 조리 시간(분) |
+| `cooking_steps` | string[] | 조리 순서. 원본에 단계가 없으면 빈 배열 |
 | `owned_ingredients` | string[] | 보유 재료 |
+| `optional_ingredients` | string[] | 원본 레시피에서 선택적으로 넣을 수 있는 재료 |
+| `substitutable_ingredients` | string[] | 원본 레시피에서 다른 재료로 대체할 수 있는 재료 |
 | `missing_ingredients` | object[] | 부족 재료 |
 | `shopping_list` | object[] | 장보기 목록 |
 | `nutrition` | object | 영양 정보 |
@@ -260,6 +405,10 @@ ToolRequest = {
 }
 ```
 
+`amount`는 내부 레시피 원본의 조리 재료 설명에서 추출한 필요량입니다. 원본에 수량이
+표시되지 않은 재료는 `약간` 또는 `수량 미상`으로 반환될 수 있으며, 사용자가 이미 가진
+재료의 양을 차감한 실제 잔여 구매량은 아닙니다.
+
 ### nutrition
 
 ```json
@@ -276,23 +425,35 @@ ToolRequest = {
 ## 처리 규칙
 
 - `session_id`로 LangGraph State를 유지합니다.
-- 이미지가 없는 첫 요청은 `IMAGE_INPUT`으로 사진을 먼저 요청합니다. 같은 세션에서 사진이 없다고
-  다시 답하면 자연어 재료 입력을 안내합니다.
-- 이미지와 식단 목적·조리 시간이 담긴 자연어 메시지를 함께 받은 뒤에는 재료 확인만 거치고 추천 단계로 진행합니다.
+- 재료가 없는 요청은 `IMAGE_INPUT`으로 사진 또는 자연어 재료 입력을 안내합니다. 첫 요청이라도
+  `message`에 재료가 포함되면 이미지 단계를 건너뜁니다.
+- 첨부 이미지에서 재료나 영수증을 확인하지 못하면 `200 NEED_MORE_INFO / IMAGE_INPUT`으로
+  냉장고 또는 영수증 사진 재첨부를 안내하고, 같은 세션을 이미지 입력 대기 상태로 유지합니다.
+- 이미지와 식단 목적이 담긴 자연어 메시지를 받으면 조리 시간이 없어도 재료 확인 후 추천 단계로 진행합니다. 조리 시간은 입력된 경우에만 추천 필터로 사용합니다.
 - 이미지가 없더라도 사용자가 `message`에 직접 입력한 지원 재료는 확정 재료로 처리하며, 식단 조건이
   있으면 바로 추천하고 조건이 없으면 `CONDITION_INPUT`만 반환합니다.
 - 사용자 확인 전 재료 후보는 추천 Tool에 전달하지 않습니다.
-- `confirmed` 판정 이후에만 확정 재료를 ToolRequest에 포함합니다.
+- 목록 전체에 대한 명시적 최종 `confirmed` 판정 이후에만 확정 재료를 ToolRequest에 포함합니다.
 - `edited`·`rejected`·`unclear` 판정은 각각 후보 수정·이미지 재요청·재확인 응답으로 처리합니다.
 - 이미지와 자연어 재료는 `OPENAI_MODEL`(기본값 `gpt-4o-mini`)의 구조화 추출 결과를 서버에서
   검증해 후보 또는 확정 재료로 저장합니다.
 - `INPUT_REQUIREMENTS`·`IMAGE_INPUT`·`CONDITION_INPUT`의 `response`와 `questions`는
   `OpenAIResponder.generate_clarification_response()`의 Structured Outputs로 생성하며,
-  모델 장애나 검증 실패 시 단계별 고정 fallback으로 응답합니다. 이 fallback은 FE의
-  `status`·`step` 계약을 변경하지 않습니다.
-- Tool Hub 연동 전에는 확정 재료·조건을 바탕으로 OpenAI가 생성한 임시 추천 결과를 반환합니다.
-- `COMPLETED` 단계의 `response`와 `data.recipe_sets`는 OpenAI Structured Outputs로 생성하고,
-  서버에서 `RecommendationData`로 다시 검증합니다.
+  서버는 재료·목적 외의 선택 조건(수량·조리 시간·끼니 수·선호·제외 음식)을 필수 질문에서
+  제거하고, 본문에 남아 있으면 단계별 고정 fallback으로 대체합니다. 모델 장애나 검증 실패
+  시에도 고정 fallback을 사용하며 FE의 `status`·`step` 계약은 변경하지 않습니다.
+- 기본 설정에서는 `COMPLETED` 단계에 Recipe·Nutrition·Shopping·RAG Tool을 실행하고,
+  Tool 결과의 `response`와 `data.recipe_sets`를 서버에서 `RecommendationData`로 다시 검증합니다.
+- 기본 Tool Hub는 외부 Recipe API가 아니라 `data/COOKRCP01_FINAL_WITH_INGREDIENT_GROUPS_REVISED_V2.csv`
+  내부 카탈로그를 사용합니다. 동일한 확정 재료·조건에는 결정적인 검색·정렬 결과가 반환됩니다.
+  `mocks/chat/response-success.json`은 런타임 데이터가 아니라 FE fixture와 테스트 전용입니다.
+- 완료 응답의 `response`는 세트 선택과 PDF 발급을 안내하는 서버 템플릿이며, 실제 추천 데이터는
+  `data.recipe_sets`에서 확인합니다. 직전 추천이 마음에 들지 않아 재생성하면 이전 레시피 ID를
+  후보에서 제외하고 새 레시피 추천임을 응답 문구에 표시합니다.
+- `COMPLETED` 이후 새 재료 교체 의도가 명확한 메시지는 기존 확정 재료를 새 목록으로 교체해
+  Tool Hub에 전달합니다. 일반적인 제외·선호 피드백은 기존 확정 재료를 유지합니다.
+- `TOOL_HUB_ENABLED=false` 또는 테스트용 provider 미주입 시에만 OpenAI Structured
+  Outputs 기반 임시 추천 결과를 사용합니다.
 - 재료 추출·최종 추천 생성에서 API 키가 없거나 LLM 호출에 실패하면 `500 ERROR`를 반환합니다.
   추가 입력 안내 생성만 실패한 경우에는 단계별 고정 fallback을 사용해 `200 NEED_MORE_INFO`를 유지합니다.
 - 최종 추천 응답 프롬프트는 [`prompts/`](../../prompts/)의 공통·단계별 조각을 조합해 관리합니다.
@@ -302,8 +463,8 @@ ToolRequest = {
 - Chat API는 NFKC·소문자·구분 문자 제거로 정규화한 입력을 검사하고, 통과한 사용자
   메시지도 비신뢰 데이터 블록으로만 LLM에 전달합니다. LLM 출력은 내부 지시·API 키 노출
   여부를 다시 검사합니다.
-- Tool Hub 연동 후에는 OpenAI 임시 재료·추천 데이터를 Vision·Recipe·Nutrition·Shopping·RAG
-  Tool 실행 결과로 대체합니다.
+- 완료 단계에서는 OpenAI 임시 추천 대신 Tool Hub Recipe·Nutrition·Shopping·RAG Tool 실행 결과를
+  사용합니다. 이미지 재료 후보는 기존 확인 단계를 거친 뒤에만 Tool 입력으로 전달합니다.
 - 사용자 확인 전의 이미지 인식 결과는 추천에 사용하지 않습니다.
 - Recipe Tool은 내부 레시피 DB를 조회합니다.
 - Nutrition Tool은 영양 정보를 제공합니다.

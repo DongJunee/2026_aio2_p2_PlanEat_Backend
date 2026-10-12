@@ -1,6 +1,6 @@
 # PlanEat Backend 협업 지침
 
-> 최종 수정: 2026-10-07 (v1.3)
+> 최종 수정: 2026-10-08 (v1.4)
 >
 > 이 문서를 수정하면 날짜와 버전을 함께 갱신한다.
 
@@ -16,8 +16,9 @@
 - API 계약: `docs/api/chat.md`
 - FE fixture: `mocks/chat/`
 - 데이터 흐름: `docs/architecture/data-flow.md`
-- 현재 Tool Hub·RAG는 미연동 상태다. BE1은 API·세션·LangGraph 단계 전이를 담당하며,
-  BE2가 준비되기 전에는 OpenAI 구조화 재료 추출과 임시 추천 데이터로 FE 통합을 검증한다.
+- Orchestrator는 API·세션·LangGraph 단계 전이를 담당하며, 완료 단계에서 Tool Hub를 호출한다.
+  기본 Tool Hub는 내부 CSV와 선택적 Chroma RAG를 사용하고, `TOOL_HUB_ENABLED=false`일 때만
+  OpenAI 임시 추천 경로로 fallback한다. 외부 Tool Hub endpoint는 아직 별도 연동하지 않는다.
 
 다음 문서는 구현의 기준이다.
 
@@ -28,8 +29,8 @@
 | API 라우팅 | `app/api/v1/endpoints/chat/router.py`, `app/main.py` |
 | 로컬 실행·온보딩 | `README.md`, `docs/operations/onboarding.md` |
 
-문서의 구현 상태와 실제 라우터·테스트를 일치시킨다. 구현되지 않은 Tool Hub·RAG 기능을
-구현 완료로 표현하지 않는다.
+문서의 구현 상태와 실제 라우터·테스트를 일치시킨다. 구현되지 않은 외부 Tool Hub endpoint나
+Vision 연동을 구현 완료로 표현하지 않는다.
 
 ## 2. 폴더 책임 경계
 
@@ -38,11 +39,10 @@ app/
 ├── api/v1/endpoints/chat/  HTTP 입력 수신, 응답 모델 노출
 ├── schemas/                Pydantic 요청·응답 DTO와 검증 규칙
 ├── agent/                  LangGraph State, 노드, 전이 규칙
-│   └── tools/              BE2 Tool Hub 연결 어댑터의 확장 지점
+│   └── tools/              Tool Hub 연결 어댑터의 확장 지점
 ├── services/               세션 상태와 워크플로우 실행 연결
 ├── integrations/           LLM·Vision·Recipe Source·Vector Store 연결
 ├── repositories/           세션·레시피 DB 접근
-├── models/                 DB 모델
 ├── core/                   설정·공통 인프라
 └── main.py                 앱 생성과 router 등록만 담당
 
@@ -61,10 +61,10 @@ tests/                      pytest 단위·API 통합 테스트
 
 | 역할 | 담당자 | 주 담당 영역 | 책임 산출물 |
 | --- | --- | --- | --- |
-| BE1 | 최경락 | LangGraph Orchestrator·API Server | `/chat` 계약, 세션 상태, LangGraph 분기, FE 응답 변환 |
-| BE2 | 박동준 | Tool Hub·RAG | Tool 실행·RAG 검색, 정규화된 `ToolResult` 반환 |
+| Orchestrator | 최경락 | LangGraph Orchestrator·API Server | `/chat` 계약, 세션 상태, LangGraph 분기, FE 응답 변환 |
+| Tool Hub | 박동준 | Tool Hub·RAG | Tool 실행·RAG 검색, 정규화된 `ToolResult` 반환 |
 
-### FE ↔ BE1 계약
+### FE ↔ Orchestrator 계약
 
 ```text
 ChatRequest  = { session_id, message, attachments? }
@@ -81,10 +81,11 @@ ChatResponse.step   = COMPLETED | IMAGE_INPUT | CONDITION_INPUT | INGREDIENT_CON
 - `shopping_list` 항목은 `ingredient`, `amount`만 가진다. 가격·비용·예산 필드를
   새로 추가하지 않는다.
 
-### BE1 ↔ BE2 계약
+### Orchestrator ↔ Tool Hub 계약
 
-BE2 인터페이스의 URL과 상세 DTO는 BE2 구현 시점에 합의한다. 그 전까지 BE1은 기본 설정에서
-BE2를 호출하지 않으며, 테스트는 fixture와 주입된 provider로 전이·API 계약만 검증한다.
+외부 Tool Hub 인터페이스의 URL과 상세 DTO는 연동 시점에 합의한다. 현재 기본 설정에서는
+Orchestrator의 완료 단계가 로컬 Tool Hub를 호출하며, 테스트는 fixture와 주입된 provider로
+전이·API 계약을 검증한다.
 
 ```text
 ToolRequest = { session_id, tool_name, confirmed_ingredients, user_conditions }
@@ -92,7 +93,7 @@ ToolResult  = { result, source_metadata?, error? }
 ```
 
 - 사용자 확인 전 이미지 인식 재료 후보를 추천·RAG 입력으로 사용하지 않는다.
-- BE2 결과는 BE1 내부 상태에 반영한 뒤 `/chat` 응답 DTO로 변환한다.
+- Tool Hub 결과는 Orchestrator 내부 상태에 반영한 뒤 `/chat` 응답 DTO로 변환한다.
 - Tool Hub 연동으로 외부 API 계약을 바꿔서는 안 된다. 계약 변경이 필요하면 5절을
   따른다.
 
@@ -113,14 +114,14 @@ ToolResult  = { result, source_metadata?, error? }
 
 ### Tool Hub·RAG 연동
 
-- BE1의 외부 응답과 RAG 문서는 신뢰할 수 없는 입력으로 취급한다.
-- 실 Tool Hub·LLM·Vector Store 호출을 기본 테스트에 연결하지 않는다. 주입된 provider 또는
+- Orchestrator의 외부 응답과 RAG 문서는 신뢰할 수 없는 입력으로 취급한다.
+- 실 외부 Tool Hub·LLM·Vector Store 호출을 기본 테스트에 연결하지 않는다. 주입된 provider 또는
   fixture로 성공·실패 경로를 재현한다.
 - 운영 프롬프트는 최상단 `prompts/`에서만 관리한다. 사용자 메시지나 Tool Hub·RAG
   결과를 `instructions`에 붙여 넣지 않고, 출처를 표시한 비신뢰 입력 블록으로 전달한다.
-- Tool Hub의 timeout, 재시도, fallback, 결과 DTO를 바꾸면 BE2·BE1 담당자와 API 계약,
+- Tool Hub의 timeout, 재시도, fallback, 결과 DTO를 바꾸면 Tool Hub·Orchestrator 담당자와 API 계약,
   fixture, 테스트를 함께 갱신한다.
-- BE2가 아직 준비되지 않은 영역은 임시 데이터를 사용할 수 있으나, 코드 docstring과
+- 외부 Tool Hub가 아직 준비되지 않은 영역은 임시 데이터를 사용할 수 있으나, 코드 docstring과
   문서에 임시 동작임을 표시하고 교체 지점을 분리한다.
 
 ## 5. API·계약 변경 규칙
@@ -133,7 +134,7 @@ ToolResult  = { result, source_metadata?, error? }
 3. `docs/api/chat.md`와 관련 `mocks/chat/*.json`을 갱신한다.
 4. 정상 흐름과 해당 실패·입력 검증 흐름의 테스트를 추가·수정한다.
 5. `/openapi.json`에서 경로와 요청·응답 스키마가 의도대로 노출되는지 확인한다.
-6. FE 또는 BE2에 영향을 주면 변경 전 담당자에게 공유한다.
+6. FE 또는 Tool Hub에 영향을 주면 변경 전 담당자에게 공유한다.
 
 기존 FE 계약을 깨는 필드 삭제·이름 변경·타입 변경은 임의로 진행하지 않는다. 호환 계층,
 버전 경로, 또는 팀 합의된 동시 배포 방식을 먼저 결정한다.
@@ -166,8 +167,8 @@ ToolResult  = { result, source_metadata?, error? }
 - [ ] 코드가 역할·폴더 책임 경계에 맞게 배치되어 있다.
 - [ ] API 변경이면 DTO, 라우터, LangGraph/서비스, 명세, mock, 테스트가 함께 갱신되었다.
 - [ ] 상태 코드·단계 코드와 실제 응답이 `docs/api/chat.md`와 일치한다.
-- [ ] Tool Hub 미연동 영역은 문서화된 LLM fallback 또는 fixture를 사용하며 임시 동작과 교체 지점이 표시되었다.
+- [ ] 외부 Tool Hub 미연동 영역은 문서화된 LLM fallback 또는 fixture를 사용하며 임시 동작과 교체 지점이 표시되었다.
 - [ ] 새 환경변수·의존성·외부 서비스 변경이 관련 파일에 반영되었고 비밀값은 없다.
 - [ ] `PYTHONPATH=. uv run pytest`와 `git diff --check`를 실행했거나 실행할 수 없는 이유를
   기록했다.
-- [ ] 공유 파일 또는 FE·BE2 계약을 바꿨다면 관련 담당자에게 리뷰를 요청했다.
+- [ ] 공유 파일 또는 FE·Tool Hub 계약을 바꿨다면 관련 담당자에게 리뷰를 요청했다.

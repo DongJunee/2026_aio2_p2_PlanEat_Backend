@@ -34,7 +34,14 @@ class ChatSessionState:
     summary: str = ""
     ingredient_candidates: tuple[IngredientCandidate, ...] = field(default_factory=tuple)
     confirmed_ingredients: tuple[IngredientCandidate, ...] = field(default_factory=tuple)
+    # 후보를 하나씩 확인할 때 이미 맞다고 답한 재료명이다. 최종 확정 전까지만 유지한다.
+    acknowledged_ingredient_names: tuple[str, ...] = field(default_factory=tuple)
+    # "돼지고기는 아니야" 뒤에 "무엇으로 바꿀까요?"를 이어 묻기 위한 대상이다.
+    pending_ingredient_correction: str | None = None
     user_conditions: Mapping[str, object] | None = None
+    recommendation_data: Mapping[str, object] | None = None
+    selected_set_id: str | None = None
+    pdf_url: str | None = None
 
 
 class ChatSessionRepository(Protocol):

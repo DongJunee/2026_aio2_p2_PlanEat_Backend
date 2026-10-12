@@ -13,6 +13,7 @@ from app.schemas.chat import (
     ChatRequest,
     ChatSuccessResponse,
     ChatResponse,
+    ChatStreamEvent,
     RecommendationData,
 )
 
@@ -90,6 +91,14 @@ def test_chat_response_models_match_each_workflow_state() -> None:
     assert combined_response.step == "INPUT_REQUIREMENTS"
 
 
+def test_chat_stream_event_restricts_sse_event_names() -> None:
+    event = ChatStreamEvent(event="complete", data={"http_status": 200})
+
+    assert event.event == "complete"
+    with pytest.raises(ValidationError):
+        ChatStreamEvent(event="unknown", data={})
+
+
 def test_recommendation_data_requires_two_sets_of_five_recipes() -> None:
     recipe = {
         "recipe_id": "R001",
@@ -117,6 +126,44 @@ def test_recommendation_data_requires_two_sets_of_five_recipes() -> None:
     assert all(len(recipe_set.recipes) == 5 for recipe_set in data.recipe_sets)
 
 
+def test_recommendation_data_exposes_display_set_ids_and_preserves_internal_keys() -> None:
+    recipe = {
+        "recipe_id": "R001",
+        "title": "두부 양배추 볶음",
+        "image": None,
+        "cook_time": 20,
+        "owned_ingredients": ["두부"],
+        "missing_ingredients": [],
+        "shopping_list": [],
+        "nutrition": {
+            "calories": 430,
+            "protein": 28,
+            "carbohydrate": 18,
+            "fat": 15,
+        },
+    }
+
+    data = RecommendationData(
+        recipe_sets=[
+            {"set_id": "BEST_MATCH", "recipes": [recipe.copy() for _ in range(5)]},
+            {"set_id": "MORE_OPTIONS", "recipes": [recipe.copy() for _ in range(5)]},
+        ]
+    )
+
+    assert [recipe_set.set_id for recipe_set in data.recipe_sets] == [
+        "냉장고 재료와 가장 잘 맞아요",
+        "이런 식단도 있어요",
+    ]
+    assert [recipe_set.set_key for recipe_set in data.recipe_sets] == [
+        "BEST_MATCH",
+        "MORE_OPTIONS",
+    ]
+    assert [recipe_set.label for recipe_set in data.recipe_sets] == [
+        "냉장고 재료와 가장 잘 맞아요",
+        "이런 식단도 있어요",
+    ]
+
+
 def test_response_fixtures_match_chat_response_contract() -> None:
     adapter = TypeAdapter(ChatResponse)
 
@@ -124,6 +171,7 @@ def test_response_fixtures_match_chat_response_contract() -> None:
         "response-condition-input.json",
         "response-error.json",
         "response-image-input.json",
+        "response-image-retry.json",
         "response-input-requirements.json",
         "response-ingredient-confirm.json",
         "response-success.json",

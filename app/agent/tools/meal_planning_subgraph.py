@@ -30,6 +30,7 @@ from app.agent.tools.recipe_guide_tool import RecipeGuideTool
 from app.agent.tools.recipe_tool import RecipeTool
 from app.agent.tools.shopping_tool import ShoppingTool
 from app.core.config import Settings
+from app.core.timeouts import TYPESAFE_TIMEOUT_SECONDS
 
 _SYSTEM_ONE_URL = "https://api.typesafe.ai/v1/systemone"
 _REQUIRED_SET_COUNT = 5
@@ -227,7 +228,7 @@ class TypeSafeMealPlanningJev:
         self._enabled = settings.typesafe_jev_enabled
         self._api_key = settings.typesafe_api_key
         self._model = settings.typesafe_model
-        self._timeout_seconds = settings.typesafe_timeout_seconds
+        self._timeout_seconds = TYPESAFE_TIMEOUT_SECONDS
         self._min_confidence = settings.typesafe_jev_min_confidence
 
     async def select_sets(

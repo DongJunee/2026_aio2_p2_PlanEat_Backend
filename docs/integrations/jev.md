@@ -67,9 +67,6 @@ TYPESAFE_API_KEY=<your-typesafe-api-key>
 # 현재 기본 모델이다.
 TYPESAFE_MODEL=jev-latest
 
-# 외부 API 호출 최대 대기 시간(초)이다.
-TYPESAFE_TIMEOUT_SECONDS=180.0
-
 # 이 confidence 이상일 때만 Jev 결정을 반영한다.
 TYPESAFE_JEV_MIN_CONFIDENCE=0.8
 ```

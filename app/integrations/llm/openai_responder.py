@@ -11,6 +11,7 @@ from pydantic import ValidationError
 
 from app.core.config import Settings
 from app.core.safety import SafetyViolationError, validate_completion_output
+from app.core.timeouts import OPENAI_TIMEOUT_SECONDS
 from app.schemas.chat import IngredientConfirmation, RecommendationData
 
 _PROMPT_DIRECTORY = Path(__file__).resolve().parents[3] / "prompts"
@@ -245,7 +246,6 @@ class OpenAIResponder:
     def __init__(self, settings: Settings) -> None:
         self._api_key = settings.openai_api_key
         self._model = settings.openai_model
-        self._timeout_seconds = settings.openai_timeout_seconds
 
     async def generate_clarification_response(
         self,
@@ -273,7 +273,7 @@ class OpenAIResponder:
         )
 
         try:
-            client = AsyncOpenAI(api_key=self._api_key, timeout=self._timeout_seconds)
+            client = AsyncOpenAI(api_key=self._api_key, timeout=OPENAI_TIMEOUT_SECONDS)
             response = await client.responses.create(
                 model=self._model,
                 instructions=load_clarification_instructions(),
@@ -366,7 +366,7 @@ class OpenAIResponder:
             input_payload = text_input
 
         try:
-            client = AsyncOpenAI(api_key=self._api_key, timeout=self._timeout_seconds)
+            client = AsyncOpenAI(api_key=self._api_key, timeout=OPENAI_TIMEOUT_SECONDS)
             response = await client.responses.create(
                 model=self._model,
                 instructions=load_ingredient_instructions(),
@@ -446,7 +446,7 @@ class OpenAIResponder:
         )
 
         try:
-            client = AsyncOpenAI(api_key=self._api_key, timeout=self._timeout_seconds)
+            client = AsyncOpenAI(api_key=self._api_key, timeout=OPENAI_TIMEOUT_SECONDS)
             response = await client.responses.create(
                 model=self._model,
                 instructions=load_recommendation_instructions(),
@@ -513,7 +513,7 @@ class OpenAIResponder:
         )
 
         try:
-            client = AsyncOpenAI(api_key=self._api_key, timeout=self._timeout_seconds)
+            client = AsyncOpenAI(api_key=self._api_key, timeout=OPENAI_TIMEOUT_SECONDS)
             response = await client.responses.create(
                 model=self._model,
                 instructions=load_completion_instructions(),

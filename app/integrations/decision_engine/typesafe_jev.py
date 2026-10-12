@@ -11,6 +11,7 @@ from typing import Any, Literal
 import httpx
 
 from app.core.config import Settings
+from app.core.timeouts import TYPESAFE_TIMEOUT_SECONDS
 
 _SYSTEM_ONE_URL = "https://api.typesafe.ai/v1/systemone"
 _CONDITION_READY_KEY = "condition_readiness"
@@ -55,7 +56,7 @@ class JevConditionReadinessEvaluator:
         self._enabled = settings.typesafe_jev_enabled
         self._api_key = settings.typesafe_api_key
         self._model = settings.typesafe_model
-        self._timeout_seconds = settings.typesafe_timeout_seconds
+        self._timeout_seconds = TYPESAFE_TIMEOUT_SECONDS
         self._min_confidence = settings.typesafe_jev_min_confidence
 
     async def evaluate(self, user_message: str) -> ConditionReadinessDecision | None:
@@ -134,7 +135,7 @@ class JevFeedbackPlanner:
         self._enabled = settings.typesafe_jev_enabled
         self._api_key = settings.typesafe_api_key
         self._model = settings.typesafe_model
-        self._timeout_seconds = settings.typesafe_timeout_seconds
+        self._timeout_seconds = TYPESAFE_TIMEOUT_SECONDS
         self._min_confidence = settings.typesafe_jev_min_confidence
 
     async def plan(
@@ -219,7 +220,7 @@ class JevIngredientConfirmationEvaluator:
         self._enabled = settings.typesafe_jev_enabled
         self._api_key = settings.typesafe_api_key
         self._model = settings.typesafe_model
-        self._timeout_seconds = settings.typesafe_timeout_seconds
+        self._timeout_seconds = TYPESAFE_TIMEOUT_SECONDS
         self._min_confidence = settings.typesafe_jev_min_confidence
 
     async def evaluate(

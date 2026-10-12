@@ -105,7 +105,7 @@ Jev는 사용자 메시지로부터 식단 목적이 충분히 입력됐는지�
 `/chat` 요청·응답 계약은 바꾸지 않습니다.
 
 1. TypeSafe Console에서 API 키를 발급한다.
-2. `.env`에 `TYPESAFE_JEV_ENABLED=true`, `TYPESAFE_API_KEY`, 필요하면 timeout·confidence 설정을 추가한다.
+2. `.env`에 `TYPESAFE_JEV_ENABLED=true`, `TYPESAFE_API_KEY`, 필요하면 confidence 설정을 추가한다.
 3. 키를 넣지 않은 상태에서는 기존 결정적 LangGraph 전이가 계속 동작하는지 확인한다.
 4. 키를 넣은 상태에서는 불충분한 조건 입력이 `CONDITION_INPUT`을 유지하는지, 재료 확인 답변에 따라
    후보 확정·수정·재촬영·재확인이 분기되는지 검증한다.

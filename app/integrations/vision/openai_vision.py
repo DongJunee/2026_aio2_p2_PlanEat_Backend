@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.agent.tools.tool_models import ToolIngredient
 from app.agent.tools.ingredient_validation_tool import IngredientValidationTool
+from app.core.timeouts import OPENAI_TIMEOUT_SECONDS
 
 _PROMPT_PATH = Path(__file__).resolve().parents[3] / "prompts" / "vision" / "ingredient-extraction.md"
 
@@ -76,13 +77,11 @@ class OpenAIVisionIngredientExtractor:
         api_key: str,
         model: str = "gpt-4o-mini",
         allowed_image_hosts: frozenset[str] = frozenset(),
-        timeout_seconds: float = 180.0,
     ) -> None:
         if not api_key.strip():
             raise ValueError("Vision provider용 OpenAI API 키가 필요합니다.")
         self._api_key = api_key
         self._model = model
-        self._timeout_seconds = timeout_seconds
         self._allowed_image_hosts = frozenset(host.lower() for host in allowed_image_hosts)
         self._ingredient_validator = IngredientValidationTool()
 
@@ -110,7 +109,7 @@ class OpenAIVisionIngredientExtractor:
             content.append({"type": "input_image", "image_url": image_data})
 
         try:
-            client = AsyncOpenAI(api_key=self._api_key, timeout=self._timeout_seconds)
+            client = AsyncOpenAI(api_key=self._api_key, timeout=OPENAI_TIMEOUT_SECONDS)
             response = await client.responses.create(
                 model=self._model,
                 instructions=load_vision_instructions(),

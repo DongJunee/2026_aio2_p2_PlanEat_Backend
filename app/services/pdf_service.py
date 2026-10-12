@@ -23,6 +23,7 @@ from reportlab.pdfbase.ttfonts import TTFError, TTFont
 from reportlab.pdfgen.canvas import Canvas
 
 from app.core.config import Settings, get_settings
+from app.core.timeouts import PDF_IMAGE_TIMEOUT_SECONDS
 from app.schemas.chat import RecommendationData, Recipe, RecipeSet, get_recipe_set_key
 
 
@@ -47,7 +48,6 @@ class RecipePdfService:
 
     def __init__(self, settings: Settings) -> None:
         self._storage_directory = Path(settings.pdf_storage_directory)
-        self._image_timeout_seconds = settings.pdf_image_timeout_seconds
         self._public_base_url = (settings.pdf_public_base_url or "").rstrip("/")
 
     async def generate(self, *, session_id: str, recommendation: RecommendationData, selected_set_id: str) -> str:
@@ -57,10 +57,7 @@ class RecipePdfService:
         if selected_set is None:
             raise ValueError("선택한 식단 세트를 찾을 수 없습니다.")
         filename = _build_pdf_filename(selected_set_id)
-        render_set = await _embed_recipe_images(
-            selected_set,
-            timeout_seconds=self._image_timeout_seconds,
-        )
+        render_set = await _embed_recipe_images(selected_set)
         await asyncio.to_thread(self._write_pdf, self._storage_directory / filename, session_id, render_set)
         return self.public_url(filename)
 
@@ -343,7 +340,7 @@ def _data_uri_image(image_data: str | None) -> ImageReader | None:
 async def _embed_recipe_images(
     selected_set: RecipeSet,
     *,
-    timeout_seconds: float = 180.0,
+    timeout_seconds: float = PDF_IMAGE_TIMEOUT_SECONDS,
 ) -> RecipeSet:
     """허용된 레시피 이미지 URL을 PDF 내부 data URI로 바꿉니다.
 

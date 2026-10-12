@@ -15,7 +15,8 @@ Recipe 후보 검색 → 메인·반찬 조합 → Jev 선택 → 세트별 Shop
 
 `PlanEatToolHub.execute(ToolRequest)`는 Orchestrator의 현재 계약을 위해서만 남긴 호환
 adapter다. 이 adapter는 위의 정식 5세트 결과를 기존 2세트×5레시피 카드 DTO로 변환하며,
-별도 추천 흐름을 실행하지 않는다.
+별도 추천 흐름을 실행하지 않는다. 정식·호환 경로 모두 각 카드에 노출되는
+`shopping_list`는 원본 레시피 순서대로 최대 5개다.
 
 기본 앱의 호환 adapter는 `data/COOKRCP01_FINAL_WITH_INGREDIENT_GROUPS_REVISED_V2.csv`를 읽는
 로컬 Recipe Source를 사용한다. 결과의 `source_metadata.recipe_sources`에는

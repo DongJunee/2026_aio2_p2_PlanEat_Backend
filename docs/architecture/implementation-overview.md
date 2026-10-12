@@ -81,9 +81,9 @@ FE는 `status`, `step`만으로 화면 흐름을 분기한다.
 | HTTP | `status` | `step` | 의미 |
 | --- | --- | --- | --- |
 | 200 | `NEED_MORE_INFO` | `INPUT_REQUIREMENTS` | 이미지와 조건을 동시에 수집하는 호환 응답이다. |
-| 200 | `NEED_MORE_INFO` | `IMAGE_INPUT` | 재료가 없을 때 이미지 또는 자연어 재료 입력을 안내한다. 첫 요청의 자연어 재료는 바로 확정한다. |
+| 200 | `NEED_MORE_INFO` | `IMAGE_INPUT` | 재료가 없거나 첨부 이미지에서 재료·영수증을 확인하지 못했을 때 이미지 또는 자연어 재료 입력을 안내한다. |
 | 200 | `NEED_MORE_INFO` | `INGREDIENT_CONFIRM` | 인식된 재료 후보의 확인이 필요하다. |
-| 200 | `NEED_MORE_INFO` | `CONDITION_INPUT` | 필수 식단 목적이 필요하다. 조리 시간은 선택값이다. |
+| 200 | `NEED_MORE_INFO` | `CONDITION_INPUT` | 필수 식단 목적이 필요하다. 조리 시간은 선택값이며, 프롬프트 공개 요청의 안전한 안내에도 사용한다. |
 | 200 | `SUCCESS` | `COMPLETED` | 레시피 2세트(각 5개)가 준비됐다. 이후 피드백 또는 세트 선택을 받는다. |
 | 400, 500 | `ERROR` | 없음 | 오류. 항상 `status`, `response`만 반환한다. |
 
@@ -127,7 +127,8 @@ WAITING_CONDITIONS
 | `WAITING_IMAGE`, 이미지 없음 | `IMAGE_INPUT` | `WAITING_IMAGE` |
 | `WAITING_IMAGE`, 이미지 요청 후 message 직접 재료·조건 있음 | `COMPLETED` | `COMPLETED` |
 | `WAITING_IMAGE`, 이미지 요청 후 message 직접 재료·조건 없음 | `CONDITION_INPUT` | `WAITING_CONDITIONS` |
-| `WAITING_IMAGE`, 이미지 있음 | `INGREDIENT_CONFIRM` | `WAITING_INGREDIENT_CONFIRM` |
+| `WAITING_IMAGE`, 이미지 있음·재료 인식 성공 | `INGREDIENT_CONFIRM` | `WAITING_INGREDIENT_CONFIRM` |
+| `WAITING_IMAGE`, 이미지 있음·재료 인식 실패 | `IMAGE_INPUT` | `WAITING_IMAGE` |
 | `WAITING_INGREDIENT_CONFIRM`, `confirmed`·조건 있음 | `COMPLETED` | `COMPLETED` |
 | `WAITING_INGREDIENT_CONFIRM`, `confirmed`·조건 없음 | `CONDITION_INPUT` | `WAITING_CONDITIONS` |
 | `WAITING_INGREDIENT_CONFIRM`, `edited` | `INGREDIENT_CONFIRM` | `WAITING_INGREDIENT_CONFIRM` |
@@ -156,8 +157,8 @@ WAITING_CONDITIONS
   "response": "확정한 재료와 조건에 맞는 메인·반찬 식단을 추천했습니다. 두 세트 중 하나를 선택해 주세요. 선택한 레시피의 상세 PDF를 생성해드릴게요.",
   "data": {
     "recipe_sets": [
-      { "set_id": "...", "recipes": ["정확히 5개"] },
-      { "set_id": "...", "recipes": ["정확히 5개"] }
+      { "set_id": "냉장고 재료와 가장 잘 맞아요", "set_key": "BEST_MATCH", "label": "냉장고 재료와 가장 잘 맞아요", "recipes": ["정확히 5개"] },
+      { "set_id": "이런 식단도 있어요", "set_key": "MORE_OPTIONS", "label": "이런 식단도 있어요", "recipes": ["정확히 5개"] }
     ]
   }
 }
@@ -166,6 +167,11 @@ WAITING_CONDITIONS
 `app/schemas/chat.py`가 다음을 강제한다.
 
 - `recipe_sets`: 정확히 2개
+- 세트의 `set_id`와 `label`은 FE 표시용 문구이며, `set_key`는 서버 내부 선택 키다.
+- 기본 세트 표시는 `BEST_MATCH → 냉장고 재료와 가장 잘 맞아요`, `MORE_OPTIONS → 이런 식단도 있어요`다.
+- 레시피의 `optional_ingredients`와 `substitutable_ingredients`는 원본 카탈로그의
+  `OPTIONAL_INGREDIENTS`, `SUBSTITUTABLE_INGREDIENTS`, `SUBSTITUTABLE_SEASONINGS`를
+  보존하며 PDF 팁에서 필수 재료 대신 선택·대체 정보로 표시한다.
 - 세트별 `recipes`: 정확히 5개
 - `shopping_list` 항목: `ingredient`, `amount`만 허용
 - nutrition: `calories`, `protein`, `carbohydrate`, `fat`이며 음수를 허용하지 않음
@@ -230,8 +236,9 @@ Jev가 비활성화·실패·저신뢰이면 `ChatService`의 확인 표현 fall
 
 ### 사용자 입력
 
-`ChatService.handle()`은 Graph 실행 전에 `validate_user_message()`를 호출한다. 위험한 패턴이
-정규화 후 탐지되면 `400 ERROR`를 반환하며 상태 전이를 진행하지 않는다.
+`ChatService.handle()`은 Graph 실행 전에 `validate_user_message()`를 호출한다. 시스템·개발자·내부
+프롬프트 공개 요청이 정규화 후 탐지되면 상태 전이를 진행하지 않고 `200 NEED_MORE_INFO /
+CONDITION_INPUT` 안전 안내를 반환한다. 그 외 위험한 패턴은 `400 ERROR`를 반환한다.
 
 ### OpenAI 프롬프트
 

@@ -23,7 +23,7 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen.canvas import Canvas
 
 from app.core.config import Settings, get_settings
-from app.schemas.chat import RecommendationData, Recipe, RecipeSet
+from app.schemas.chat import RecommendationData, Recipe, RecipeSet, get_recipe_set_key
 
 
 _PAGE_WIDTH, _PAGE_HEIGHT = A4
@@ -100,9 +100,16 @@ class RecipePdfService:
 
 
 def _find_recipe_set(recommendation: RecommendationData, set_id: str) -> RecipeSet | None:
-    """검증된 추천 데이터에서 요청한 세트를 찾습니다."""
+    """검증된 추천 데이터에서 내부 키 또는 표시 문구로 세트를 찾습니다."""
 
-    return next((item for item in recommendation.recipe_sets if item.set_id == set_id), None)
+    return next(
+        (
+            item
+            for index, item in enumerate(recommendation.recipe_sets)
+            if get_recipe_set_key(item, index) == set_id or item.set_id == set_id
+        ),
+        None,
+    )
 
 
 def _safe_filename_part(value: str) -> str:
@@ -390,12 +397,74 @@ def _cook_time_label(recipe: Recipe) -> str:
     return f"{recipe.cook_time}분" if recipe.cook_time else "미입력"
 
 
+def _unique_tip_values(values: list[str]) -> list[str]:
+    """팁에 표시할 재료명을 중복 없이 원래 순서대로 정리합니다."""
+
+    unique_values: list[str] = []
+    for value in values:
+        normalized = value.strip()
+        if normalized and normalized not in unique_values:
+            unique_values.append(normalized)
+    return unique_values
+
+
+def _tip_values_text(values: list[str]) -> str:
+    """한 줄 팁 영역에 들어갈 수 있도록 재료 목록을 간결하게 줄입니다."""
+
+    visible_values = values[:3]
+    summary = ", ".join(visible_values)
+    remaining_count = len(values) - len(visible_values)
+    return f"{summary} 외 {remaining_count}개" if remaining_count else summary
+
+
 def _tip_text(recipe: Recipe) -> str:
+    # 원본 CSV의 OPTIONAL_INGREDIENTS와
+    # SUBSTITUTABLE_INGREDIENTS/SUBSTITUTABLE_SEASONINGS는 API 레시피 카드에
+    # 별도 목록으로 보존한다. ``missing_ingredients``는 보유 재료를 제외한 목록이므로
+    # 이 값만 사용하면 사용자가 이미 가진 선택·대체 재료가 팁에서 사라진다.
+    optional_names = _unique_tip_values(
+        [
+            *recipe.optional_ingredients,
+            *[
+                item.name
+                for item in recipe.missing_ingredients
+                if item.importance in {"권장", "생략 가능"}
+            ],
+        ]
+    )
+    substitutable_names = _unique_tip_values(
+        [
+            *recipe.substitutable_ingredients,
+            *(
+                item.name
+                for item in recipe.missing_ingredients
+                if item.importance == "대체 가능"
+            ),
+        ]
+    )
+    alternative_pairs = _unique_tip_values(
+        [
+            f"{item.name} → {item.alternative}"
+            for item in recipe.missing_ingredients
+            if item.alternative
+        ]
+    )
+
+    tip_parts: list[str] = []
+    if optional_names:
+        tip_parts.append(f"선택 재료: {_tip_values_text(optional_names)}")
+    if substitutable_names:
+        tip_parts.append(f"대체 가능: {_tip_values_text(substitutable_names)}")
+    if alternative_pairs:
+        tip_parts.append(f"대체안: {_tip_values_text(alternative_pairs)}")
+    if tip_parts:
+        return " · ".join(tip_parts)
+
     if not recipe.missing_ingredients:
-        return "추가 장보기 없이 보유 재료로 바로 조리할 수 있습니다."
-    item = recipe.missing_ingredients[0]
-    alternative = f" {item.alternative}으로 대체할 수 있습니다." if item.alternative else ""
-    return f"{item.name}은(는) {item.importance} 재료입니다.{alternative}"
+        return "추가 장보기 없이 보유 재료로 조리할 수 있습니다. 기호에 따라 재료를 가감해 보세요."
+
+    # CSV에 선택·대체 그룹이 없는 레시피는 필수 재료를 다시 보여주지 않는다.
+    return "선택 재료나 대체 가능한 재료 정보가 없습니다. 장보기 목록을 확인해 주세요."
 
 
 def _footer(canvas: Canvas, page: int, font_name: str) -> None:

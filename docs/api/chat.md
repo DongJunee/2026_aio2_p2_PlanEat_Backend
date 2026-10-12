@@ -93,7 +93,7 @@ FE용 이벤트 예시는 [`mocks/chat/stream-events.json`](../../mocks/chat/str
 |---:|---|---|
 | 200 | `SUCCESS` | 레시피 추천이 완료되었습니다. |
 | 200 | `NEED_MORE_INFO` | 다음 진행을 위해 사용자 입력 또는 확인이 필요합니다. |
-| 400 | `ERROR` | 요청 형식이 올바르지 않거나, 정규화된 입력 검증에서 안전하지 않은 요청으로 판단되었습니다. |
+| 400 | `ERROR` | 요청 형식이 올바르지 않거나, 프롬프트 공개 요청 이외의 입력 안전성 검증에서 안전하지 않은 요청으로 판단되었습니다. |
 | 500 | `ERROR` | 요청 처리 중 서버 오류가 발생했습니다. |
 
 ### 진행 단계 코드
@@ -105,7 +105,7 @@ FE용 이벤트 예시는 [`mocks/chat/stream-events.json`](../../mocks/chat/str
 | `SUCCESS` | `COMPLETED` | `data.recipe_sets`를 표시합니다. |
 | `NEED_MORE_INFO` | `INPUT_REQUIREMENTS` | 이미지와 조건을 동시에 수집해야 하는 호환 응답입니다. |
 | `NEED_MORE_INFO` | `IMAGE_INPUT` | 재료가 없을 때 이미지 또는 자연어 재료 입력을 안내합니다. |
-| `NEED_MORE_INFO` | `CONDITION_INPUT` | `questions`를 표시하고 추가 조건을 입력받습니다. |
+| `NEED_MORE_INFO` | `CONDITION_INPUT` | `questions`를 표시하고 추가 조건을 입력받습니다. 프롬프트 공개 요청도 FE 호환을 위해 이 단계의 안전한 안내로 반환합니다. |
 | `NEED_MORE_INFO` | `INGREDIENT_CONFIRM` | `ingredients`를 표시하고 인식 재료를 확인받습니다. |
 
 `ERROR` 응답에는 `step`을 포함하지 않습니다.
@@ -122,6 +122,22 @@ FE용 이벤트 예시는 [`mocks/chat/stream-events.json`](../../mocks/chat/str
   "response": "정확한 재료 확인을 위해 냉장고 또는 영수증 이미지를 첨부해주세요.",
   "questions": [
     "냉장고, 냉동실 또는 영수증 이미지를 첨부해주세요."
+  ]
+}
+```
+
+### 인식할 수 없는 이미지: `200 NEED_MORE_INFO`
+
+첨부 이미지에서 재료나 영수증을 확인하지 못한 경우에는 서버 오류 화면으로 전환하지 않고,
+세션을 `IMAGE_INPUT` 단계에 유지한 채 냉장고 또는 영수증 사진을 다시 요청합니다.
+
+```json
+{
+  "status": "NEED_MORE_INFO",
+  "step": "IMAGE_INPUT",
+  "response": "올려주신 사진은 냉장고 재료나 영수증 사진으로 확인하기 어려워요. 냉장고 속 재료가 보이는 사진 또는 영수증 사진을 올려주세요.",
+  "questions": [
+    "냉장고 안 재료가 잘 보이는 사진이나 영수증 사진을 첨부해주세요."
   ]
 }
 ```
@@ -150,7 +166,19 @@ FE용 이벤트 예시는 [`mocks/chat/stream-events.json`](../../mocks/chat/str
 
 ### Success: `200`
 
-성공 응답은 `recipe_sets` 2개를 반환하며, 각 세트는 레시피 5개를 포함합니다.
+성공 응답은 `recipe_sets` 2개를 반환하며, 각 세트는 레시피 5개를 포함합니다. 화면에 보여줄
+세트 문구는 각 `recipe_sets` 항목의 `set_id`에서 바로 읽습니다. 서버 내부 선택·PDF 발급에
+사용하는 키는 `set_key`에 보존하며, 기존 FE 호환을 위해 최상위 `available_set_ids`와
+`selected_set_id`는 내부 키로 유지합니다. `label`은 이전 FE와의 호환을 위해 `set_id`와 같은
+표시 문구를 함께 제공합니다. 기본 Tool Hub 응답의 매핑은 다음과 같습니다.
+
+| 내부 키 | `set_id` / `label` |
+|---|---|
+| `BEST_MATCH` | `냉장고 재료와 가장 잘 맞아요` |
+| `MORE_OPTIONS` | `이런 식단도 있어요` |
+
+fallback 또는 테스트 응답처럼 다른 ID를 사용하는 경우에도 첫 번째·두 번째 세트 순서로 같은
+라벨을 채웁니다.
 
 ```json
 {
@@ -162,13 +190,17 @@ FE용 이벤트 예시는 [`mocks/chat/stream-events.json`](../../mocks/chat/str
   "data": {
     "recipe_sets": [
       {
-        "set_id": "SET001",
+        "set_id": "냉장고 재료와 가장 잘 맞아요",
+        "set_key": "SET001",
+        "label": "냉장고 재료와 가장 잘 맞아요",
         "recipes": [
           "Recipe 객체 5개"
         ]
       },
       {
-        "set_id": "SET002",
+        "set_id": "이런 식단도 있어요",
+        "set_key": "SET002",
+        "label": "이런 식단도 있어요",
         "recipes": [
           "Recipe 객체 5개"
         ]
@@ -203,7 +235,7 @@ PDF 생성이 완료되면 기존 추천 데이터와 함께 아래 필드를 �
 {
   "status": "SUCCESS",
   "step": "COMPLETED",
-  "response": "SET001 식단의 상세 PDF를 생성했습니다.",
+  "response": "냉장고 재료와 가장 잘 맞아요 식단의 상세 PDF를 생성했습니다.",
   "next_action": "PDF_READY",
   "available_set_ids": ["SET001", "SET002"],
   "selected_set_id": "SET001",
@@ -252,6 +284,14 @@ Orchestrator는 Jev의 `choice` 판정으로 답변 의도를 분류합니다.
 
 | 내부 판정 | 처리 | 외부 응답 |
 |---|---|---|
+| `confirmed` | 후보를 확정 재료로 이동하고, 조건이 있으면 ToolRequest를 준비합니다. | `COMPLETED` 또는 `CONDITION_INPUT` |
+| `edited` | 추가·삭제·제거·빼기·제외·없애기·수량 변경을 후보에 반영하고 다시 확인받습니다. | `INGREDIENT_CONFIRM` |
+| `rejected` | 후보를 폐기하고 이미지를 다시 요청합니다. | `IMAGE_INPUT` |
+| `unclear` | 후보를 유지하고 확인 답변을 다시 요청합니다. | `INGREDIENT_CONFIRM` |
+
+예를 들어 `"계란은 빼고 양파 1개 추가해줘"`, `"방울토마토 제거해줘"`,
+`"닭가슴살 빼줘"`처럼 표현해도 `edited`로 분류되어 수정된 후보 목록이 다시 반환됩니다.
+`"네, 모두 맞아요"`는 `confirmed`로 분류됩니다.
 | `confirmed` | 목록 전체를 명시적으로 최종 확인한 경우에만 후보를 확정 재료로 이동하고, 조건이 있으면 ToolRequest를 준비합니다. | `COMPLETED` 또는 `CONDITION_INPUT` |
 | `edited` | 추가·삭제·수량 변경을 후보에 반영하고 다시 확인받습니다. | `INGREDIENT_CONFIRM` |
 | `rejected` | 후보를 폐기하고 이미지를 다시 요청합니다. | `IMAGE_INPUT` |
@@ -306,9 +346,11 @@ ToolRequest = {
 있습니다.
 
 서버는 `app/core/safety.py`의 정규화 검사와 NeMo Guardrails 입력 rail을 순서대로 적용합니다.
-둘 중 하나가 프롬프트 인젝션·내부 정보 요청을 차단해도 같은 `400 ERROR` 형식을 반환합니다.
-최종 LLM 문구와 ToolResult의 NeMo 출력 rail 검사가 실패하면 원문을 반환하지 않고 `500 ERROR`로
-처리합니다. 이 검사는 외부 요청·응답 필드나 `status`·`step` 계약을 변경하지 않습니다.
+시스템·개발자·내부 프롬프트/지시/규칙/메시지 공개 요청이 차단되면 FE가 오류 화면으로 이동하지
+않도록 `200 NEED_MORE_INFO / CONDITION_INPUT`과 안전한 안내 문구·질문을 반환합니다. 그 외
+프롬프트 인젝션 등 안전하지 않은 입력은 `400 ERROR`로 처리합니다. 최종 LLM 문구와
+ToolResult의 NeMo 출력 rail 검사가 실패하면 원문을 반환하지 않고 `500 ERROR`로 처리합니다.
+이 검사는 외부 요청·응답 필드나 기존 `status`·`step` 계약을 변경하지 않습니다.
 
 ```json
 {
@@ -321,7 +363,9 @@ ToolRequest = {
 
 | Field | Type | Description |
 |---|---|---|
-| `set_id` | string | 추천 세트 ID |
+| `set_id` | string | FE에 표시할 추천 세트 문구 |
+| `set_key` | string | 서버 내부 선택·PDF 발급 키 |
+| `label` | string/null | `set_id`와 같은 FE 표시 문구(이전 FE 호환용) |
 | `recipes` | Recipe[5] | 세트에 포함된 레시피 5개 |
 
 ## Recipe 객체
@@ -334,6 +378,8 @@ ToolRequest = {
 | `cook_time` | number | 조리 시간(분) |
 | `cooking_steps` | string[] | 조리 순서. 원본에 단계가 없으면 빈 배열 |
 | `owned_ingredients` | string[] | 보유 재료 |
+| `optional_ingredients` | string[] | 원본 레시피에서 선택적으로 넣을 수 있는 재료 |
+| `substitutable_ingredients` | string[] | 원본 레시피에서 다른 재료로 대체할 수 있는 재료 |
 | `missing_ingredients` | object[] | 부족 재료 |
 | `shopping_list` | object[] | 장보기 목록 |
 | `nutrition` | object | 영양 정보 |
@@ -381,6 +427,8 @@ ToolRequest = {
 - `session_id`로 LangGraph State를 유지합니다.
 - 재료가 없는 요청은 `IMAGE_INPUT`으로 사진 또는 자연어 재료 입력을 안내합니다. 첫 요청이라도
   `message`에 재료가 포함되면 이미지 단계를 건너뜁니다.
+- 첨부 이미지에서 재료나 영수증을 확인하지 못하면 `200 NEED_MORE_INFO / IMAGE_INPUT`으로
+  냉장고 또는 영수증 사진 재첨부를 안내하고, 같은 세션을 이미지 입력 대기 상태로 유지합니다.
 - 이미지와 식단 목적이 담긴 자연어 메시지를 받으면 조리 시간이 없어도 재료 확인 후 추천 단계로 진행합니다. 조리 시간은 입력된 경우에만 추천 필터로 사용합니다.
 - 이미지가 없더라도 사용자가 `message`에 직접 입력한 지원 재료는 확정 재료로 처리하며, 식단 조건이
   있으면 바로 추천하고 조건이 없으면 `CONDITION_INPUT`만 반환합니다.

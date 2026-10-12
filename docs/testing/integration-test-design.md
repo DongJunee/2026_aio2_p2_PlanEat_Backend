@@ -190,7 +190,7 @@ Tool Hub 자체는 가능한 경우 로컬 CSV 카탈로그를 사용한다. 결
 | ID | 시나리오 | 요청 순서 | 기대 결과 |
 | --- | --- | --- | --- |
 | IT-RESULT-001 | 완료 응답 | 재료·목적이 모두 확인된 상태 | `SUCCESS`, `COMPLETED`, canonical response 문구, `next_action=FEEDBACK_OR_SET_SELECTION`을 반환한다. |
-| IT-RESULT-002 | 세트 구조 | 완료 응답 검사 | `recipe_sets`가 2개이고 각 세트의 레시피가 5개다. `available_set_ids`가 세트와 일치한다. |
+| IT-RESULT-002 | 세트 구조 | 완료 응답 검사 | `recipe_sets`가 2개이고 각 세트의 레시피가 5개다. 각 세트의 `set_id`는 FE 표시 문구를, `set_key`는 내부 선택 키를 가지며 `available_set_ids`와 일치한다. |
 | IT-RESULT-003 | 피드백 재추천 | 완료 후 `조금 더 저칼로리로 바꿔줘` | 피드백이 조건에 병합되고 재추천된다. 기존 재료·목적은 보존된다. |
 | IT-RESULT-004 | 피드백 반복 | 여러 차례 피드백 전송 | `feedback_history`는 최근 10개 정책을 따르고 추천 결과가 다시 가드레일을 통과한다. |
 | IT-RESULT-005 | 세트 선택 | `1번 세트 선택` 또는 `SET001 선택` | 선택 세트가 재검증된 뒤 PDF를 생성하고 `next_action=PDF_READY`, `selected_set_id`, `pdf_url`을 반환한다. |
@@ -203,7 +203,7 @@ Tool Hub 자체는 가능한 경우 로컬 CSV 카탈로그를 사용한다. 결
 
 | ID | 시나리오 | 검증 내용 |
 | --- | --- | --- |
-| IT-SAFE-001 | 입력 유해성 | 정책 위반 입력 | 400 `ERROR`; 사용자 메시지 원문과 내부 정책 정보가 불필요하게 노출되지 않는다. |
+| IT-SAFE-001 | 입력 유해성 | 시스템 지시 공개 요청 및 기타 정책 위반 입력 | 공개 요청은 200 `NEED_MORE_INFO / CONDITION_INPUT`, 기타 위반은 400 `ERROR`; 사용자 메시지 원문과 내부 정책 정보가 불필요하게 노출되지 않는다. |
 | IT-SAFE-002 | 출력 유해성 | 유해한 추천 응답을 fake provider가 반환 | 허용되지 않은 결과가 사용자에게 전달되지 않는다. |
 | IT-SAFE-003 | 민감정보 로그 | 메시지·이미지·API key가 포함된 요청 | 로그와 trace metadata에 원문·base64·키가 남지 않는다. |
 | IT-OBS-001 | LangSmith 비활성 | tracing 미설정 | API 기능은 정상 동작하고 외부 tracing 호출을 요구하지 않는다. |

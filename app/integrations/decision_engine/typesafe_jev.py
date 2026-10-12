@@ -249,6 +249,10 @@ class JevIngredientConfirmationEvaluator:
                 _INGREDIENT_CONFIRMATION_KEY: {
                     "type": "choice",
                     "instructions": (
+                        "사용자가 앞서 제시된 재료 후보를 어떻게 처리할지 분류한다. "
+                        "모두 맞다는 긍정, 틀렸다는 거절, 특정 재료의 추가·삭제·제거·빼기·"
+                        "제외·없애기·수정은 "
+                        "각각 confirmed, rejected, edited로 분류하고 판단이 어려우면 unclear를 선택한다.
                         "proposed_ingredients는 사용자에게 제시된 현재 재료 목록이고, "
                         "user_message는 그 목록에 대한 답변이다. 목록 전체가 맞다고 명시적으로 "
                         "확인하거나 목록 확정을 요청한 경우에만 confirmed를 선택한다. 바로 앞 질문이 "
@@ -258,11 +262,12 @@ class JevIngredientConfirmationEvaluator:
                         "아니라고만 한 답변과 '틀려', '재료 아니야'처럼 무엇을 바꿀지 없는 부정도 "
                         "unclear다. 추가·삭제·교체·수량 변경처럼 실제 변경 내용이 있는 경우만 edited, "
                         "목록 전체가 틀려 재인식이 필요한 경우는 rejected를 선택한다."
+
                     ),
                     "criteria": {
                         "confirmed": "제시된 재료가 모두 맞다고 확인한다.",
                         "rejected": "제시된 재료가 틀렸거나 다시 인식해야 한다고 말한다.",
-                        "edited": "재료를 추가·삭제·교체하거나 수량을 수정한다.",
+                        "edited": "재료를 추가하거나 삭제·제거·빼기·제외·없애기·교체하거나 수량을 수정한다.",
                         "unclear": "확인 의도를 명확히 판단할 수 없다.",
                     },
                 }

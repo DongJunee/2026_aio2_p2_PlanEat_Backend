@@ -18,6 +18,7 @@ from app.core.config import get_settings
 from app.core.observability import build_langsmith_run_config
 from app.core.safety import (
     SafetyViolationError,
+    is_prompt_disclosure_request,
     validate_completion_output,
     validate_user_message,
 )
@@ -43,15 +44,25 @@ from app.schemas.chat import (
     ChatResponse,
     ChatStreamEvent,
     RecommendationData,
+    RECIPE_SET_DISPLAY_LABELS,
     RecipeSet,
+    get_recipe_set_key,
 )
 from app.services.pdf_service import RecipePdfService, recipe_pdf_service
 
 
-# 추천 결과의 대표 세트 ID는 FE에서 한글 표시명으로 노출될 수 있다. 선택 요청은
-# 서버의 실제 set_id로 다시 변환해야 PDF 생성 경로가 아닌 피드백 경로로 빠지지 않는다.
+# 추천 결과의 대표 세트 문구는 FE에 표시되고, 선택 요청은 서버 내부 set_key로
+# 다시 변환해야 PDF 생성 경로가 아닌 피드백 경로로 빠지지 않는다.
 _KOREAN_SET_ID_ALIASES: dict[str, tuple[str, ...]] = {
-    "BESTMATCH": ("베스트 매치", "베스트매치", "베스트", "가장 잘 맞는", "가장잘맞는"),
+    "BESTMATCH": (
+        "베스트 매치",
+        "베스트매치",
+        "베스트",
+        "가장 잘 맞는",
+        "가장잘맞는",
+        RECIPE_SET_DISPLAY_LABELS["BEST_MATCH"],
+    ),
+    "MOREOPTIONS": (RECIPE_SET_DISPLAY_LABELS["MORE_OPTIONS"],),
 }
 _SELECTION_INTENT_PATTERN = re.compile(
     r"선택|고르|골라|정해|결정|진행|발급|보내|pdf|피디에프|파일|"
@@ -60,6 +71,38 @@ _SELECTION_INTENT_PATTERN = re.compile(
 )
 _CHAT_RESPONSE_ADAPTER = TypeAdapter(ChatResponse)
 _STREAM_TEXT_CHUNK_SIZE = 32
+_INGREDIENT_REMOVAL_PATTERN = (
+    r"(?:빼\s*(?:줘|주세요|고|서|자|버려)?|삭제|제거|제외|없애|덜어|"
+    r"넣지\s*(?:말|마)|안\s*넣)"
+)
+_PROMPT_DISCLOSURE_RESPONSE = (
+    "요청하신 내용은 안내할 수 없습니다. 레시피 추천을 원하시면 "
+    "사용 가능한 재료와 식단 목표를 알려주세요."
+)
+_PROMPT_DISCLOSURE_QUESTIONS = [
+    "사용 가능한 재료는 무엇인가요?",
+    "식단 목표는 무엇인가요?",
+]
+_UNRECOGNIZED_IMAGE_RESPONSE = (
+    "올려주신 사진은 냉장고 재료나 영수증 사진으로 확인하기 어려워요. "
+    "냉장고 속 재료가 보이는 사진 또는 영수증 사진을 올려주세요."
+)
+_UNRECOGNIZED_IMAGE_QUESTIONS = [
+    "냉장고 안 재료가 잘 보이는 사진이나 영수증 사진을 첨부해주세요.",
+]
+
+
+def _guardrail_rejection(message: str) -> tuple[dict[str, object], int]:
+    """공개 요청은 FE 오류 화면 대신 기존 추가 입력 계약으로 안전하게 안내합니다."""
+
+    if is_prompt_disclosure_request(message):
+        return {
+            "status": "NEED_MORE_INFO",
+            "step": "CONDITION_INPUT",
+            "response": _PROMPT_DISCLOSURE_RESPONSE,
+            "questions": list(_PROMPT_DISCLOSURE_QUESTIONS),
+        }, 200
+    return {"status": "ERROR", "response": "요청을 처리할 수 없습니다."}, 400
 
 
 class LLMResponder(Protocol):
@@ -173,9 +216,9 @@ class ChatService:
         try:
             validate_user_message(request.message)
         except SafetyViolationError:
-            return {"status": "ERROR", "response": "요청을 처리할 수 없습니다."}, 400
+            return _guardrail_rejection(request.message)
         if not await self._guardrail_validator.validate_input(request.message):
-            return {"status": "ERROR", "response": "요청을 처리할 수 없습니다."}, 400
+            return _guardrail_rejection(request.message)
 
         session = await self._session_repository.get(request.session_id)
         previous_step = session.step
@@ -354,9 +397,11 @@ class ChatService:
                 }, 500
             if not extracted_ingredients:
                 return {
-                    "status": "ERROR",
-                    "response": "이미지에서 재료를 확인할 수 없습니다.",
-                }, 500
+                    "status": "NEED_MORE_INFO",
+                    "step": "IMAGE_INPUT",
+                    "response": _UNRECOGNIZED_IMAGE_RESPONSE,
+                    "questions": list(_UNRECOGNIZED_IMAGE_QUESTIONS),
+                }, 200
             candidate_ingredients = extracted_ingredients
         messages = [*session.messages, {"role": "user", "content": request.message}]
         state: ChatState = {
@@ -540,7 +585,7 @@ class ChatService:
         except (OSError, ValueError, RuntimeError):
             return {"status": "ERROR", "response": "선택한 식단 PDF를 생성하지 못했습니다."}, 500
 
-        response_message = f"{selected_set_id} 식단의 상세 PDF를 생성했습니다."
+        response_message = f"{selected_set.set_id} 식단의 상세 PDF를 생성했습니다."
         if not await self._guardrail_validator.validate_output(response_message):
             return {"status": "ERROR", "response": "PDF 응답을 안전하게 표시할 수 없습니다."}, 500
         response = {
@@ -549,7 +594,12 @@ class ChatService:
             "response": response_message,
             "data": recommendation.model_dump(),
             "next_action": "PDF_READY",
-            "available_set_ids": [recipe_set.set_id for recipe_set in recommendation.recipe_sets],
+            # selected_set_id·available_set_ids는 기존 세션/PDF 계약을 유지하는
+            # 내부 키이고, 화면에 표시할 문구는 data.recipe_sets[*].set_id를 사용한다.
+            "available_set_ids": [
+                get_recipe_set_key(recipe_set, index)
+                for index, recipe_set in enumerate(recommendation.recipe_sets)
+            ],
             "selected_set_id": selected_set_id,
             "pdf_url": pdf_url,
         }
@@ -710,7 +760,11 @@ class ChatService:
             "response": completion_message,
             "data": {"recipe_sets": recipe_sets},
             "next_action": "FEEDBACK_OR_SET_SELECTION",
-            "available_set_ids": [recipe_set["set_id"] for recipe_set in recipe_sets],
+            "available_set_ids": [
+                recipe_set["set_key"]
+                for recipe_set in recipe_sets
+                if isinstance(recipe_set.get("set_key"), str)
+            ],
         }
 
     async def _response_from_tool_hub(
@@ -756,7 +810,8 @@ class ChatService:
             "data": recommendation.model_dump(),
             "next_action": "FEEDBACK_OR_SET_SELECTION",
             "available_set_ids": [
-                recipe_set.set_id for recipe_set in recommendation.recipe_sets
+                get_recipe_set_key(recipe_set, index)
+                for index, recipe_set in enumerate(recommendation.recipe_sets)
             ],
         }
 
@@ -920,6 +975,11 @@ class ChatService:
         pending_ingredient_correction: str | None = None,
     ) -> IngredientConfirmationRead:
         """재료 확인 답변의 주어·긍정/부정을 구분해 다음 동작을 정합니다.
+        명시적인 재료 수정은 로컬로 먼저 확정하고, 나머지는 Jev로 판정합니다.
+
+        ``빼줘``·``제거해줘``처럼 의도가 분명한 재료 수정 표현까지 외부 판정에
+        맡기면 모델이 ``unclear``로 반환해 후보 목록이 그대로 남을 수 있다. 명시적인
+        수정 명령은 로컬 판정을 우선하고, 긍정·거절·모호한 표현만 Jev에 위임한다.
 
         단독 ``맞아``·``없어``는 바로 전의 "더 수정할 내용이 있나요?"라는 질문에 대한
         목록 전체 확인으로 본다. 반면 특정 후보명에 붙은 긍정·부정은 그 후보 하나에만
@@ -1057,6 +1117,7 @@ class ChatService:
             acknowledged=() if decision.intent in {"confirmed", "rejected", "edited"} else acknowledged_names,
             pending=None if decision.intent in {"confirmed", "rejected", "edited"} else pending_ingredient_correction,
         )
+
 
     async def _read_condition_state(
         self,
@@ -1207,10 +1268,14 @@ def _store_recommendation_if_present(
 def _find_recipe_set(
     recommendation: RecommendationData, set_id: str
 ) -> RecipeSet | None:
-    """추천 DTO에서 세트 ID에 해당하는 세트를 찾습니다."""
+    """추천 DTO에서 내부 키 또는 표시 문구에 해당하는 세트를 찾습니다."""
 
     return next(
-        (recipe_set for recipe_set in recommendation.recipe_sets if recipe_set.set_id == set_id),
+        (
+            recipe_set
+            for index, recipe_set in enumerate(recommendation.recipe_sets)
+            if get_recipe_set_key(recipe_set, index) == set_id or recipe_set.set_id == set_id
+        ),
         None,
     )
 
@@ -1218,21 +1283,36 @@ def _find_recipe_set(
 def _parse_selected_set_id(
     user_message: str, recommendation: RecommendationData
 ) -> str | None:
-    """자연어 세트 선택을 검증된 추천 세트 ID로 변환합니다."""
+    """자연어 세트 선택을 검증된 추천 세트의 내부 키로 변환합니다."""
 
-    available = [recipe_set.set_id for recipe_set in recommendation.recipe_sets]
+    available = [
+        get_recipe_set_key(recipe_set, index)
+        for index, recipe_set in enumerate(recommendation.recipe_sets)
+    ]
     normalized_message = re.sub(r"[\s_-]+", "", user_message).upper()
     has_selection_intent = bool(_SELECTION_INTENT_PATTERN.search(user_message))
-    for set_id in available:
-        normalized_id = re.sub(r"[\s_-]+", "", set_id).upper()
-        if normalized_id in normalized_message and (has_selection_intent or normalized_message == normalized_id):
-            return set_id
-        aliases = _KOREAN_SET_ID_ALIASES.get(normalized_id, ())
+    for index, recipe_set in enumerate(recommendation.recipe_sets):
+        set_key = get_recipe_set_key(recipe_set, index)
+        normalized_key = re.sub(r"[\s_-]+", "", set_key).upper()
+        normalized_display_id = re.sub(r"[\s_-]+", "", recipe_set.set_id).upper()
+        if (
+            normalized_key in normalized_message
+            or normalized_display_id in normalized_message
+        ) and (has_selection_intent or normalized_message in {normalized_key, normalized_display_id}):
+            return set_key
+        canonical_key_by_position = tuple(RECIPE_SET_DISPLAY_LABELS)[index]
+        normalized_canonical_key = re.sub(r"[\s_-]+", "", canonical_key_by_position).upper()
+        aliases = (
+            *_KOREAN_SET_ID_ALIASES.get(normalized_key, ()),
+            *_KOREAN_SET_ID_ALIASES.get(normalized_canonical_key, ()),
+            recipe_set.set_id,
+            recipe_set.label or "",
+        )
         if has_selection_intent and any(
             re.sub(r"[\s_-]+", "", alias).upper() in normalized_message
             for alias in aliases
         ):
-            return set_id
+            return set_key
 
     number_match = re.search(
         r"(?<!\d)([1-9])\s*(?:번|번째)\s*(?:세트|걸|것)?\s*(?:으로|로)?",
@@ -1338,6 +1418,10 @@ def _apply_confirmation_decision(
 def _fallback_ingredient_confirmation(user_message: str) -> IngredientConfirmationDecision:
     """Jev를 사용할 수 없을 때 확인 의도를 결정하는 최소 fallback입니다."""
 
+    if re.search(
+        rf"추가|더 넣|{_INGREDIENT_REMOVAL_PATTERN}|교체|바꿔|수정|없고|없는|대신",
+        user_message,
+    ):
     if _has_ingredient_edit_expression(user_message):
         return IngredientConfirmationDecision(intent="edited", confidence=1.0)
     if _is_generic_ingredient_rejection(user_message):
@@ -1602,7 +1686,8 @@ def _apply_ingredient_edit(
     for candidate in tuple(updated):
         name = re.escape(candidate.name)
         if re.search(
-            rf"(?:{name}).{{0,12}}(?:없|빼|삭제|제외)|(?:없|빼|삭제|제외).{{0,12}}(?:{name})",
+            rf"(?:{name}).{{0,16}}(?:{_INGREDIENT_REMOVAL_PATTERN})|"
+            rf"(?:{_INGREDIENT_REMOVAL_PATTERN}).{{0,16}}(?:{name})",
             user_message,
         ):
             updated = [item for item in updated if item.name != candidate.name]

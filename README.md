@@ -155,6 +155,6 @@ NeMo Guardrails는 기본 활성화되며 `guardrails/config.yml`의 정규식 �
 
 ### 선택 사항: TypeSafe Jev 자연어 판정
 
-`TYPESAFE_JEV_ENABLED=true`와 `TYPESAFE_API_KEY`를 설정하면, Jev가 누적된 자연어 `message`에서 필수 식단 목적 충족 여부와 재료 확인 의도(`confirmed`, `rejected`, `edited`, `unclear`)를 판정합니다. 조리 시간은 선택 입력으로 저장되어 입력된 경우에만 추천 필터에 반영됩니다. 신뢰도가 `TYPESAFE_JEV_MIN_CONFIDENCE` 이상일 때만 결과를 반영합니다. API 키가 없거나 Jev 호출이 실패·저신뢰이면 조건 키워드와 확인 표현을 확인하는 보수적 fallback이 적용됩니다.
+`TYPESAFE_JEV_ENABLED=true`와 `TYPESAFE_API_KEY`를 설정하면, Jev가 누적된 자연어 `message`에서 필수 식단 목적 충족 여부와 재료 확인 의도(`confirmed`, `rejected`, `edited`, `unclear`)를 판정합니다. 재료 확인에는 현재 후보 목록도 함께 전달하며, 서버는 `"맞아"`, `"없어"`, `"재료 맞아"` 같은 확인 질문 문맥의 전체 동의와 `"확정해줘"` 같은 최종 확정 표현을 다시 검증합니다. 특정 후보의 긍정·부정은 해당 재료만 확인하고, 대체 재료를 받은 뒤에 목록을 수정합니다. 조리 시간은 선택 입력으로 저장되어 입력된 경우에만 추천 필터에 반영됩니다. 신뢰도가 `TYPESAFE_JEV_MIN_CONFIDENCE` 이상일 때만 결과를 반영합니다. API 키가 없거나 Jev 호출이 실패·저신뢰이면 조건 키워드와 확인 표현을 확인하는 보수적 fallback이 적용됩니다.
 
-Jev에는 이 판정에 필요한 현재 사용자 메시지만 전송됩니다. 실서비스 활성화 전에는 개인정보 처리·보관 정책과 TypeSafe 계약을 확인하세요.
+Jev에는 이 판정에 필요한 현재 사용자 메시지와, 재료 확인 단계에서는 화면에 제시된 재료 후보 목록만 전송됩니다. 실서비스 활성화 전에는 개인정보 처리·보관 정책과 TypeSafe 계약을 확인하세요.

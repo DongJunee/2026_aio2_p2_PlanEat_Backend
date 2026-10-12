@@ -35,6 +35,11 @@ class ChatState(TypedDict, total=False):
     has_confirmed_ingredients: bool
     condition_ready: bool | None
     ingredient_confirmation: Literal["confirmed", "rejected", "edited", "unclear"] | None
+    # 이번 턴에 반영한 후보 변경을 사용자에게 복명복창하는 데만 사용한다.
+    # 세션에는 후보 목록 자체만 저장하므로, 다음 턴의 Tool 입력에는 영향을 주지 않는다.
+    ingredient_edit_summary: list[str]
+    # "어떤 재료가 틀렸나요?"처럼 재료 확정 단계의 후속 질문을 지정한다.
+    ingredient_confirmation_message: str
     response_kind: Literal[
         "IMAGE_INPUT",
         "INPUT_REQUIREMENTS",

@@ -160,16 +160,16 @@ flowchart TB
     RESULT[추천 응답<br/>2세트 × 5개 레시피]
 
     subgraph SEARCH[1. 후보 찾기]
-        RECIPE[Recipe Tool<br/>CSV·Chroma에서 후보 검색]
+        RECIPE[Recipe Tool<br/>CSV·Chroma<br/>후보 검색]
     end
 
     subgraph PLAN[2. 식단 구성]
-        PAIR[Planning Tool<br/>메인·반찬 조합 생성]
-        SELECT[Jev 또는 규칙 기반 선택<br/>최종 5개 식단 세트]
+        PAIR[Planning Tool<br/>메인·반찬<br/>조합 생성]
+        SELECT[Jev 또는 규칙<br/>기반 선택<br/>최종 5개 세트]
     end
 
     subgraph ENRICH[3. 추천 정보 완성]
-        SHOPPING[Shopping Tool<br/>부족 재료·장보기]
+        SHOPPING[Shopping Tool<br/>부족 재료<br/>장보기]
         NUTRITION[Nutrition Tool<br/>영양 정보]
         GUIDE[Guide Tool<br/>대체재 검색]
     end
@@ -364,10 +364,10 @@ Tool Hub 호출 전 `ToolRequest`는 `session_id`, `tool_name`, `confirmed_ingre
 
 ```mermaid
 flowchart TD
-    INPUT[확정 재료 + 사용자 조건] --> SEARCH[Recipe Tool<br/>후보 검색·필터·정렬]
-    SEARCH --> PAIR[Planning Tool<br/>메인·반찬 조합 생성]
-    PAIR --> SELECT[Jev 선택 또는 결정적 fallback]
-    SELECT --> EXCLUDE[제외 재료 판단·필요 시 재계획]
+    INPUT[확정 재료<br/>사용자 조건] --> SEARCH[Recipe Tool<br/>후보 검색·필터·정렬]
+    SEARCH --> PAIR[Planning Tool<br/>메인·반찬 조합]
+    PAIR --> SELECT[Jev 선택<br/>규칙 기반 fallback]
+    SELECT --> EXCLUDE[제외 재료 판단<br/>필요 시 재계획]
     EXCLUDE --> SHOPPING[Shopping Tool<br/>부족 재료·장보기]
     SHOPPING --> NUTRITION[Nutrition Tool]
     NUTRITION --> ADAPT[2개 세트 × 5개 레시피 DTO 변환]

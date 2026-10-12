@@ -16,9 +16,11 @@ FE 개발용 `POST /chat` 요청·응답 fixture입니다.
 | `response-condition-input.json` | 추가 조건 질문 단계 |
 | `response-success.json` | 추천 완료 응답 |
 | `response-error.json` | 오류 응답 |
+| `stream-events.json` | `Accept: text/event-stream` SSE 이벤트 형식 |
 
-`response-success.json`은 `recipe_sets` 2개와 세트별 레시피 5개로 구성되어 있으며, 완료 후
-두 세트 중 하나를 선택하면 상세 PDF를 생성한다는 안내와 `available_set_ids`를 포함합니다.
+`response-success.json`은 `recipe_sets` 2개와 세트별 레시피 5개로 구성되어 있으며, 각 레시피의
+`cooking_steps`와 함께 완료 후 두 세트 중 하나를 선택하면 상세 PDF를 생성한다는 안내와
+`available_set_ids`를 포함합니다.
 
 ## Base64 이미지 테스트
 
@@ -33,3 +35,6 @@ FE 개발용 `POST /chat` 요청·응답 fixture입니다.
 `아니요, 틀렸어요`는 이미지 재요청, 모호한 답변은 재확인 흐름으로 처리됩니다.
 
 모든 응답은 [Chat API 명세](../../docs/api/chat.md)의 필드명을 따릅니다.
+
+SSE를 사용할 때는 `complete.data.payload`가 기존 JSON 응답과 같은 최종 계약이며,
+`delta`는 화면에 문구를 미리 표시하기 위한 조각입니다.

@@ -46,6 +46,7 @@ class CatalogRecipe(BaseModel):
     title: str = Field(min_length=1)
     image: str | None = None
     cook_time: int = Field(ge=0)
+    cooking_steps: list[str] = Field(default_factory=list)
     ingredients: list[RecipeIngredient] = Field(default_factory=list)
     nutrition: NutritionValues | None = None
     source: str = Field(min_length=1)
@@ -95,6 +96,7 @@ class ToolRecipeCard(BaseModel):
     title: str = Field(min_length=1)
     image: str | None = None
     cook_time: int = Field(ge=0)
+    cooking_steps: list[str] = Field(default_factory=list)
     owned_ingredients: list[str] = Field(default_factory=list)
     missing_ingredients: list[dict[str, str | None]] = Field(default_factory=list)
     shopping_list: list[dict[str, str]] = Field(default_factory=list)

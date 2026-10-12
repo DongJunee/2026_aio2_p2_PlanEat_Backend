@@ -1,10 +1,14 @@
 """Chat API의 세션 관리와 LangGraph 실행을 연결합니다."""
 
+import asyncio
+from collections.abc import AsyncIterator, Mapping, Sequence
+from contextlib import suppress
 from dataclasses import dataclass, replace
-from collections.abc import Mapping, Sequence
 import json
 import re
 from typing import Literal, Protocol
+
+from pydantic import TypeAdapter
 
 from app.agent.graph import ChatState, WorkflowStep, build_chat_graph
 from app.agent.tools.factory import build_default_tool_hub
@@ -34,7 +38,13 @@ from app.repositories.chat_session import (
     InMemoryChatSessionRepository,
     IngredientCandidate,
 )
-from app.schemas.chat import ChatRequest, RecommendationData, RecipeSet
+from app.schemas.chat import (
+    ChatRequest,
+    ChatResponse,
+    ChatStreamEvent,
+    RecommendationData,
+    RecipeSet,
+)
 from app.services.pdf_service import RecipePdfService, recipe_pdf_service
 
 
@@ -48,6 +58,8 @@ _SELECTION_INTENT_PATTERN = re.compile(
     r"할게|할께|해줘|해주세요|주세요|받고\s*싶",
     flags=re.IGNORECASE,
 )
+_CHAT_RESPONSE_ADAPTER = TypeAdapter(ChatResponse)
+_STREAM_TEXT_CHUNK_SIZE = 32
 
 
 class LLMResponder(Protocol):
@@ -440,6 +452,65 @@ class ChatService:
         )
         await self._session_repository.save(request.session_id, next_session)
         return response, 200
+
+    async def stream(self, request: ChatRequest) -> AsyncIterator[ChatStreamEvent]:
+        """요청 처리 상태와 검증된 최종 응답을 SSE 이벤트로 전달합니다.
+
+        내부 응답은 구조화된 JSON과 추천 데이터까지 검증해야 하므로 검증 전의 LLM
+        원문을 외부로 흘려보내지 않는다. 대신 처리 중에는 안전한 진행 이벤트를 보내고,
+        검증이 끝난 ``response`` 문구만 delta로 나눈 뒤 전체 ChatResponse를 complete
+        이벤트에 담는다. 사용자가 연결을 끊으면 진행 중인 작업도 취소해 세션 상태를
+        늦게 덮어쓰지 않도록 한다.
+        """
+
+        yield ChatStreamEvent(event="start", data={"phase": "accepted"})
+        task = asyncio.create_task(self.handle(request))
+        try:
+            while not task.done():
+                try:
+                    await asyncio.wait_for(asyncio.shield(task), timeout=0.25)
+                except asyncio.TimeoutError:
+                    yield ChatStreamEvent(event="progress", data={"phase": "processing"})
+            payload, status_code = task.result()
+        except Exception:
+            payload, status_code = (
+                {"status": "ERROR", "response": "요청 처리 중 오류가 발생했습니다."},
+                500,
+            )
+        finally:
+            if not task.done():
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+
+        try:
+            validated_response = _CHAT_RESPONSE_ADAPTER.validate_python(payload)
+            serialized_payload = _CHAT_RESPONSE_ADAPTER.dump_python(
+                validated_response,
+                mode="json",
+                exclude_none=True,
+            )
+        except (TypeError, ValueError):
+            status_code = 500
+            serialized_payload = {
+                "status": "ERROR",
+                "response": "요청 처리 중 오류가 발생했습니다.",
+            }
+
+        response_message = serialized_payload.get("response")
+        if status_code == 200 and isinstance(response_message, str):
+            for index, text in enumerate(_stream_text_chunks(response_message)):
+                yield ChatStreamEvent(
+                    event="delta",
+                    data={"index": index, "text": text},
+                )
+
+        terminal_event = "complete" if status_code == 200 else "error"
+        yield ChatStreamEvent(
+            event=terminal_event,
+            data={"http_status": status_code, "payload": serialized_payload},
+        )
+        yield ChatStreamEvent(event="done", data={"reason": "complete"})
 
     async def _handle_set_selection(
         self,
@@ -1078,6 +1149,18 @@ def _next_session_state(
     if user_conditions is not None:
         return replace(next_session, user_conditions=user_conditions)
     return next_session
+
+
+def _stream_text_chunks(
+    value: str, chunk_size: int = _STREAM_TEXT_CHUNK_SIZE
+) -> list[str]:
+    """검증된 사용자 표시 문구를 SSE delta 크기로 나눕니다."""
+
+    if chunk_size <= 0:
+        raise ValueError("stream chunk size must be positive")
+    return [
+        value[index : index + chunk_size] for index in range(0, len(value), chunk_size)
+    ]
 
 
 def _conversation_message(

@@ -45,6 +45,38 @@ Content-Type: application/json
 여러 턴의 조건을 같은 세션에 누적합니다. 재료가 없는 요청에는 `IMAGE_INPUT`으로 사진 또는
 자연어 재료 입력을 안내하며, 첫 요청이라도 재료가 자연어로 포함되면 이미지 요청을 건너뜁니다.
 
+## Streaming Response
+
+기존 FE 호환성을 위해 `Accept` 헤더가 없거나 `application/json`이면 기존 JSON 응답을 반환합니다.
+스트리밍이 필요한 클라이언트는 같은 `POST /chat`에 `Accept: text/event-stream`을 지정합니다.
+
+```http
+POST /chat HTTP/1.1
+Accept: text/event-stream
+Content-Type: application/json
+```
+
+SSE 응답의 전송 상태는 스트림이 시작되면 HTTP `200`이며, 실제 요청 처리 결과의 상태 코드는
+`complete` 또는 `error` 이벤트의 `data.http_status`에서 확인합니다. `data.payload`에는 기존
+`ChatResponse`와 동일한 JSON 객체가 들어 있으므로, 최종 화면 상태·`step`·`data`·`questions`는
+기존 응답 처리 코드를 재사용할 수 있습니다.
+
+| Event | `data` | 설명 |
+|---|---|---|
+| `start` | `{ "phase": "accepted" }` | 서버가 요청을 수락함 |
+| `progress` | `{ "phase": "processing" }` | 처리가 오래 걸릴 때 선택적으로 반복 전송 |
+| `delta` | `{ "index": 0, "text": "..." }` | 검증된 표시 문구를 순서대로 나눈 조각 |
+| `complete` | `{ "http_status": 200, "payload": ChatResponse }` | 정상 처리의 최종 응답 |
+| `error` | `{ "http_status": 400\|500, "payload": ChatErrorResponse }` | 처리 오류의 최종 응답 |
+| `done` | `{ "reason": "complete" }` | 스트림 종료 |
+
+`delta`는 `index` 순서대로 이어 붙여 미리 표시할 수 있고, 최종 상태 반영은 반드시
+`complete.data.payload`를 기준으로 합니다. 구조화된 추천 데이터와 LLM 출력은 서버 검증이 끝난
+뒤에만 스트림에 포함되므로 검증 전 원문 토큰은 외부로 노출하지 않습니다. 요청 본문 DTO 검증처럼
+라우터 진입 전에 발생하는 오류는 기존과 같이 HTTP `400` JSON 오류로 반환될 수 있습니다.
+
+FE용 이벤트 예시는 [`mocks/chat/stream-events.json`](../../mocks/chat/stream-events.json)을 참고합니다.
+
 ## Response
 
 `status`와 `step`은 FE의 기본 분기 처리에 사용하는 고정 코드입니다. `SUCCESS / COMPLETED` 후속
@@ -300,6 +332,7 @@ ToolRequest = {
 | `title` | string | 레시피명 |
 | `image` | string/null | 대표 이미지 |
 | `cook_time` | number | 조리 시간(분) |
+| `cooking_steps` | string[] | 조리 순서. 원본에 단계가 없으면 빈 배열 |
 | `owned_ingredients` | string[] | 보유 재료 |
 | `missing_ingredients` | object[] | 부족 재료 |
 | `shopping_list` | object[] | 장보기 목록 |

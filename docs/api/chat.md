@@ -386,10 +386,10 @@ ToolResult의 NeMo 출력 rail 검사가 실패하면 원문을 반환하지 않
 
 | Field | Type | Description |
 |---|---|---|
-| `recipe_id` | string | 레시피 ID |
+| `recipe_id` | string | 레시피 ID. 내부 CSV 카탈로그에서는 원본 `RCP_SEQ` 값 |
 | `title` | string | 레시피명 |
 | `image` | string/null | 대표 이미지 |
-| `cook_time` | number | 조리 시간(분) |
+| `cook_time` | number | 조리 시간(분). 내부 CSV의 `ESTIMATED_COOKING_TIME_MIN` 값 |
 | `cooking_steps` | string[] | 조리 순서. 원본에 단계가 없으면 빈 배열 |
 | `owned_ingredients` | string[] | 보유 재료 |
 | `optional_ingredients` | string[] | 원본 레시피에서 선택적으로 넣을 수 있는 재료 |
@@ -458,7 +458,7 @@ ToolResult의 NeMo 출력 rail 검사가 실패하면 원문을 반환하지 않
   시에도 고정 fallback을 사용하며 FE의 `status`·`step` 계약은 변경하지 않습니다.
 - 기본 설정에서는 `COMPLETED` 단계에 Recipe·Nutrition·Shopping·RAG Tool을 실행하고,
   Tool 결과의 `response`와 `data.recipe_sets`를 서버에서 `RecommendationData`로 다시 검증합니다.
-- 기본 Tool Hub는 외부 Recipe API가 아니라 `data/COOKRCP01_FINAL_WITH_INGREDIENT_GROUPS_REVISED_V2.csv`
+- 기본 Tool Hub는 외부 Recipe API가 아니라 `data/chroma/COOKRCP01_INTEGRITY_CHECKED_V13.csv`
   내부 카탈로그를 사용합니다. 동일한 확정 재료·조건에는 결정적인 검색·정렬 결과가 반환됩니다.
   `mocks/chat/response-success.json`은 런타임 데이터가 아니라 FE fixture와 테스트 전용입니다.
 - 완료 응답의 `response`는 세트 선택과 PDF 발급을 안내하는 서버 템플릿이며, 실제 추천 데이터는

@@ -40,7 +40,7 @@ raw OpenAI·TypeSafe HTTP 호출 자체는 별도 run으로 분리하지 않지�
 비식별 metadata만 전송한다.
 
 기본 설정에서 `tool_enabled=true`인 완료 흐름은 외부 API나 FE fixture가 아니라 프로젝트 내부
-`data/COOKRCP01_FINAL_WITH_INGREDIENT_GROUPS_REVISED_V2.csv`를 사용하는 로컬 Tool Hub를 실행한다.
+`data/chroma/COOKRCP01_INTEGRITY_CHECKED_V13.csv`를 사용하는 로컬 Tool Hub를 실행한다.
 Tool Hub 내부의 source metadata는 `internal:recipe-catalog`으로 관리되지만 사용자 `ChatResponse`에는
 노출하지 않는다. 실제 추천 차이는 trace의 입력 상태와 `data.recipe_sets`의 recipe ID를 비교해 확인한다.
 `mocks/chat/response-success.json`은 테스트·FE fixture 전용이다.

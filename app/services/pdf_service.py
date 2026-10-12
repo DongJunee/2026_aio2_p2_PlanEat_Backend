@@ -209,13 +209,16 @@ def _draw_recipe_page(canvas: Canvas, index: int, recipe: Recipe, font_name: str
 
     info_x = image_x + image_width + 8 * mm
     info_width = content_width - image_width - 24 * mm
-    for position, (label, value) in enumerate(
-        (("조리 시간", _cook_time_label(recipe)), ("보유 재료", f"{len(recipe.owned_ingredients)}개 활용"))
-    ):
-        card_y = 584 - position * 59
-        _round_panel(canvas, info_x, card_y, info_width, 52, _PANEL_DARK, _BORDER)
-        _text(canvas, label, info_x + 12, card_y + 31, 8, _MUTED, font_name)
-        _text(canvas, _ellipsis(value, font_name, 12, info_width - 24), info_x + 12, card_y + 11, 12, _TEXT, font_name)
+    info_cards = (
+        ("조리 시간", _cook_time_label(recipe)),
+        ("출처 RCP_SEQ", _recipe_source_label(recipe)),
+        ("보유 재료", f"{len(recipe.owned_ingredients)}개 활용"),
+    )
+    for position, (label, value) in enumerate(info_cards):
+        card_y = 625 - position * 47
+        _round_panel(canvas, info_x, card_y, info_width, 40, _PANEL_DARK, _BORDER)
+        _text(canvas, label, info_x + 12, card_y + 24, 8, _MUTED, font_name)
+        _text(canvas, _ellipsis(value, font_name, 11, info_width - 24), info_x + 12, card_y + 8, 11, _TEXT, font_name)
 
     panel_width = (content_width - 14) / 2
     _ingredient_panel(canvas, _MARGIN, 330, panel_width, 160, "보유 재료", [f"✓ {item}" for item in recipe.owned_ingredients] or ["✓ 활용 가능한 재료 없음"], font_name)
@@ -395,6 +398,12 @@ def _nutrition_bar(canvas: Canvas, recipe: Recipe, font_name: str) -> None:
 
 def _cook_time_label(recipe: Recipe) -> str:
     return f"{recipe.cook_time}분" if recipe.cook_time else "미입력"
+
+
+def _recipe_source_label(recipe: Recipe) -> str:
+    """내부 CSV 레시피의 원본 번호를 PDF 정보 카드에 표시합니다."""
+
+    return recipe.recipe_id or "미입력"
 
 
 def _unique_tip_values(values: list[str]) -> list[str]:

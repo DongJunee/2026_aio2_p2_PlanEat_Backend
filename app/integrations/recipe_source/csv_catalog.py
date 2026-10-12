@@ -102,6 +102,14 @@ class CsvRecipeRepository:
             for recipe in self._recipes
             if any(_normalize_name(item.name) in owned_names for item in recipe.ingredients)
         ]
+        # 공통 양념으로 매칭되는 레시피가 많아도 주재료가 맞는 후보가
+        # ``limit`` 전에 잘리지 않도록 후보 단계에서도 주재료 일치를 먼저 둔다.
+        matching.sort(
+            key=lambda recipe: (
+                -_matching_ingredient_count(recipe, owned_names, primary_only=True),
+                -_matching_ingredient_count(recipe, owned_names),
+            )
+        )
         matching_ids = {recipe.recipe_id for recipe in matching}
         non_matching = [
             recipe for recipe in self._recipes if recipe.recipe_id not in matching_ids
@@ -149,12 +157,13 @@ class CsvRecipeRepository:
 
 
 def internal_catalog_path() -> Path:
-    """내부에서 관리하는 보강 레시피 CSV 기본 경로를 반환합니다."""
+    """내부에서 관리하는 최신 보강 레시피 CSV 기본 경로를 반환합니다."""
 
     return (
         Path(__file__).resolve().parents[3]
         / "data"
-        / "COOKRCP01_FINAL_WITH_INGREDIENT_GROUPS_REVISED_V2.csv"
+        / "chroma"
+        / "COOKRCP01_INTEGRITY_CHECKED_V13.csv"
     )
 
 
@@ -198,7 +207,7 @@ def _recipe_from_internal_row(
             recipe_id=_required_value(row, "RCP_SEQ", row_number),
             title=title,
             image=_optional_value(row, "ATT_FILE_NO_MAIN"),
-            cook_time=0,
+            cook_time=_internal_cooking_time(row, row_number),
             cooking_steps=_internal_cooking_steps(row),
             ingredients=_internal_ingredients(row),
             nutrition=nutrition,
@@ -302,6 +311,7 @@ def _source_metadata(row: Mapping[str, str | None]) -> dict[str, str]:
 def _internal_ingredients(row: Mapping[str, str | None]) -> list[RecipeIngredient]:
     """보강 CSV의 재료 분류와 원본 조리 설명의 실제 필요량을 함께 보존합니다."""
 
+    primary_names = _primary_ingredient_names(row)
     groups = (
         ("REQUIRED_INGREDIENTS", "필수", True),
         ("REQUIRED_SEASONINGS", "필수", True),
@@ -324,13 +334,30 @@ def _internal_ingredients(row: Mapping[str, str | None]) -> list[RecipeIngredien
                     amount=_find_ingredient_amount(name, detail_text),
                     importance=importance,  # type: ignore[arg-type]
                     required=required,
+                    is_primary=_ingredient_key(name) in primary_names,
                 )
             )
     return ingredients or _fallback_internal_ingredients(row)
 
 
+def _primary_ingredient_names(row: Mapping[str, str | None]) -> set[str]:
+    """CSV의 재료 그룹 기준으로 주재료 이름을 정규화합니다.
+
+    현재 보강 CSV의 계약상 ``REQUIRED_INGREDIENTS``만 주재료이고,
+    ``OPTIONAL_INGREDIENTS``와 ``SUBSTITUTABLE_INGREDIENTS``는 부재료다.
+    조리 설명의 자유 형식 표기나 양념 열은 주재료 판별에 사용하지 않는다.
+    """
+
+    required_names = _split_pipe_values(_optional_value(row, "REQUIRED_INGREDIENTS") or "")
+    return {_ingredient_key(name) for name in required_names}
+
+
 def _fallback_internal_ingredients(row: Mapping[str, str | None]) -> list[RecipeIngredient]:
-    """보강 열이 비어 있는 행은 원본 표시 재료에서 이름과 필요량을 읽습니다."""
+    """보강 열이 비어 있는 행은 원본 표시 재료에서 이름과 필요량을 읽습니다.
+
+    재료 그룹 열이 없는 fallback 행은 주재료와 부재료를 구분할 근거가
+    없으므로 주재료 가점을 적용하지 않는다.
+    """
 
     detail_text = _optional_value(row, "RCP_PARTS_DTLS") or ""
     ingredients: list[RecipeIngredient] = []
@@ -340,7 +367,11 @@ def _fallback_internal_ingredients(row: Mapping[str, str | None]) -> list[Recipe
         if match:
             name = match.group(1)
             ingredients.append(
-                RecipeIngredient(name=name, amount=_find_ingredient_amount(name, detail_text))
+                RecipeIngredient(
+                    name=name,
+                    amount=_find_ingredient_amount(name, detail_text),
+                    is_primary=False,
+                )
             )
     return ingredients
 
@@ -397,6 +428,9 @@ def _split_detail_segments(value: str) -> list[str]:
 
 def _internal_source_metadata(row: Mapping[str, str | None]) -> dict[str, str]:
     metadata: dict[str, str] = {}
+    rcp_seq = _optional_value(row, "RCP_SEQ")
+    if rcp_seq:
+        metadata["rcp_seq"] = rcp_seq
     role = _internal_meal_role(_optional_value(row, "RCP_PAT2") or "")
     if role:
         metadata["meal_role"] = role
@@ -440,8 +474,39 @@ def _nonnegative_number(row: Mapping[str, str | None], field: str, row_number: i
         ) from error
 
 
+def _internal_cooking_time(row: Mapping[str, str | None], row_number: int) -> int:
+    """내부 CSV의 ``ESTIMATED_COOKING_TIME_MIN``을 API 조리시간으로 변환합니다."""
+
+    value = _optional_value(row, "ESTIMATED_COOKING_TIME_MIN")
+    if value is None:
+        return 0
+    try:
+        parsed = float(value)
+    except ValueError as error:
+        raise LocalRecipeCatalogError(
+            f"내부 레시피 CSV {row_number}행 ESTIMATED_COOKING_TIME_MIN 값은 숫자여야 합니다."
+        ) from error
+    if parsed < 0 or not parsed.is_integer():
+        raise LocalRecipeCatalogError(
+            f"내부 레시피 CSV {row_number}행 ESTIMATED_COOKING_TIME_MIN 값은 0 이상의 정수여야 합니다."
+        )
+    return int(parsed)
+
+
 def _ingredient_key(name: str) -> str:
     return "".join(name.split()).lower()
+
+
+def _matching_ingredient_count(
+    recipe: CatalogRecipe, owned_names: set[str], *, primary_only: bool = False
+) -> int:
+    """후보 정렬에 사용할 보유 재료 일치 개수를 계산합니다."""
+
+    return sum(
+        _normalize_name(ingredient.name) in owned_names
+        and (not primary_only or ingredient.is_primary)
+        for ingredient in recipe.ingredients
+    )
 
 
 def _normalize_name(name: str) -> str:

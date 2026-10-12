@@ -1444,7 +1444,7 @@ def test_bare_no_after_edit_question_confirms_the_whole_ingredient_list() -> Non
     )
     asyncio.run(
         repository.save(
-            "bare-no-confirms-session",
+            f"bare-agreement-{message}-session",
             ChatSessionState(
                 step="WAITING_INGREDIENT_CONFIRM",
                 ingredient_candidates=candidates,
@@ -1454,16 +1454,18 @@ def test_bare_no_after_edit_question_confirms_the_whole_ingredient_list() -> Non
     )
     service = ChatService(
         llm_responder=FakeCompletionMessageGenerator(),
-        # Jev가 불명확하다고 해도 대화 문맥의 단독 '없어'는 서버가 확정한다.
+        # Jev가 불명확하다고 해도 대화 문맥의 단독 짧은 긍정은 서버가 확정한다.
         ingredient_confirmation_evaluator=FakeIngredientConfirmationEvaluator("unclear"),
         tool_provider=provider,
         session_repository=repository,
     )
 
     payload, status_code = asyncio.run(
-        service.handle(ChatRequest(session_id="bare-no-confirms-session", message="없어"))
+        service.handle(
+            ChatRequest(session_id=f"bare-agreement-{message}-session", message=message)
+        )
     )
-    session = asyncio.run(repository.get("bare-no-confirms-session"))
+    session = asyncio.run(repository.get(f"bare-agreement-{message}-session"))
 
     assert status_code == 200
     assert payload["step"] == "COMPLETED"
@@ -1471,10 +1473,56 @@ def test_bare_no_after_edit_question_confirms_the_whole_ingredient_list() -> Non
     assert len(provider.requests) == 1
 
 
+@pytest.mark.parametrize(
+    "message",
+    ["이 재료 맞아", "이 재료로 확정해줘", "현재 재료로 확정할게요"],
+)
+def test_contextual_whole_list_confirmation_is_accepted(
+    message: str,
+) -> None:
+    """'이 재료로 확정'은 바로 앞 후보 목록 전체를 확정해야 한다."""
+
+    repository = InMemoryChatSessionRepository()
+    provider = RecordingToolHubProvider()
+    candidates = (
+        IngredientCandidate(name="참치", amount="1캔"),
+        IngredientCandidate(name="양배추", amount="반 통"),
+    )
+    asyncio.run(
+        repository.save(
+            f"contextual-confirmation-{message}",
+            ChatSessionState(
+                step="WAITING_INGREDIENT_CONFIRM",
+                ingredient_candidates=candidates,
+                user_conditions={"message": "다이어트 식단"},
+            ),
+        )
+    )
+    service = ChatService(
+        llm_responder=FakeCompletionMessageGenerator(),
+        ingredient_confirmation_evaluator=FakeIngredientConfirmationEvaluator("unclear"),
+        tool_provider=provider,
+        session_repository=repository,
+    )
+
+    payload, status_code = asyncio.run(
+        service.handle(
+            ChatRequest(session_id=f"contextual-confirmation-{message}", message=message)
+        )
+    )
+
+    assert status_code == 200
+    assert payload["step"] == "COMPLETED"
+    assert provider.requests[0].confirmed_ingredients == (
+        {"name": "참치", "amount": "1캔"},
+        {"name": "양배추", "amount": "반 통"},
+    )
+
+
 def test_generic_or_whole_list_negative_requests_the_specific_ingredient() -> None:
     """'틀려'와 '재료 아니야'는 재인식 대신 수정 대상을 질문해야 합니다."""
 
-    for message in ("틀려", "재료 아니야"):
+    for message in ("아니", "틀려", "재료 아니야"):
         repository = InMemoryChatSessionRepository()
         provider = RecordingToolHubProvider()
         asyncio.run(
@@ -1618,14 +1666,217 @@ def test_specific_ingredient_negative_asks_for_replacement_then_applies_it() -> 
     assert after_question.pending_ingredient_correction == "돼지고기"
     assert edit_status == 200
     assert edit_payload["step"] == "INGREDIENT_CONFIRM"
-    assert "변경한 재료: 돼지고기 → 소고기." in edit_payload["response"]
-    assert "변경한 재료: 돼지고기 → 소고기.\n\n이 목록" in edit_payload["response"]
+    assert "변경한 재료: 돼지고기 → 소고기" in edit_payload["response"]
+    assert "변경한 재료: 돼지고기 → 소고기\n\n이 목록" in edit_payload["response"]
     assert generator.extract_messages[-1] == "돼지고기 대신 소고기로 바꿔줘."
     assert after_edit.ingredient_candidates == (
         IngredientCandidate(name="소고기", amount="300g"),
         IngredientCandidate(name="양파", amount="1개"),
     )
     assert after_edit.pending_ingredient_correction is None
+
+
+def test_combined_replacement_and_typoed_deletion_update_the_list_together() -> None:
+    """'연어가 아니고 참치야, 양배추는 없엉'은 한 번에 수정해야 합니다."""
+
+    repository = InMemoryChatSessionRepository()
+    asyncio.run(
+        repository.save(
+            "combined-correction-session",
+            ChatSessionState(
+                step="WAITING_INGREDIENT_CONFIRM",
+                ingredient_candidates=(
+                    IngredientCandidate(name="연어", amount="200g"),
+                    IngredientCandidate(name="양배추", amount="반 통"),
+                ),
+            ),
+        )
+    )
+    service = ChatService(
+        llm_responder=FakeCompletionMessageGenerator(
+            edited_ingredients=[{"name": "참치", "amount": "1캔"}]
+        ),
+        ingredient_confirmation_evaluator=FakeIngredientConfirmationEvaluator("unclear"),
+        session_repository=repository,
+    )
+
+    payload, status_code = asyncio.run(
+        service.handle(
+            ChatRequest(
+                session_id="combined-correction-session",
+                message="연어가 아니고 참치야 그리고 양배추는 없엉",
+            )
+        )
+    )
+    session = asyncio.run(repository.get("combined-correction-session"))
+
+    assert status_code == 200
+    assert payload["step"] == "INGREDIENT_CONFIRM"
+    assert "변경한 재료: 연어 → 참치" in payload["response"]
+    assert "제외한 재료: 양배추" in payload["response"]
+    assert "변경한 재료: 연어 → 참치\n\n제외한 재료: 양배추" in payload["response"]
+    assert "이 목록으로 재료를 확정할까요?" in payload["response"]
+    assert session.ingredient_candidates == (IngredientCandidate(name="참치", amount="1캔"),)
+
+
+def test_short_candidate_deletion_expression_is_an_ingredient_edit() -> None:
+    """'양배추는 빼'처럼 짧은 후보 삭제 표현도 Jev 분류와 무관하게 반영합니다."""
+
+    repository = InMemoryChatSessionRepository()
+    asyncio.run(
+        repository.save(
+            "short-delete-session",
+            ChatSessionState(
+                step="WAITING_INGREDIENT_CONFIRM",
+                ingredient_candidates=(
+                    IngredientCandidate(name="참치", amount="1캔"),
+                    IngredientCandidate(name="양배추", amount="반 통"),
+                ),
+            ),
+        )
+    )
+    service = ChatService(
+        llm_responder=FakeCompletionMessageGenerator(
+            edited_ingredients=[{"name": "참치", "amount": "1캔"}]
+        ),
+        ingredient_confirmation_evaluator=FakeIngredientConfirmationEvaluator("unclear"),
+        session_repository=repository,
+    )
+
+    payload, status_code = asyncio.run(
+        service.handle(
+            ChatRequest(session_id="short-delete-session", message="양배추는 빼")
+        )
+    )
+    session = asyncio.run(repository.get("short-delete-session"))
+
+    assert status_code == 200
+    assert payload["step"] == "INGREDIENT_CONFIRM"
+    assert "제외한 재료: 양배추" in payload["response"]
+    assert session.ingredient_candidates == (IngredientCandidate(name="참치", amount="1캔"),)
+
+
+def test_remove_synonym_is_applied_when_the_extractor_keeps_the_removed_candidate() -> None:
+    """'제거해줘'는 Jev·추출기 결과와 무관하게 명시 삭제로 반영한다."""
+
+    repository = InMemoryChatSessionRepository()
+    asyncio.run(
+        repository.save(
+            "remove-synonym-session",
+            ChatSessionState(
+                step="WAITING_INGREDIENT_CONFIRM",
+                ingredient_candidates=(
+                    IngredientCandidate(name="방울토마토", amount="10개"),
+                    IngredientCandidate(name="양파", amount="1개"),
+                ),
+            ),
+        )
+    )
+    service = ChatService(
+        # 추출기가 수정 전 목록을 그대로 돌려줘도 서버 보정이 삭제해야 한다.
+        llm_responder=FakeCompletionMessageGenerator(
+            edited_ingredients=[
+                {"name": "방울토마토", "amount": "10개"},
+                {"name": "양파", "amount": "1개"},
+            ]
+        ),
+        ingredient_confirmation_evaluator=FakeIngredientConfirmationEvaluator("rejected"),
+        session_repository=repository,
+    )
+
+    payload, status_code = asyncio.run(
+        service.handle(
+            ChatRequest(session_id="remove-synonym-session", message="방울토마토 제거해줘")
+        )
+    )
+    session = asyncio.run(repository.get("remove-synonym-session"))
+
+    assert status_code == 200
+    assert payload["step"] == "INGREDIENT_CONFIRM"
+    assert "제외한 재료: 방울토마토" in payload["response"]
+    assert session.ingredient_candidates == (IngredientCandidate(name="양파", amount="1개"),)
+
+
+def test_compact_addition_is_reconciled_when_the_extractor_omits_the_new_ingredient() -> None:
+    """'피망추가해줘'처럼 붙여 쓴 새 재료도 후보에 남겨야 한다."""
+
+    repository = InMemoryChatSessionRepository()
+    asyncio.run(
+        repository.save(
+            "compact-addition-session",
+            ChatSessionState(
+                step="WAITING_INGREDIENT_CONFIRM",
+                ingredient_candidates=(IngredientCandidate(name="두부", amount="1모"),),
+            ),
+        )
+    )
+    service = ChatService(
+        # OpenAI가 새 재료를 빠뜨린 경우를 재현한다.
+        llm_responder=FakeCompletionMessageGenerator(
+            edited_ingredients=[{"name": "두부", "amount": "1모"}]
+        ),
+        ingredient_confirmation_evaluator=FakeIngredientConfirmationEvaluator("unclear"),
+        session_repository=repository,
+    )
+
+    payload, status_code = asyncio.run(
+        service.handle(
+            ChatRequest(session_id="compact-addition-session", message="피망추가해줘")
+        )
+    )
+    session = asyncio.run(repository.get("compact-addition-session"))
+
+    assert status_code == 200
+    assert payload["step"] == "INGREDIENT_CONFIRM"
+    assert "추가한 재료: 피망" in payload["response"]
+    assert session.ingredient_candidates == (
+        IngredientCandidate(name="두부", amount="1모"),
+        IngredientCandidate(name="피망", amount="수량 미정"),
+    )
+
+
+def test_trailing_go_confirms_the_reconciled_replacement() -> None:
+    """'파프리카 대신 피망 고'는 피망을 남기고 수정·확정까지 한 번에 처리한다."""
+
+    class CapturingEditGenerator(FakeCompletionMessageGenerator):
+        def __init__(self) -> None:
+            super().__init__(edited_ingredients=[{"name": "파프리카", "amount": "1개"}])
+            self.extract_messages: list[str] = []
+
+        async def extract_ingredients(self, user_message, attachments, current_ingredients=()):
+            self.extract_messages.append(user_message)
+            return await super().extract_ingredients(user_message, attachments, current_ingredients)
+
+    repository = InMemoryChatSessionRepository()
+    provider = RecordingToolHubProvider()
+    generator = CapturingEditGenerator()
+    asyncio.run(
+        repository.save(
+            "trailing-go-session",
+            ChatSessionState(
+                step="WAITING_INGREDIENT_CONFIRM",
+                ingredient_candidates=(IngredientCandidate(name="파프리카", amount="1개"),),
+                user_conditions={"message": "다이어트 식단"},
+            ),
+        )
+    )
+    service = ChatService(
+        llm_responder=generator,
+        ingredient_confirmation_evaluator=FakeIngredientConfirmationEvaluator("unclear"),
+        tool_provider=provider,
+        session_repository=repository,
+    )
+
+    payload, status_code = asyncio.run(
+        service.handle(
+            ChatRequest(session_id="trailing-go-session", message="파프리카 대신 피망 고")
+        )
+    )
+
+    assert status_code == 200
+    assert payload["step"] == "COMPLETED"
+    assert generator.extract_messages[-1] == "파프리카 대신 피망"
+    assert provider.requests[0].confirmed_ingredients == ({"name": "피망", "amount": "1개"},)
 
 
 def test_edited_candidates_wait_for_final_confirmation_before_tool_call() -> None:
@@ -1684,9 +1935,9 @@ def test_edited_candidates_wait_for_final_confirmation_before_tool_call() -> Non
 
     assert edited_status == 200
     assert edited_payload["step"] == "INGREDIENT_CONFIRM"
-    assert "추가한 재료: 두부." in edited_payload["response"]
-    assert "제외한 재료: 계란, 양파." in edited_payload["response"]
-    assert "추가한 재료: 두부.\n제외한 재료: 계란, 양파.\n\n이 목록" in edited_payload["response"]
+    assert "변경한 재료: 계란 → 두부" in edited_payload["response"]
+    assert "제외한 재료: 양파" in edited_payload["response"]
+    assert "변경한 재료: 계란 → 두부\n\n제외한 재료: 양파\n\n이 목록" in edited_payload["response"]
     assert "더 추가하거나 수정할 내용" in edited_payload["response"]
     assert after_edit.ingredient_candidates == (IngredientCandidate(name="두부", amount="1모"),)
     assert after_edit.confirmed_ingredients == ()
@@ -1749,7 +2000,8 @@ def test_edit_and_finalization_in_one_answer_uses_the_edited_candidates() -> Non
 
     assert status_code == 200
     assert payload["step"] == "COMPLETED"
-    assert "변경한 재료: 참치 → 연어." in payload["response"]
+    assert "변경한 재료: 참치 → 연어" in payload["response"]
+    assert "변경한 재료: 참치 → 연어\n\n변경 내용을 반영해" in payload["response"]
     assert "재료를 확정했습니다." in payload["response"]
     assert provider.requests[0].confirmed_ingredients == (
         {"name": "연어", "amount": "200g"},
@@ -1855,8 +2107,8 @@ def test_edited_ingredients_are_updated_and_requested_again() -> None:
         {"name": "두부", "amount": "1모"},
         {"name": "양파", "amount": "1개"},
     ]
-    assert "추가한 재료: 양파." in payload["response"]
-    assert "제외한 재료: 계란." in payload["response"]
+    assert "추가한 재료: 양파" in payload["response"]
+    assert "제외한 재료: 계란" in payload["response"]
     assert [candidate.name for candidate in session.ingredient_candidates] == ["두부", "양파"]
     assert session.confirmed_ingredients == ()
 

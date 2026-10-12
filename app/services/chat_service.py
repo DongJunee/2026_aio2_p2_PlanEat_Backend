@@ -390,7 +390,7 @@ class ChatService:
             ingredient_confirmation_message = confirmation_read.guidance
             acknowledged_ingredient_names = confirmation_read.acknowledged_ingredient_names
             pending_ingredient_correction = confirmation_read.pending_ingredient_correction
-            ingredient_extraction_message = (
+            ingredient_extraction_message = _normalize_ingredient_edit_message(
                 confirmation_read.extraction_message or request.message
             )
             candidate_ingredients, confirmed_ingredients = _apply_confirmation_decision(
@@ -421,8 +421,13 @@ class ChatService:
                     }, 500
                 # 빈 결과는 사용자가 전체 후보를 삭제한 경우가 아니라 모델이 수정 내용을
                 # 해석하지 못한 경우일 수 있으므로, 기존 후보를 보존해 빈 확인 응답을 막는다.
-                if extracted_ingredients:
-                    candidate_ingredients = extracted_ingredients
+                # 또한 사용자가 이름까지 직접 말한 추가·제거·교체는 추출 모델이 일부
+                # 누락해도 결정적으로 한 번 더 반영한다.
+                candidate_ingredients = _reconcile_explicit_ingredient_edits(
+                    before=session.ingredient_candidates,
+                    extracted=extracted_ingredients or candidate_ingredients,
+                    user_message=ingredient_extraction_message,
+                )
                 ingredient_edit_summary = _summarize_ingredient_changes(
                     before=session.ingredient_candidates,
                     after=candidate_ingredients,
@@ -443,8 +448,7 @@ class ChatService:
                         intent="rejected", confidence=confirmation_decision.confidence
                     )
                 elif (
-                    extracted_ingredients
-                    and ingredient_edit_summary
+                    ingredient_edit_summary
                     and _requests_finalization_after_edit(request.message)
                 ):
                     # 수정과 확정을 함께 말한 경우에는 먼저 수정 결과를 만든 뒤,
@@ -801,7 +805,7 @@ class ChatService:
             elif confirmation == "edited":
                 edit_summary = _ingredient_edit_summary_from_state(state)
                 summary_message = (
-                    "\n".join(edit_summary)
+                    "\n\n".join(edit_summary)
                     if edit_summary
                     else "말씀하신 재료 수정 내용을 반영했습니다."
                 )
@@ -1139,6 +1143,14 @@ class ChatService:
         negative_names = [name for name, sentiment in candidate_replies if sentiment == "negative"]
         positive_names = [name for name, sentiment in candidate_replies if sentiment == "positive"]
         if negative_names and not _has_explicit_ingredient_mutation_expression(user_message):
+            if _has_unlisted_replacement_answer(
+                user_message,
+                negative_names=negative_names,
+                candidates=proposed_ingredients,
+            ):
+                # "연어가 아니고 참치야"처럼 기존 후보가 아닌 대체 재료까지 이미
+                # 말한 경우에는 다시 묻지 않고 구조화 추출기로 최종 목록을 갱신한다.
+                return read("edited", acknowledged=(), pending=None)
             acknowledged_names = _merge_acknowledged_ingredient_names(
                 acknowledged_names,
                 positive_names,
@@ -1185,6 +1197,15 @@ class ChatService:
                     "예: '돼지고기는 아니고 소고기예요.'"
                 ),
             )
+        if _has_candidate_mutation_expression(user_message, proposed_ingredients):
+            # "양배추는 빼", "양배추는 없엉"처럼 후보가 분명한 삭제·교체는
+            # Jev의 모호한 분류를 기다리지 않고 수정 추출기로 보낸다.
+            return read("edited", acknowledged=(), pending=None)
+        if _has_explicit_ingredient_mutation_expression(user_message):
+            # "피망추가해줘", "방울토마토 제거해줘"처럼 새 재료 또는 삭제할
+            # 재료를 사용자가 직접 지정한 요청도 Jev 분류 결과와 무관하게 수정으로
+            # 처리한다. 그렇지 않으면 Jev의 rejected 결과가 후보를 초기화할 수 있다.
+            return read("edited", acknowledged=(), pending=None)
 
         candidate_payload = [
             {"name": ingredient.name, "amount": ingredient.amount}
@@ -1559,7 +1580,8 @@ def _has_explicit_ingredient_mutation_expression(user_message: str) -> bool:
 
     return bool(
         re.search(
-            rf"추가|더 넣|{_INGREDIENT_REMOVAL_PATTERN}|교체|바꾸|바꿔|수정|없어|없고|없는|대신|"
+            rf"추가|더 넣|{_INGREDIENT_REMOVAL_PATTERN}|교체|바꾸|바꿔|수정|"
+            r"없어|없엉|없고|없는|대신|"
             r"자리(?:에는|는|에)?",
             user_message,
         )
@@ -1593,6 +1615,60 @@ def _candidate_subject_replies(
         ):
             replies.append((name, "positive"))
     return replies
+
+
+def _has_unlisted_replacement_answer(
+    user_message: str,
+    *,
+    negative_names: Sequence[str],
+    candidates: Sequence[IngredientCandidate],
+) -> bool:
+    """'A가 아니고 B야'에서 B가 새 재료로 제시됐는지 보수적으로 확인합니다."""
+
+    candidate_names = {
+        _ingredient_candidate_key(candidate.name) for candidate in candidates
+    }
+    for negative_name in negative_names:
+        match = re.search(
+            rf"{re.escape(negative_name)}\s*(?:은|는|이|가)?\s*"
+            r"아니(?:야|에요|예요|고|라)\s*(?P<replacement>.+)",
+            user_message,
+        )
+        if match is None:
+            continue
+        replacement = match.group("replacement").strip(" .,!?")
+        normalized_replacement = _normalize_confirmation_message(replacement)
+        if not normalized_replacement or re.search(r"모르|없어|없엉|다시", normalized_replacement):
+            continue
+        # "계란은 아니고 삼겹살은 맞아"처럼 다른 기존 후보만 긍정한 경우에는
+        # 대체 재료가 아직 없으므로 추가 질문을 유지한다.
+        if any(
+            _ingredient_candidate_key(candidate.name) in normalized_replacement
+            for candidate in candidates
+            if _ingredient_candidate_key(candidate.name) != _ingredient_candidate_key(negative_name)
+        ):
+            continue
+        if _ingredient_candidate_key(replacement) not in candidate_names:
+            return True
+    return False
+
+
+def _has_candidate_mutation_expression(
+    user_message: str, candidates: Sequence[IngredientCandidate]
+) -> bool:
+    """후보명을 주어로 삼은 짧은 추가·삭제·교체 요청을 감지합니다."""
+
+    for candidate in candidates:
+        name = candidate.name.strip()
+        if not name:
+            continue
+        if re.search(
+            rf"{re.escape(name)}\s*(?:을|를|은|는|이|가)?\s*"
+            r"(?:빼|제외|삭제|제거|없(?:어|엉|어요|습니다|고|는)|바꾸|교체|수정)",
+            user_message,
+        ):
+            return True
+    return False
 
 
 def _known_acknowledged_ingredients(
@@ -1651,10 +1727,13 @@ def _is_generic_ingredient_rejection(user_message: str) -> bool:
 
     normalized = _normalize_confirmation_message(user_message)
     generic_rejections = {
+        "아니",
         "틀려",
         "틀렸어",
         "틀렸어요",
         "아니야",
+        "아니요",
+        "아뇨",
         "아니에요",
         "아닙니다",
         "잘못됐어",
@@ -1717,8 +1796,10 @@ def _is_explicit_final_ingredient_confirmation(user_message: str) -> bool:
     ):
         return False
     return normalized in {
+    if normalized in {
         "네",
         "예",
+        "어",
         "응",
         "그래",
         "맞아",
@@ -1790,7 +1871,9 @@ def _requests_finalization_after_edit(user_message: str) -> bool:
         for marker in ("확정하지마", "확정하지말", "확정하지않", "확정말고")
     ):
         return False
-    if _is_explicit_final_ingredient_confirmation(user_message):
+    if _has_standalone_trailing_confirmation_token(user_message):
+        # "파프리카 대신 피망 고"처럼 수정문 뒤에 단독으로 붙인 구어체
+        # 진행 표현만 인정한다. "피망고" 같은 재료명 내부 문자열과는 충돌하지 않는다.
         return True
     return any(
         marker in normalized
@@ -1810,6 +1893,29 @@ def _requests_finalization_after_edit(user_message: str) -> bool:
     )
 
 
+def _has_standalone_trailing_confirmation_token(user_message: str) -> bool:
+    """수정문 끝의 단독 '가자'·'고'만 진행 의도로 해석합니다."""
+
+    return bool(
+        re.search(r"(?:^|\s)(?:가자|고)[.!~?]*\s*$", user_message, flags=re.IGNORECASE)
+    )
+
+
+def _normalize_ingredient_edit_message(user_message: str) -> str:
+    """추출기에 전달할 수정 문장에서 구어체 확정 꼬리말을 분리합니다.
+
+    ``피망추가해줘``처럼 띄어쓰지 않은 동작어도 ``피망 추가해줘``로 보정한다.
+    단, 재료명 중간의 문자열은 바꾸지 않으며 ``피망고``와 ``피망 고``를 구분한다.
+    """
+
+    normalized = re.sub(r"\s+(?:가자|고)[.!~?]*\s*$", "", user_message).strip()
+    return re.sub(
+        r"(?<=[가-힣A-Za-z0-9])(?=(?:추가|제거|제외|삭제|교체|수정|바꾸|바꿔|빼))",
+        " ",
+        normalized,
+    )
+
+
 def _apply_ingredient_edit(
     candidates: tuple[IngredientCandidate, ...], user_message: str
 ) -> tuple[IngredientCandidate, ...]:
@@ -1817,12 +1923,7 @@ def _apply_ingredient_edit(
 
     updated = list(candidates)
     for candidate in tuple(updated):
-        name = re.escape(candidate.name)
-        if re.search(
-            rf"(?:{name}).{{0,16}}(?:{_INGREDIENT_REMOVAL_PATTERN})|"
-            rf"(?:{_INGREDIENT_REMOVAL_PATTERN}).{{0,16}}(?:{name})",
-            user_message,
-        ):
+        if _is_explicit_candidate_removal(candidate.name, user_message):
             updated = [item for item in updated if item.name != candidate.name]
     return tuple(updated)
 
@@ -1871,6 +1972,126 @@ def _exclude_confirmed_ingredients(
     )
 
 
+def _reconcile_explicit_ingredient_edits(
+    *,
+    before: Sequence[IngredientCandidate],
+    extracted: Sequence[IngredientCandidate],
+    user_message: str,
+) -> tuple[IngredientCandidate, ...]:
+    """추출 결과에 빠진, 사용자가 이름을 직접 말한 수정만 보완합니다.
+
+    OpenAI 추출은 전체 후보 목록과 수량을 정리하는 주 경로다. 이 보정은 ``피망추가``
+    같은 명시 요청을 모델이 빠뜨렸을 때만 기존 후보와 합쳐 사용자의 의도를 보존한다.
+    """
+
+    updated = list(extracted)
+    for candidate in before:
+        if _is_explicit_candidate_removal(candidate.name, user_message):
+            updated = [
+                item
+                for item in updated
+                if _ingredient_candidate_key(item.name)
+                != _ingredient_candidate_key(candidate.name)
+            ]
+
+    for source, target in _explicit_replacements_from_message(before, user_message):
+        source_key = _ingredient_candidate_key(source.name)
+        target_key = _ingredient_candidate_key(target)
+        if not target_key or target_key == source_key:
+            continue
+        source_index = next(
+            (
+                index
+                for index, item in enumerate(updated)
+                if _ingredient_candidate_key(item.name) == source_key
+            ),
+            None,
+        )
+        target_exists = any(
+            _ingredient_candidate_key(item.name) == target_key for item in updated
+        )
+        if source_index is not None:
+            if target_exists:
+                updated.pop(source_index)
+            else:
+                updated[source_index] = IngredientCandidate(
+                    name=target,
+                    amount=source.amount,
+                )
+        elif not target_exists:
+            # 모델이 교체 대상을 이미 빼 버린 경우에도, 사용자가 명시한 새 재료는
+            # 누락하지 않고 기존 수량을 이어받아 후보에 남긴다.
+            updated.append(IngredientCandidate(name=target, amount=source.amount))
+
+    for name in _explicit_addition_names(user_message):
+        if not any(_ingredient_candidate_key(item.name) == _ingredient_candidate_key(name) for item in updated):
+            updated.append(IngredientCandidate(name=name, amount="수량 미정"))
+    return tuple(updated)
+
+
+def _is_explicit_candidate_removal(candidate_name: str, user_message: str) -> bool:
+    """후보명을 직접 언급한 제외·제거 요청인지 반환합니다."""
+
+    escaped_name = re.escape(candidate_name)
+    return bool(
+        re.search(
+            rf"(?:{escaped_name}).{{0,16}}(?:{_INGREDIENT_REMOVAL_PATTERN})|"
+            rf"(?:{_INGREDIENT_REMOVAL_PATTERN}).{{0,16}}(?:{escaped_name})",
+            user_message,
+        )
+    )
+
+
+def _explicit_replacements_from_message(
+    candidates: Sequence[IngredientCandidate], user_message: str
+) -> list[tuple[IngredientCandidate, str]]:
+    """'A 대신 B'와 'A를 B로 바꿔'의 직접 교체만 추출합니다."""
+
+    replacements: list[tuple[IngredientCandidate, str]] = []
+    for candidate in candidates:
+        source = re.escape(candidate.name)
+        match = re.search(
+            rf"{source}\s*(?:을|를|은|는|이|가)?\s*대신\s*"
+            r"(?P<target>[가-힣A-Za-z][가-힣A-Za-z0-9]*?)(?:으로|로)\s*"
+            r"(?:바꾸|바꿔|교체)",
+            user_message,
+        )
+        if match is None:
+            match = re.search(
+                rf"{source}\s*(?:을|를|은|는|이|가)?\s*대신\s*"
+                r"(?P<target>[가-힣A-Za-z][가-힣A-Za-z0-9]*)",
+                user_message,
+            )
+        if match is None:
+            match = re.search(
+                rf"{source}\s*(?:을|를|은|는|이|가)?\s*"
+                r"(?P<target>[가-힣A-Za-z][가-힣A-Za-z0-9]*?)(?:으로|로)\s*"
+                r"(?:바꾸|바꿔|교체)",
+                user_message,
+            )
+        if match is not None:
+            replacements.append((candidate, match.group("target")))
+    return replacements
+
+
+def _explicit_addition_names(user_message: str) -> list[str]:
+    """수량 없이 직접 말한 'OO 추가' 재료명을 보수적으로 읽습니다."""
+
+    names: list[str] = []
+    for match in re.finditer(
+        r"(?P<name>[가-힣A-Za-z][가-힣A-Za-z0-9]*?)(?:도|을|를|은|는|이|가)?\s+추가",
+        user_message,
+    ):
+        # '양파 1개 추가'는 LLM이 수량까지 읽어야 하므로 '개'를 재료명으로
+        # 오인하는 이 보정 경로에서는 건너뛴다.
+        if match.start() > 0 and user_message[match.start() - 1].isdigit():
+            continue
+        name = match.group("name")
+        if name not in names:
+            names.append(name)
+    return names
+
+
 def _summarize_ingredient_changes(
     *,
     before: Sequence[IngredientCandidate],
@@ -1893,15 +2114,20 @@ def _summarize_ingredient_changes(
     ]
 
     summary: list[str] = []
-    if len(added) == 1 and len(removed) == 1 and _is_replacement_request(user_message):
-        summary.append(f"변경한 재료: {removed[0]} → {added[0]}.")
-    else:
-        if added:
-            summary.append(f"추가한 재료: {', '.join(added)}.")
-        if removed:
-            summary.append(f"제외한 재료: {', '.join(removed)}.")
+    replacement_source = _replacement_source_from_message(user_message, removed)
+    remaining_added = list(added)
+    remaining_removed = list(removed)
+    if replacement_source is not None and len(added) == 1:
+        replacement_target = added[0]
+        summary.append(f"변경한 재료: {replacement_source} → {replacement_target}")
+        remaining_added.remove(replacement_target)
+        remaining_removed.remove(replacement_source)
+    if remaining_added:
+        summary.append(f"추가한 재료: {', '.join(remaining_added)}")
+    if remaining_removed:
+        summary.append(f"제외한 재료: {', '.join(remaining_removed)}")
     if amount_changes:
-        summary.append(f"수량 변경: {', '.join(amount_changes)}.")
+        summary.append(f"수량 변경: {', '.join(amount_changes)}")
     return summary
 
 
@@ -1909,6 +2135,23 @@ def _is_replacement_request(user_message: str) -> bool:
     """추가·제외 조합을 단순 삭제가 아닌 교체로 표현할 수 있는지 확인합니다."""
 
     return bool(re.search(r"교체|바꾸|바꿔|대신|자리", user_message))
+
+
+def _replacement_source_from_message(
+    user_message: str, removed_names: Sequence[str]
+) -> str | None:
+    """사용자 문장에서 실제로 교체 대상으로 언급한 제외 재료를 찾습니다."""
+
+    for name in removed_names:
+        if re.search(
+            rf"{re.escape(name)}\s*(?:을|를|은|는|이|가)?\s*"
+            r"(?:아니|교체|바꾸|바꿔|대신|자리)",
+            user_message,
+        ):
+            return name
+    if len(removed_names) == 1 and _is_replacement_request(user_message):
+        return removed_names[0]
+    return None
 
 
 def _ingredient_edit_summary_from_state(state: Mapping[str, object]) -> list[str]:
@@ -2025,7 +2268,11 @@ def _with_ingredient_edit_confirmation(
     summary = [item.strip() for item in ingredient_edit_summary if item.strip()]
     if not summary:
         return completion_message
-    return f"{' '.join(summary)} 변경 내용을 반영해 재료를 확정했습니다. {completion_message}"
+    summary_message = "\n\n".join(summary)
+    return (
+        f"{summary_message}\n\n변경 내용을 반영해 재료를 확정했습니다. "
+        f"{completion_message}"
+    )
 
 
 def _is_cooking_time_question(question: str) -> bool:

@@ -1,213 +1,238 @@
-# 🥗 PlanEat
+<div align="center">
 
-> 사진 한 장으로 나에게 맞는 혼밥 식단을 짜주는 AI 에이전트
+<img src="docs/images/planeat-brand-mark.png" alt="PlanEat 잎과 접시 로고" width="112">
 
-<!-- [발표 가이드] 위쪽(1~7절)은 발표용, 아래쪽(📚 프로젝트 문서)은 GitHub 방문자용입니다. HTML 주석은 렌더링되지 않으니 발표자 메모로 사용하세요. -->
+<h1>🥗 PlanEat</h1>
 
-> 📌 **발표 내용**은 아래에서 바로 이어지고, 설치·API·구조 등 **프로젝트 문서**는 [여기](#-프로젝트-문서)에서 볼 수 있습니다.
+<h3>냉장고 속 재료를, 오늘의 한 끼로.</h3>
 
----
+<p><code>FastAPI</code> &nbsp;·&nbsp; <code>LangGraph</code> &nbsp;·&nbsp; <code>Tool Hub</code> &nbsp;·&nbsp; <code>AI Meal Planning</code></p>
 
-## 1. 🎯 문제 정의
+</div>
 
-<!--
-- 혼자 사는 사람은 냉장고에 재료가 있어도 뭘 해 먹을지 정하기 어렵다
-- 그래서 있는 재료를 또 사거나, 재료를 남긴다
-- 마무리 멘트: "재료는 있는데, 식단이 없다."
--->
-
-- 🤔 무엇을 해 먹을지 **결정하기 어렵다**
-- 🛒 이미 있는 재료를 잊고 **또 구매한다**
-- ❌ 잘못 인식된 재료가 섞이면 **만들 수 없는 식단**이 나온다
-- 🔁 다이어트·조리 시간 같은 **조건이 대화 중간에 추가**된다
-
-## 2. ✨ 솔루션
-
-<!--
-- 입력: 냉장고 사진 / 영수증 / 자연어
-- 출력: 레시피 2세트(세트당 5개) + 영양 + 부족 재료 + 장보기
-- 핵심 한 문장: "사용자가 확인한 재료만으로 만들 수 있는 식단을 추천한다"
--->
-
-| 입력 | 결과 |
-| --- | --- |
-| 📷 냉장고 사진 · 🧾 영수증 · 💬 자연어 | 레시피 **2세트 × 5개** · 영양 정보 · 부족 재료 · 장보기 목록 |
-
-**핵심 한 줄:** 이미지에서 재료를 찾고, **사용자가 확인한 재료만으로** 실현 가능한 식단을 추천합니다.
-
-## 3. 🎬 데모
-
-<!--
-- 순서: 이미지 업로드 → 재료 후보 확인·수정 → 조건 입력("다이어트, 20분 안에") → 추천 결과
-- 결과 화면에서 BEST_MATCH / MORE_OPTIONS 두 세트가 나뉜다는 점을 짚기
-- 실시간이 불안하면 GIF 로 대체. 인식이 틀려도 "그래서 확인 단계가 있습니다"로 연결
--->
-
-<table align="center">
-  <tr>
-    <td align="center"><b>① 재료 확인</b><br><img src="docs/images/fridge-ingredient-confirmation.png" width="300"></td>
-    <td align="center"><b>② 영수증 입력</b><br><img src="docs/images/receipt-ingredient-confirmation.png" width="300"></td>
-    <td align="center"><b>③ 추천 결과</b><br><img src="docs/images/recipe-recommendations.png" width="300"></td>
-  </tr>
-</table>
-
-## 4. 🏗️ 시스템 구성
-
-<!--
-- 한 줄로: Streamlit FE → FastAPI → ChatService → LangGraph → Tool Hub
-- Tool Hub 안: Recipe(CSV+Chroma) / Nutrition / Shopping / RAG
-- 역할: PM 조권식 / FE 이홍진 / BE·Tool Hub 박동준 / BE·Agent Orchestrator 최경락
--->
-
-```mermaid
-flowchart LR
-    FE[Streamlit FE] --> API[FastAPI] --> GRAPH[LangGraph<br/>세션 상태·전이]
-    GRAPH --> VISION[Vision Adapter]
-    GRAPH --> HUB[Tool Hub]
-    HUB --> RECIPE[Recipe<br/>CSV + Chroma]
-    HUB --> NUTRITION[Nutrition]
-    HUB --> SHOPPING[Shopping]
-    HUB --> GUIDE[RAG Guide]
-```
-
-| 이름 | 역할 | 담당 영역 |
-| --- | --- | --- |
-| 박동준 | BE·Tool Hub | 외부 API 연동 지점 관리, 이미지 기반 재료 인식, Recipe·Nutrition·Shopping 기능, ChromaDB RAG 검색, Tool 호출 및 결과 관리 |
-| 이홍진 | FE | Streamlit 화면 구현, 사용자 입력·이미지 수집, API 연동, 상태별 화면 전환, UI/UX 설계 및 테스트 |
-| 조권식 | PM | 프로젝트 일정 관리, 요구사항 정리, 팀원 업무 조율, 데이터 전처리 및 초기 데이터 관리 |
-| 최경락 | BE·Agent Orchestrator | FastAPI `/chat`, LangGraph Agent Flow·State, 세션 관리, Jev 기반 조건·재료 판정, Guardrails, 전체 결과 통합 |
-
-## 5. 🤖 에이전트 동작 방식
-
-<!--
-[포인트 1] 안전 경계: 이미지 인식 결과는 '후보'. 확인된 재료만 추천에 사용 → 이 프로젝트의 차별점
-[포인트 2] LangGraph 상태 전이: 이미지 입력 → 재료 확인 → 조건 입력 → 완료, session_id 별로 이어짐
-[포인트 3] 정보가 모일 때까지 질문하고, 확정되면 Tool Hub 실행
--->
-
-### 🔒 안전 경계
-
-> 이미지 인식 재료는 **후보**입니다. **사용자가 확인한 재료만** 추천 · 영양 · 장보기 · RAG에 전달됩니다.
-
-### 🔄 상태 전이
-
-```mermaid
-stateDiagram-v2
-    [*] --> 이미지입력
-    이미지입력 --> 재료확인: 재료 후보 추출
-    이미지입력 --> 조건입력: 자연어로 재료 입력
-    재료확인 --> 재료확인: 수정·추가·삭제
-    재료확인 --> 이미지입력: 거절·재촬영
-    재료확인 --> 조건입력: 재료 확정
-    조건입력 --> 완료: 조건 입력 완료
-    완료 --> [*]: Tool Hub 실행 → 추천 반환
-```
-
-1. **이미지 입력** → 재료 후보 추출
-2. **재료 확인** → 사용자가 추가·삭제·수량 수정
-3. **조건 수집** → "다이어트, 20분 안에" 같은 조건을 대화로 누적
-4. **추천 생성** → 확정된 재료·조건만으로 Tool Hub 실행 후 결과 반환
-
-## 6. 💡 트러블슈팅 / 배운 점
-
-<!--
-- 실제 겪은 사례에 맞게 다듬어 말하기. 2~3개만 골라도 충분
-- 질문 대비: "인식이 틀리면?" → 후보/확정 분리
--->
-
-| 문제 | 해결 |
-| --- | --- |
-| 이미지 인식이 틀리면 추천 전체가 틀어짐 | 인식 결과를 **후보**로만 다루고 **확정 재료만** Tool에 전달 |
-| 외부 판정 모듈(Jev)의 timeout · 저신뢰 응답 | **local fallback**으로 대화 흐름 유지 |
-| 보조 기능(Chroma telemetry) 경고가 핵심 기능을 방해 | 보조 기능으로 **격리**해 추천·API는 계속 동작 |
-
-## 7. 🚧 한계 & 향후 계획
-
-<!--
-- 마무리 멘트: "냉장고 속 재료를 낭비 없이 한 끼로."
-- 이후 질의응답
--->
-
-**현재 한계**
-- 세션이 프로세스 메모리 기반 (재시작·멀티 인스턴스에 취약)
-- 외부 Tool Hub / 별도 Vision 서비스는 아직 미연동 (adapter로 교체 지점 분리)
-
-**향후 계획**
-1. Redis/DB 기반 세션 저장소
-2. 외부 Tool Hub endpoint 연동
-3. 재고 · 유통기한 관리, 일주일 식단 · 장보기 추천
-4. 취향 · 알레르기 기반 개인화
-
----
-
-# 📚 프로젝트 문서
-
-> 여기부터는 레포를 직접 실행하거나 연동하는 개발자를 위한 내용입니다.
+> 냉장고·영수증 사진 또는 자연어 재료를 바탕으로, 혼밥 식단을 제안하는 대화형 AI 서비스입니다.
 
 ## 프로젝트 개요
 
-PlanEat Backend는 냉장고·영수증 이미지 또는 자연어 재료를 입력받아, 사용자가 확인한 재료와 식단 조건을
-바탕으로 레시피·영양 정보·부족 재료·장보기 목록을 제공하는 FastAPI 기반 백엔드입니다.
+혼자 사는 사람은 냉장고에 재료가 있어도 메뉴를 정하기 어렵고, 이미 가진 재료를 다시 사거나 남기기 쉽습니다. PlanEat은 보유 재료와 식단 조건을 대화로 모아 지금 만들 수 있는 식단을 제안합니다.
 
-**프로젝트 목표**
+> [!TIP]
+> **PlanEat의 핵심 원칙** — 이미지에서 찾은 재료는 바로 추천에 쓰지 않습니다. 사용자가 확인한 재료와 식단 조건이 갖춰진 뒤에만 추천을 시작합니다.
 
-1. 냉장고·영수증 이미지와 자연어 입력을 모두 지원합니다.
-2. 이미지 인식 결과를 후보로만 다루고, 사용자가 확인한 재료만 추천에 사용합니다.
-3. 재료·조건·피드백을 `session_id`별로 이어가는 대화형 흐름을 제공합니다.
-4. 레시피 2세트와 세트별 5개 레시피, 영양·부족 재료·장보기 정보를 한 번에 반환합니다.
-5. 외부 Tool Hub가 아직 준비되지 않은 환경에서도 로컬 CSV·Chroma 기반으로 동작합니다.
+<br>
 
-## 기술 스택
+## 목차
 
-| 영역 | 기술 | 사용 목적 |
+### 🎤 발표
+
+1. [팀원 소개](#팀원-소개)
+2. [주요 기능](#주요-기능)
+3. [서비스 동작 방식](#서비스-동작-방식)
+4. [핵심 기술 1: LangGraph Orchestrator](#핵심-기술-1-langgraph-orchestrator)
+5. [핵심 기술 2: Tool Hub](#핵심-기술-2-tool-hub)
+6. [확장 서비스와 안전성](#확장-서비스와-안전성)
+
+### 🛠️ 프로젝트 문서
+
+1. [빠른 시작](#빠른-시작)
+2. [Chat API](#chat-api)
+3. [구성 요소와 설정](#구성-요소와-설정)
+4. [LangGraph와 Tool Hub 상세](#langgraph와-tool-hub-상세)
+5. [외부·보조 서비스](#외부보조-서비스)
+6. [프로젝트 구조와 테스트](#프로젝트-구조와-테스트)
+7. [관련 문서](#관련-문서)
+
+<br>
+
+## 팀원 소개
+
+| 이름 | 역할 | 담당 영역 |
+| :---: | :--- | --- |
+| 조권식 | PM | 일정·요구사항 관리, 팀 업무 조율, 데이터 전처리와 초기 데이터 관리 |
+| 이홍진 | FE | Streamlit 화면, 사용자 입력·이미지 수집, API 연동, 상태별 화면 전환, UI/UX |
+| 박동준 | BE · Tool Hub | 이미지 기반 재료 인식, Recipe·Nutrition·Shopping·Guide Tool, ChromaDB 검색, Tool 호출 결과 관리 |
+| 최경락 | BE · Agent Orchestrator | FastAPI, LangGraph 상태 전이, 세션 관리, Jev 판정, Guardrails, 결과 통합 |
+
+<br>
+
+## 주요 기능
+
+| 기능 | 내용 | 사용자 가치 |
+| :--- | :--- | :--- |
+| 이미지·자연어 재료 입력 | 냉장고·영수증 사진과 직접 입력한 재료를 모두 처리 | 입력 방식에 맞춰 보유 재료를 쉽게 등록 |
+| 재료 후보 확인 | 이미지 인식 결과를 후보로 보여주고 추가·삭제·수량 수정을 받음 | 잘못 인식된 재료가 추천에 반영되는 문제 방지 |
+| 대화형 식단 조건 수집 | 다이어트, 고단백, 채식, 조리 시간 같은 조건을 여러 대화에 걸쳐 누적 | 한 번에 모든 정보를 입력하지 않아도 맞춤 추천 가능 |
+| 식단·영양·장보기 추천 | 레시피 2세트(세트당 5개), 영양 정보, 부족 재료와 장보기 목록 제공 | 지금 가진 재료로 만들 수 있는 메뉴와 추가 구매 항목을 함께 확인 |
+| 추천 피드백과 PDF | 추천을 다시 요청하거나 원하는 세트를 선택해 상세 PDF 생성 | 비교 후 선택한 식단을 조리할 때 활용 |
+
+> [!NOTE]
+> 추천 결과는 **2개 세트**, 세트별 **5개 레시피**로 제공됩니다. 각 레시피에는 영양 정보, 부족 재료, 장보기 목록이 함께 포함됩니다.
+
+<br>
+
+## 서비스 동작 방식
+
+```mermaid
+flowchart LR
+    A[1. 재료 입력<br/>사진 또는 자연어] --> B[2. 재료 확인<br/>후보 수정·확정]
+    B --> C[3. 식단 조건 입력<br/>다이어트·시간 등]
+    C --> D[4. 식단 추천<br/>레시피·영양·장보기]
+```
+
+| 단계 | 사용자가 하는 일 | 서비스가 하는 일 |
 | --- | --- | --- |
-| Runtime | Python 3.11, `uv` | 실행 환경과 의존성 관리 |
-| API | FastAPI, Uvicorn, Pydantic | 비동기 API와 DTO 검증 |
-| Agent | LangGraph, LangChain Core | 상태 전이와 Tool node 실행 |
-| LLM | OpenAI Structured Outputs | 재료·조건 구조화 |
-| Decision | TypeSafe Jev (선택) | 사용자 응답의 의도(확인·수정·거절) 판정 보조 |
-| Data | 내부 CSV, ChromaDB | 레시피 원본 · 의미 검색 |
-| Safety | NeMo Guardrails, 자체 검사 | 입력 · 출력 · Tool 결과 차단 |
-| Observability | LangSmith | 선택적 LangGraph 실행 trace |
-| Output | ReportLab | 선택 식단 PDF 생성 |
-| Test | pytest | 단위 · API · 통합 회귀 테스트 |
+| 1. 재료 입력 | 냉장고·영수증 사진을 올리거나 보유 재료를 직접 입력 | 사진에서는 재료 후보를 찾고, 자연어는 재료·수량으로 정리 |
+| 2. 재료 확인 | 후보를 확인하고 추가·삭제·수량 수정 | 확인된 재료만 확정 목록으로 저장 |
+| 3. 식단 조건 입력 | 다이어트, 고단백, 채식, 조리 시간 등을 입력 | 여러 대화의 조건을 누적해 추천 기준 구성 |
+| 4. 식단 추천 | 두 추천 세트를 비교하고 원하는 세트를 선택 | 레시피·영양·부족 재료·장보기 목록을 만들고 선택 시 PDF 생성 |
 
-## 시스템 구성 상세
+핵심은 **사진 인식 결과를 바로 추천에 쓰지 않는 것**입니다. 사용자가 재료를 확인한 뒤에만 추천을 시작하므로, 인식 오류 때문에 만들 수 없는 메뉴가 추천되는 문제를 줄입니다.
 
-| 구성 요소 | 역할 |
+### LangGraph와 Tool Hub의 역할
+
+- **LangGraph**는 대화의 현재 단계와 다음 질문을 결정하는 Orchestrator입니다. 재료 후보 확인, 조건 수집, 완료 상태를 관리하고, 완료일 때만 Tool Hub를 호출합니다.
+- **Tool Hub**는 확정 재료와 조건으로 실제 추천 데이터를 만드는 실행 계층입니다. 레시피 후보 검색, 식단 조합, 영양·장보기 계산, 부족 재료의 대체 가이드 보강을 담당합니다.
+- 두 계층을 분리해 이미지 인식 후보나 미확정 조건이 추천 데이터에 들어가지 않도록 했습니다.
+
+<br>
+
+## 핵심 기술 1: LangGraph Orchestrator
+
+일반적인 챗봇은 한 번의 요청마다 독립적으로 응답하기 쉽습니다. PlanEat은 재료 확인, 조건 수집, 추천 완료처럼 여러 차례 이어지는 대화를 다뤄야 하므로 LangGraph로 **현재 상태와 다음 행동을 명시적으로 관리**합니다.
+
+```mermaid
+stateDiagram-v2
+    [*] --> 재료입력
+    재료입력 --> 재료확인: 이미지 재료 후보 추출
+    재료입력 --> 조건입력: 자연어 재료 입력
+    재료확인 --> 재료확인: 수정 또는 재확인
+    재료확인 --> 재료입력: 후보 거절
+    재료확인 --> 조건입력: 재료 확정
+    조건입력 --> 조건입력: 목적·조건 부족
+    조건입력 --> 추천완료: 조건 충족
+    추천완료 --> [*]: Tool Hub 실행
+```
+
+| LangGraph가 관리하는 것 | 사용자에게 주는 효과 |
 | --- | --- |
-| FastAPI | `/chat`, `/health`, PDF 다운로드 endpoint와 OpenAPI 제공 |
-| ChatService | 요청 검증 이후 세션 · LLM · LangGraph · 응답 DTO 연결 |
-| LangGraph | 대화 요약, 상태 전이, 완료 단계 Tool node 실행 |
-| Vision adapter | 이미지에서 재료 후보를 구조화하여 추출 |
-| Tool Hub | Recipe · Nutrition · Shopping · RAG 결과 조합 |
-| 내부 CSV | 검증된 레시피 원본과 재료 중요도 제공 |
-| ChromaDB | 레시피 의미 검색과 재료 가이드 보강 |
-| Safety | 입력 · LLM 출력 · Tool 결과의 안전성 검사 |
-| LangSmith | 원문 대신 비식별 실행 metadata를 선택적으로 tracing |
+| `session_id`별 재료 후보·확정 재료·조건·대화 단계 | 여러 번 나눠 말해도 맥락을 유지합니다. |
+| `IMAGE_INPUT` → `INGREDIENT_CONFIRM` → `CONDITION_INPUT` → `COMPLETED` 전이 | 지금 무엇을 입력하거나 확인해야 하는지 화면이 명확합니다. |
+| 이미지 후보와 확정 재료의 분리 | 잘못 인식된 재료가 추천에 바로 반영되지 않습니다. |
+| 완료 단계에서만 Tool Hub 호출 | 조건이 부족한 상태의 불필요한 추천·검색을 막습니다. |
+| 메시지 10개 초과 시 문맥 요약 | 오래된 대화는 내부 요약으로 저장하고 최근 2개 메시지는 그대로 유지해, 긴 대화도 맥락과 상태 크기를 함께 관리합니다. |
 
-기본 Tool Hub는 프로젝트 내부 CSV를 사용합니다. `CHROMA_PERSIST_DIRECTORY`를 명시하면 사전 생성
-Chroma 인덱스를 추가 검색에 사용할 수 있습니다. 외부 Tool Hub endpoint와 별도
-Vision 서비스 endpoint는 아직 연동하지 않았고, adapter와 Tool node를 향후 교체 지점으로 분리했습니다.
-`TOOL_HUB_ENABLED=false`일 때는 OpenAI 기반 임시 추천 경로로 fallback합니다.
+발표에서는 “LangGraph가 AI에게 자유롭게 답하게 하는 도구가 아니라, **대화가 올바른 순서로 진행되도록 제어하는 워크플로우 엔진**”이라는 점을 강조하면 좋습니다.
 
-**LangGraph 상태 전이**
+<br>
 
-| 내부 상태 | FE 단계 | 다음 동작 |
+## 핵심 기술 2: Tool Hub
+
+Tool Hub는 확정 재료와 사용자 조건을 받아 실제 추천 데이터를 만드는 로컬 실행 계층입니다. 현재 외부 Tool Hub API를 호출하는 구조가 아니라, 프로젝트 내부 도구를 조합해 실행합니다. 이 구조 덕분에 추천 로직을 대화 제어 로직과 분리하고, 향후 외부 서비스로 교체할 수 있습니다.
+
+```mermaid
+flowchart TB
+    INPUT[확정 재료 + 식단 조건]
+    RESULT[추천 응답<br/>2세트 × 5개 레시피]
+
+    subgraph SEARCH[1. 후보 찾기]
+        RECIPE[Recipe Tool<br/>CSV·Chroma에서 후보 검색]
+    end
+
+    subgraph PLAN[2. 식단 구성]
+        PAIR[Planning Tool<br/>메인·반찬 조합 생성]
+        SELECT[Jev 또는 규칙 기반 선택<br/>최종 5개 식단 세트]
+    end
+
+    subgraph ENRICH[3. 추천 정보 완성]
+        SHOPPING[Shopping Tool<br/>부족 재료·장보기]
+        NUTRITION[Nutrition Tool<br/>영양 정보]
+        GUIDE[Guide Tool<br/>대체재 검색]
+    end
+
+    INPUT --> RECIPE --> PAIR --> SELECT
+    SELECT --> SHOPPING --> RESULT
+    SELECT --> NUTRITION --> RESULT
+    SELECT -. 부족 재료 .-> GUIDE
+    GUIDE -. 부족 재료 대체재 .-> SHOPPING
+```
+
+| Tool / 조합 계층 | 처리 내용 | 사용자 가치 |
 | --- | --- | --- |
-| `WAITING_IMAGE` | `IMAGE_INPUT` | 이미지 또는 자연어 재료 입력 요청 |
-| `WAITING_INGREDIENT_CONFIRM` | `INGREDIENT_CONFIRM` | 후보 확인 · 수정 · 거절 처리 |
-| `WAITING_CONDITIONS` | `CONDITION_INPUT` | 식단 목적과 조건 추가 요청 |
-| `COMPLETED` | `COMPLETED` | Tool Hub 실행 및 추천 결과 반환 |
+| Recipe Tool | 내부 CSV에서 후보를 찾고 보유 재료, 조리 시간, 다이어트·고단백·채식 조건으로 정렬 | 보유 재료 활용도가 높은 레시피를 우선 제안 |
+| Planning Tool | 최소 10개 레시피 후보를 메인·반찬 조합으로 만들고 5개 식단을 선택 | 한 가지 메뉴가 아닌 균형 잡힌 선택지 제공 |
+| Shopping Tool | 부족 재료를 중요도순으로 최대 5개까지 정리 | 바로 구매해야 할 재료를 빠르게 파악 |
+| Nutrition Tool | 원본 영양 정보를 우선 사용하고 없을 때만 제한적으로 추정 | 조건에 맞는 식단을 비교 가능 |
+| Guide Tool | 부족 재료의 대체재·활용법을 보강 | 재료가 조금 부족해도 조리 대안을 확인 |
 
-`INPUT_REQUIREMENTS`는 이미지와 자연어 조건을 한 번에 수집해야 하는 초기 응답에서 쓰는 추가 단계이고,
-`ERROR` 응답에는 `step`을 포함하지 않습니다.
+Tool Hub의 중요한 안전 장치는 **이미지에서 추정한 후보가 아니라 사용자가 확인한 재료만 입력으로 받는다**는 것입니다. 추천 결과는 다시 DTO와 Guardrails 검증을 거쳐서만 화면으로 전달됩니다.
 
-## 로컬 실행
+<br>
 
-**요구사항:** Python 3.11 이상, [uv](https://docs.astral.sh/uv/), OpenAI API key (선택: LangSmith, TypeSafe Jev API key)
+## 확장 서비스와 안전성
 
-Linux/macOS:
+PlanEat은 모든 기능을 한 모델에 맡기지 않고, 역할별 서비스와 fallback을 조합합니다. 이 서비스들은 독립적으로 켜고 끌 수 있어 장애가 전체 추천 흐름을 멈추지 않도록 설계했습니다.
+
+| 서비스 | 발표에서 설명할 역할 | 왜 사용했나 | 장애·미설정 시 동작 |
+| --- | --- | --- | --- |
+| OpenAI | 이미지·자연어에서 재료와 수량을 구조화하고, 대화 안내를 생성 | 사진과 자유 형식 문장을 일관된 재료·조건 데이터로 바꾸기 위해 | 필요한 AI 처리 실패 시 안전한 오류·고정 안내를 반환 |
+| TypeSafe Jev | 조건이 충분한지, 후보를 확정·수정·거절했는지 같은 **결정**을 분류 | 생성 모델의 자유로운 문장 대신, 상태 전이에 필요한 정해진 판단값을 얻기 위해 | confidence 미달·timeout이면 결정적 규칙으로 fallback |
+| NeMo Guardrails | 프롬프트 인젝션, 내부 프롬프트·API 키 노출을 입력·출력·Tool 결과에서 차단 | 사용자 입력·검색 결과·Tool 결과가 안전 경계를 우회하지 못하게 하기 위해 | 자체 정규화 검사로 안전성 경계 유지 |
+| ChromaDB | 레시피 후보 의미 검색과 재료 대체 가이드 보강 | 단순 키워드 일치만으로 놓칠 수 있는 유사 레시피와 대체 정보를 찾기 위해 | 내부 CSV 기반 추천을 계속 사용 |
+| LangSmith | LangGraph의 단계 전이와 Tool 호출 trace 관찰 | 다단계 대화에서 어느 단계·도구에서 문제가 생겼는지 추적하기 위해 | trace만 생략하고 사용자 응답은 계속 처리 |
+
+### 참조 개념: Jev와 NeMo Guardrails
+
+| 용어 | 쉬운 설명 |
+| --- | --- |
+| **Jev** | 문장을 만드는 AI가 아니라, “재료를 확정했는가?”, “조건이 충분한가?”처럼 다음 행동을 고르는 판단 서비스입니다. |
+| **NeMo Guardrails** | AI 입력·출력에 안전 규칙을 적용하는 보호 장치입니다. PlanEat에서는 내부 프롬프트 공개나 API 키 노출 같은 위험한 내용을 차단합니다. |
+
+특히 Jev와 NeMo Guardrails의 역할은 다릅니다. **Jev는 “다음에 무엇을 할지” 판단**하고, **NeMo Guardrails는 “이 내용을 보여줘도 안전한지” 검사**합니다. 따라서 Jev가 실패하면 규칙 기반 전이로, NeMo가 실패하면 기존 자체 안전성 검사로 각각 fallback합니다.
+
+<br>
+
+### 사용자 흐름 예시
+
+이미지에서 찾은 재료는 확인 화면에서 수정할 수 있고, 확정된 재료와 조건을 기준으로 추천 결과를 보여줍니다.
+
+<table>
+  <tr>
+    <th align="center">① 재료 후보 확인</th>
+    <th align="center">② 영수증 기반 재료 입력</th>
+    <th align="center">③ 식단 추천 결과</th>
+  </tr>
+  <tr>
+    <td><img src="docs/images/fridge-ingredient-confirmation.png" alt="냉장고 재료 후보 확인 화면" width="300"></td>
+    <td><img src="docs/images/receipt-ingredient-confirmation.png" alt="영수증 재료 후보 확인 화면" width="300"></td>
+    <td><img src="docs/images/recipe-recommendations.png" alt="추천 결과 화면" width="300"></td>
+  </tr>
+</table>
+
+### 결과와 확장 방향
+
+- 현재 세션은 프로세스 메모리에 저장되므로 서버 재시작이나 멀티 인스턴스 환경에 적합하지 않습니다.
+- Redis/DB 기반 세션 저장소, 외부 Tool Hub 연동, 재고·유통기한과 주간 식단 기능을 다음 확장 대상으로 둡니다.
+
+
+<br>
+
+---
+
+# 프로젝트 문서
+
+> 아래 내용은 저장소를 실행하거나 API를 연동하는 개발자를 위한 문서입니다.
+
+## 빠른 시작
+
+### 준비물
+
+- Python 3.11 이상
+- [uv](https://docs.astral.sh/uv/)
+- OpenAI API key — 이미지 인식·자연어 구조화·임시 추천 fallback에 필요
+
+### 설치 및 실행
+
+macOS/Linux:
 
 ```bash
 cp .env.example .env
@@ -223,104 +248,226 @@ uv sync
 uv run uvicorn app.main:app --reload --port 8000
 ```
 
+`.env`의 `OPENAI_API_KEY`를 실제 키로 교체합니다. `.env`와 실제 키는 커밋하지 않습니다.
+
 - Swagger UI: <http://127.0.0.1:8000/docs>
 - OpenAPI JSON: <http://127.0.0.1:8000/openapi.json>
-- Health: <http://127.0.0.1:8000/health>
+- Health check: <http://127.0.0.1:8000/health>
 
-## Chat API 요약
+## Chat API
 
 | Method | Path | 설명 |
 | --- | --- | --- |
-| `POST` | `/chat` | 세션별 대화 처리 JSON 응답 |
+| `POST` | `/chat` | 세션별 대화와 식단 추천 처리 |
 | `GET` | `/health` | 서버 상태 확인 |
-| `GET` | `/pdfs/{filename}` | 선택한 추천 세트의 상세 PDF 다운로드 |
+| `GET` | `/pdfs/{filename}` | 선택한 식단 세트의 PDF 다운로드 |
 
-요청 예시:
+### 요청 예시
 
 ```json
 {
   "session_id": "session-001",
-  "message": "두부 1모와 계란 4개로 다이어트 식단을 20분 안에 만들어줘.",
+  "message": "두부 1모와 계란 4개로 20분 안에 만들 수 있는 다이어트 식단을 추천해줘.",
   "attachments": []
 }
 ```
 
-`attachments`의 각 항목은 `type: "image"`, `data`를 가지며 한 요청에 최대 5개까지 허용합니다.
+`attachments`는 생략할 수 있으며, 넣는 경우 `type: "image"`과 Base64 이미지 또는 이미지 URL을 사용합니다. 한 요청에는 최대 5개를 허용합니다.
 
-FE 분기용 상태:
+### 응답 흐름
 
-| `status` | `step` | FE 동작 |
+프런트엔드는 `status`와 `step`만으로 화면 전환을 판단합니다. 표시 문구와 데이터는 `response`, `questions`, `ingredients`, `data`에서 읽습니다.
+
+| `status` | `step` | 의미 |
 | --- | --- | --- |
-| `NEED_MORE_INFO` | `IMAGE_INPUT` | 이미지 또는 자연어 재료 입력 |
-| `NEED_MORE_INFO` | `INPUT_REQUIREMENTS` | 초기 입력을 한 번에 수집 |
-| `NEED_MORE_INFO` | `INGREDIENT_CONFIRM` | 재료 후보 확인 · 수정 |
-| `NEED_MORE_INFO` | `CONDITION_INPUT` | 식단 목표 · 조건 입력 |
-| `SUCCESS` | `COMPLETED` | `data.recipe_sets` 표시 |
-| `ERROR` | 없음 | 오류 표시 |
+| `NEED_MORE_INFO` | `IMAGE_INPUT` | 사진 또는 자연어 재료가 필요합니다. |
+| `NEED_MORE_INFO` | `INGREDIENT_CONFIRM` | 이미지에서 찾은 재료 후보의 확인·수정이 필요합니다. |
+| `NEED_MORE_INFO` | `CONDITION_INPUT` | 필수 식단 목적이 필요합니다. 조리 시간은 선택입니다. |
+| `NEED_MORE_INFO` | `INPUT_REQUIREMENTS` | 이미지와 조건을 함께 받는 호환 응답입니다. |
+| `SUCCESS` | `COMPLETED` | 추천이 준비됐습니다. `data.recipe_sets`에 2세트가 들어 있습니다. |
+| `ERROR` | 없음 | 오류 메시지를 표시합니다. |
 
-성공 응답은 `recipe_sets` 2개(각 5개 레시피)를 반환하며, 세트 선택 후에는 `pdf_url`을 사용할 수 있습니다.
-표시 문구와 데이터는 `response`, `questions`, `ingredients`, `data`에서 읽습니다. 전체 요청·응답 형식은
-[Chat API 명세](docs/api/chat.md)를 참고하세요.
+성공 응답의 `recipe_sets`는 정확히 2개이고, 각 세트는 정확히 5개 레시피를 가집니다. `shopping_list` 항목은 `ingredient`, `amount`만 포함합니다. 전체 스키마와 예시는 [Chat API 명세](docs/api/chat.md)를 참고하세요.
 
-## 소스 구조
+## 구성 요소와 설정
 
-```text
-.
-├── app/
-│   ├── main.py                         # FastAPI 앱 생성·router 등록
-│   ├── api/v1/endpoints/chat/          # POST /chat, PDF endpoint
-│   ├── schemas/                        # 요청·응답 DTO와 검증 규칙
-│   ├── agent/                          # LangGraph State·Workflow
-│   │   └── tools/                      # Tool Hub·Recipe·Nutrition·Shopping Tool
-│   ├── services/                       # 세션·대화·PDF 처리
-│   ├── repositories/                   # 세션·데이터 접근
-│   └── integrations/                   # LLM·Vision·CSV·Chroma·외부 연동
-├── data/                               # 레시피 CSV·사전 생성 Chroma 인덱스
-├── docs/
-│   ├── images/                         # README 설명용 이미지 자산
-│   ├── api/                            # API 계약
-│   ├── architecture/                   # 구조·데이터 흐름
-│   ├── integrations/                   # 외부 연동·안전성
-│   └── operations/                     # 개발·운영 문서
-├── mocks/chat/                         # FE 개발용 요청·응답 fixture
-├── prompts/                            # 버전 관리되는 LLM 운영 프롬프트
-├── guardrails/                         # NeMo Guardrails 설정
-├── tests/                              # 단위·API·통합 테스트
-├── pyproject.toml                      # 프로젝트·uv 의존성 설정
-└── .env.example                        # 환경변수 예시
+| 영역 | 역할 |
+| --- | --- |
+| FastAPI | `/chat`, `/health`, PDF 다운로드와 OpenAPI 제공 |
+| ChatService | 요청 검증 뒤 세션·LLM·LangGraph·응답 DTO를 연결 |
+| LangGraph | 대화 상태 전이와 완료 단계 Tool 실행 |
+| Tool Hub | Recipe·Nutrition·Shopping·Guide Tool 결과 조합 |
+| 내부 CSV / ChromaDB | 레시피 원본과 선택적 의미 검색 |
+| NeMo Guardrails | 입력·LLM 출력·Tool 결과의 안전성 검사 |
+| LangSmith | 선택적 비식별 실행 trace |
+
+기본 Tool Hub는 내부 CSV를 사용합니다. `CHROMA_PERSIST_DIRECTORY`를 지정한 경우에만 사전 생성 Chroma 인덱스로 검색을 보강합니다. 외부 Tool Hub endpoint와 별도 Vision 서비스 endpoint는 아직 연동하지 않았으며, adapter와 Tool node가 교체 지점입니다. `TOOL_HUB_ENABLED=false`일 때만 OpenAI 기반 임시 추천 경로로 fallback합니다.
+
+## LangGraph와 Tool Hub 상세
+
+### 1. LangGraph Orchestrator
+
+`ChatService`는 세션 데이터와 요청을 `ChatState`로 만들고, LangGraph가 다음 화면 단계와 Tool Hub 호출 여부를 결정합니다. 대화가 10개 메시지를 넘으면 오래된 메시지를 로컬 요약으로 압축하고 최근 2개를 유지합니다.
+
+```mermaid
+stateDiagram-v2
+    [*] --> WAITING_IMAGE
+    WAITING_IMAGE --> INGREDIENT_CONFIRM: 이미지에서 재료 후보 추출
+    WAITING_IMAGE --> CONDITION_INPUT: 자연어 재료가 확정됨
+    INGREDIENT_CONFIRM --> INGREDIENT_CONFIRM: 수정 또는 재확인
+    INGREDIENT_CONFIRM --> WAITING_IMAGE: 후보 거절
+    INGREDIENT_CONFIRM --> CONDITION_INPUT: 후보 확정, 조건 부족
+    INGREDIENT_CONFIRM --> COMPLETED: 후보 확정, 조건 충족
+    CONDITION_INPUT --> CONDITION_INPUT: 조건 부족
+    CONDITION_INPUT --> COMPLETED: 조건 충족
+    COMPLETED --> TOOL_HUB: 확정 재료와 조건만 전달
+    TOOL_HUB --> [*]
 ```
 
-README 설명용 이미지는 [`docs/images/`](docs/images/)에, API 테스트용 냉장고·영수증 이미지는
-[`mocks/chat/images/`](mocks/chat/images/)에 분리해 관리합니다.
+| 내부 상태 | API `step` | 처리 내용 |
+| --- | --- | --- |
+| `WAITING_IMAGE` | `IMAGE_INPUT` | 이미지 또는 자연어 재료 입력을 기다립니다. |
+| `WAITING_INGREDIENT_CONFIRM` | `INGREDIENT_CONFIRM` | 이미지 인식 후보를 확인·수정·거절합니다. |
+| `WAITING_CONDITIONS` | `CONDITION_INPUT` | 필수 식단 목적을 수집합니다. 조리 시간은 선택입니다. |
+| `COMPLETED` | `COMPLETED` | Tool Hub를 실행하고 추천 결과를 응답 DTO로 변환합니다. |
 
-## 환경 변수
+Tool Hub 호출 전 `ToolRequest`는 `session_id`, `tool_name`, `confirmed_ingredients`, `user_conditions`로 정규화됩니다. 확정 재료 또는 조건이 하나라도 없으면 요청을 만들지 않습니다. Tool 결과는 다시 DTO 검증과 NeMo Guardrails 검사를 통과해야 `/chat` 응답에 반영됩니다.
 
-전체 예시는 [`.env.example`](.env.example)에 있습니다. 실제 API key · token · 이미지 원문 · `.env` 파일은 Git에 커밋하지 않습니다.
+### 2. 로컬 Tool Hub 처리 흐름
+
+현재 Tool Hub는 외부 HTTP 서비스가 아닙니다. `PlanEatToolHub`가 프로젝트 안에서 `Recipe Tool`, `Nutrition Tool`, `Shopping Tool`, `Guide Tool`을 조합하는 로컬 구현이며, 외부 endpoint로 바꿀 수 있도록 `ToolRequestExecutor` 인터페이스 뒤에 분리돼 있습니다.
+
+```mermaid
+flowchart TD
+    INPUT[확정 재료 + 사용자 조건] --> SEARCH[Recipe Tool<br/>후보 검색·필터·정렬]
+    SEARCH --> PAIR[Planning Tool<br/>메인·반찬 조합 생성]
+    PAIR --> SELECT[Jev 선택 또는 결정적 fallback]
+    SELECT --> EXCLUDE[제외 재료 판단·필요 시 재계획]
+    EXCLUDE --> SHOPPING[Shopping Tool<br/>부족 재료·장보기]
+    SHOPPING --> NUTRITION[Nutrition Tool]
+    NUTRITION --> ADAPT[2개 세트 × 5개 레시피 DTO 변환]
+    GUIDE[Guide Tool<br/>대체재 검색] --> SHOPPING
+```
+
+1. **Recipe Tool** — 기본 카탈로그인 `data/chroma/COOKRCP01_INTEGRITY_CHECKED_V13.csv`에서 후보를 읽습니다. 확정 재료 일치 여부, 보유 주재료 수, 부족 재료 수, 조리 시간, 고단백·다이어트·채식 조건을 반영해 정렬합니다. Chroma 경로가 설정되면 의미 검색으로 후보를 보강하고, 연결에 실패하면 CSV 검색을 계속 사용합니다.
+2. **Planning Tool** — 서로 다른 레시피가 최소 10개 필요합니다. 상위 후보에서 메인과 반찬 조합을 만들고, 정확히 5개 식단 세트를 고릅니다. 현재 `/chat` 호환 계층에서는 이 5개 메인·반찬 세트의 레시피를 평면화·재정렬해 `BEST_MATCH`, `MORE_OPTIONS` 두 세트에 각각 5개씩 반환합니다.
+3. **Jev 선택과 fallback** — TypeSafe Jev가 활성화되어 있고 신뢰도 기준을 통과하면 사용자 조건에 맞는 조합 5개를 선택합니다. API 키가 없거나 timeout·형식 오류·낮은 신뢰도가 발생하면 결정적 규칙이 앞선 후보 5개를 선택해 흐름을 유지합니다.
+4. **제외 재료 처리** — 사용자가 제외한 재료는 생략 가능·대체 가능·필수로 판정합니다. 생략 가능은 장보기에서 빼고, 대체 가능은 Guide Tool의 첫 대체재를 사용합니다. 필수 재료이거나 대체재가 없으면 해당 재료가 포함되지 않은 후보로 다시 계획합니다.
+5. **Shopping Tool** — 각 레시피의 보유 재료와 부족 재료를 비교해 `missing_ingredients`와 `shopping_list`를 만듭니다. 중요도는 필수 → 권장 → 대체 가능 → 생략 가능 순이며, 화면에는 최대 5개 항목만 노출합니다. 생략 가능 재료는 장보기 목록에서 제외합니다.
+6. **Nutrition Tool** — 카탈로그의 영양 정보를 우선 사용합니다. 값이 없는 레시피만 알려진 기본 재료의 1인분 근사치로 계산하고, 내부적으로 출처를 구분합니다.
+7. **Guide Tool** — 부족 재료에 대해 대체재·활용법을 검색해 Shopping Tool을 보조합니다. Chroma가 설정되지 않았거나 검색에 실패해도 추천·영양·장보기는 계속 동작합니다.
+
+### 3. 실패와 fallback 정책
+
+| 상황 | 동작 |
+| --- | --- |
+| `TOOL_HUB_ENABLED=false` | Tool Hub 대신 OpenAI 임시 추천 경로를 사용합니다. |
+| Chroma 초기화·검색 실패 | 빈 가이드 검색기 또는 CSV Recipe Tool로 fallback합니다. |
+| Jev 비활성·timeout·저신뢰 | 보수적인 결정적 규칙으로 세트 선택과 제외 재료 판단을 수행합니다. |
+| 최소 10개 레시피 또는 5개 세트를 만들 수 없음 | 안전한 Tool 오류로 변환하며 `/chat`은 `500 ERROR`을 반환합니다. |
+| Tool 결과 DTO·Guardrails 검증 실패 | 결과를 사용자에게 노출하지 않고 `500 ERROR`을 반환합니다. |
+
+## 외부·보조 서비스
+
+서비스마다 담당 범위와 장애 시 영향이 다릅니다. OpenAI와 TypeSafe Jev는 선택적으로 외부 API를 호출하며, NeMo Guardrails·CSV·기본 가이드 검색 fallback은 애플리케이션 내부에서 동작합니다.
+
+| 서비스 | 분류 | PlanEat에서의 역할 | 비활성화·실패 시 |
+| --- | --- | --- | --- |
+| OpenAI | 외부 AI API | 이미지·자연어 재료 구조화, 안내 문구 생성, Tool Hub 비활성 시 임시 추천 | 해당 AI 처리가 필요한 요청은 안전한 오류 또는 고정 안내로 처리합니다. |
+| TypeSafe Jev | 외부 판단 API | 자연어를 정해진 선택값으로 분류해 상태 전이·식단 선택을 보조 | 결정적 규칙으로 fallback하고 API 계약은 유지합니다. |
+| NeMo Guardrails | 로컬 안전성 라이브러리 | 입력·LLM 출력·Tool 결과의 위험 패턴 검사 | 기존 `app/core/safety.py` 검사만 유지합니다. |
+| ChromaDB | 선택적 로컬 벡터 저장소 | 레시피 후보 의미 검색과 부족 재료 가이드 검색 | 내부 CSV와 빈 가이드 검색기로 계속 동작합니다. |
+| LangSmith | 선택적 외부 관측성 서비스 | LangGraph 실행 trace 확인 | trace만 생략하며 `/chat` 흐름에는 영향이 없습니다. |
+
+### OpenAI: 구조화 추출과 임시 추천
+
+OpenAI는 최종 추천 데이터의 기본 source가 아닙니다. 기본 설정에서 추천 카드는 내부 CSV 기반 Tool Hub가 만듭니다. OpenAI는 다음처럼 **구조화가 필요한 경계**에 사용합니다.
+
+- 냉장고·영수증 이미지와 자연어에서 재료명·수량을 추출합니다.
+- 자연어 재료 입력을 확정 재료 형태로 정리하고, 부족한 정보를 묻는 안내 문구를 만듭니다.
+- `TOOL_HUB_ENABLED=false`일 때에만 2세트 × 5개 형식의 임시 추천 fallback을 생성합니다.
+
+이미지와 사용자 메시지는 외부 AI 처리 대상이 될 수 있으므로 운영 전 제3자 전송·보관 정책을 검토해야 합니다. API 키는 `OPENAI_API_KEY`로만 주입하며, 코드·fixture·로그에 기록하지 않습니다.
+
+### TypeSafe Jev: 문장 생성이 아닌 결정 보조
+
+Jev는 사용자에게 보여 줄 답변을 만드는 모델이 아니라, 미리 정의한 선택지와 confidence를 반환해 LangGraph가 안전하게 분기하도록 돕는 판단 서비스입니다. `TYPESAFE_JEV_ENABLED=true`와 API 키가 모두 있을 때만 호출합니다.
+
+| 적용 위치 | Jev가 판단하는 것 | 후속 처리 |
+| --- | --- | --- |
+| 조건 수집 | 식단 목적이 충분한지 (`ready` / `needs_more_info`) | `CONDITION_INPUT` 유지 또는 완료 단계 진행 |
+| 재료 후보 확인 | `confirmed` / `edited` / `rejected` / `unclear` | 후보 확정·수정·폐기·재확인 |
+| 완료 후 피드백 | 재추천, 조건 갱신, 세트 선택의 의도 | 기존 조건을 갱신하거나 검증된 세트 선택 처리 |
+| Tool Hub 식단 계획 | 메인·반찬 후보 중 최종 5개 선택 | 정확히 5개가 선택될 때만 반영 |
+| 제외 재료 | 생략 가능·대체 가능·필수 | 장보기 수정 또는 레시피 재계획 |
+
+`TYPESAFE_JEV_MIN_CONFIDENCE`의 기본값은 `0.8`입니다. API 오류, timeout, 응답 형식 오류, confidence 미달 또는 정확히 5개를 고르지 못한 경우에는 Jev 결과를 사용하지 않고 결정적 fallback을 적용합니다. 따라서 Jev가 꺼져 있어도 `/chat`의 `status`, `step`, 응답 스키마는 바뀌지 않습니다.
+
+활성화 시 현재 사용자 메시지와 식단 계획에 필요한 요약 데이터가 TypeSafe API로 전송될 수 있습니다. 사용자 메시지·이미지 원문과 API 키를 로그·fixture·문서에 남기지 않으며, 운영 전 개인정보 및 제3자 처리 정책을 검토해야 합니다.
+
+### NeMo Guardrails: 대화 제어가 아닌 안전성 경계
+
+NeMo Guardrails는 LangGraph의 상태 전이를 결정하지 않고, `IORails.check_async()` 기반의 결정적 정규식 검사만 수행합니다. 별도의 NVIDIA API 키나 추가 모델 호출은 필요하지 않습니다.
+
+```text
+사용자 메시지
+  → app/core/safety.py 정규화 검사
+  → NeMo input rail
+  → LangGraph · Tool Hub
+  → NeMo output rail (ToolResult)
+  → NeMo output rail (최종 안내 문구)
+  → ChatResponse
+```
+
+- **입력 검사**: 이전 지시 무시, 시스템·개발자 프롬프트 공개, prompt injection, jailbreak 같은 패턴을 차단합니다. NFKC 정규화와 구분 문자 제거를 하는 자체 검사도 함께 적용해 표기 우회를 줄입니다.
+- **출력·Tool 결과 검사**: 시스템·개발자 지시, 내부 프롬프트, API 키 등 내부 정보가 응답으로 새지 않도록 막습니다. 현재 Tool Hub는 별도 async 계약을 쓰므로 구조적 tool-call rail 대신 output rail로 검사합니다.
+- **차단과 장애 처리**: 프롬프트 공개 요청은 FE 호환을 위해 안전한 `NEED_MORE_INFO / CONDITION_INPUT` 안내로 바꾸고, 그 외 위험 입력은 `400 ERROR`으로 처리합니다. 출력·Tool 결과 차단은 원문을 노출하지 않고 `500 ERROR`으로 처리합니다. NeMo 설정·엔진 장애 때는 오류 유형만 로그에 남기고 기존 자체 검사로 fallback합니다.
+
+기본값은 `NEMO_GUARDRAILS_ENABLED=true`이며, 설정 경로는 `NEMO_GUARDRAILS_CONFIG_PATH=guardrails`입니다. 긴급 호환성 확인 외에는 비활성화하지 않습니다.
+
+### ChromaDB와 LangSmith
+
+- **ChromaDB**는 외부 Recipe API가 아니라 선택적 로컬 인덱스입니다. `CHROMA_PERSIST_DIRECTORY`가 있을 때만 Recipe Tool의 후보 검색과 Guide Tool의 대체재 검색에 사용합니다. 기동 중 전체 재색인은 무거울 수 있으므로 `CHROMA_AUTO_INDEX_ON_STARTUP=false`가 기본값입니다.
+- **LangSmith**는 `LANGSMITH_TRACING=true`와 API 키가 있을 때만 LangGraph 실행을 관찰합니다. 사용자 메시지·이미지·대화 요약의 입력/출력은 숨기고, 해시된 세션 ID, 상태, 첨부 수, Tool 활성화 여부 같은 비식별 metadata만 전송합니다. tracer 초기화나 전송이 실패해도 추천 요청은 계속 처리됩니다.
+
+전체 환경 변수 예시는 [`.env.example`](.env.example)에 있습니다.
 
 | 변수 | 기본값 | 용도 |
 | --- | --- | --- |
-| `OPENAI_API_KEY` | 없음 | Vision · LLM 연동 |
+| `OPENAI_API_KEY` | 없음 | Vision·LLM 연동 |
 | `OPENAI_MODEL` | `gpt-4o-mini` | 기본 OpenAI 모델 |
 | `TOOL_HUB_ENABLED` | `true` | 로컬 Tool Hub 사용 여부 |
 | `CHROMA_PERSIST_DIRECTORY` | 없음 | 선택적 사전 생성 Chroma 인덱스 경로 |
-| `CHROMA_AUTO_INDEX_ON_STARTUP` | `false` | 기동 시 전체 CSV 재색인 여부 |
+| `CHROMA_AUTO_INDEX_ON_STARTUP` | `false` | 기동 시 CSV 전체 재색인 여부 |
 | `NEMO_GUARDRAILS_ENABLED` | `true` | NeMo Guardrails 사용 여부 |
 | `TYPESAFE_JEV_ENABLED` | `false` | TypeSafe Jev 선택 연동 여부 |
 | `LANGSMITH_TRACING` | `false` | LangGraph tracing 여부 |
 | `PDF_STORAGE_DIRECTORY` | `output/pdf` | 생성 PDF 저장 경로 |
 
-OpenAI·TypeSafe·PDF 이미지 외부 호출의 timeout은 [`app/core/timeouts.py`](app/core/timeouts.py)에서
-180초로 고정 관리합니다.
-
-CSV를 의도적으로 변경해 재색인할 때만 아래 명령을 실행하세요.
+CSV를 변경해 Chroma 인덱스를 갱신할 때만 아래 명령을 실행합니다. 일반 개발·데모 환경에서는 `CHROMA_AUTO_INDEX_ON_STARTUP=false`를 유지하세요.
 
 ```bash
 PYTHONPATH=. uv run python scripts/index_recipe_catalog.py --persist-directory data/chroma
 ```
 
-## 테스트
+## 프로젝트 구조와 테스트
 
-Linux/macOS:
+```text
+app/
+├── api/v1/endpoints/chat/  HTTP 입력·응답과 PDF endpoint
+├── schemas/                Pydantic 요청·응답 DTO
+├── agent/                  LangGraph 상태·전이·Tool node
+├── services/               세션·대화·PDF 처리
+├── integrations/           LLM·Vision·CSV·Chroma 등 외부 연결
+└── repositories/           세션·데이터 접근
+docs/                       API·아키텍처·연동·운영 문서
+mocks/chat/                 FE 개발용 요청·응답 fixture
+prompts/                    버전 관리되는 LLM 운영 프롬프트
+guardrails/                 NeMo Guardrails 설정
+tests/                      단위·API·통합 테스트
+```
+
+macOS/Linux:
 
 ```bash
 PYTHONPATH=. uv run pytest
@@ -335,7 +482,7 @@ uv run pytest
 git diff --check
 ```
 
-## 참고 문서
+## 관련 문서
 
 - [Chat API 명세](docs/api/chat.md)
 - [데이터 흐름](docs/architecture/data-flow.md)
@@ -347,17 +494,4 @@ git diff --check
 - [LangSmith 연동](docs/integrations/langsmith.md)
 - [온보딩](docs/operations/onboarding.md)
 - [전체 문서 안내](docs/README.md)
-
-FE fixture와 데모 이미지:
-
-- [Chat fixture 안내](mocks/chat/README.md)
-- [냉장고·영수증 fixture 이미지](mocks/chat/images/README.md)
-- [이미지 요청 fixture](mocks/chat/request-image-base64.json)
-- [성공 응답 fixture](mocks/chat/response-success.json)
-
-## 개발 메모
-
-- 재료 수량만 수정하는 응답은 기존 후보 목록에서 해당 재료의 수량만 교체하고 나머지는 유지합니다.
-- LangSmith에는 사용자 메시지와 이미지 원문 대신 session hash와 비식별 상태 metadata만 전송합니다.
-- Chroma telemetry 관련 라이브러리 경고가 발생해도 CSV 추천과 API 실행 자체를 중단하지 않도록 보조 기능으로 격리되어 있습니다.
-- Chroma·PostHog 호환 버전 정리가 필요합니다.
+- [FE fixture 안내](mocks/chat/README.md)

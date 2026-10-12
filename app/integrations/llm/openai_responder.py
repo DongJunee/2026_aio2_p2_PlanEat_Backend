@@ -93,6 +93,10 @@ _RECOMMENDATION_RESPONSE_SCHEMA = {
                                         "title": {"type": "string"},
                                         "image": {"type": ["string", "null"]},
                                         "cook_time": {"type": "integer"},
+                                        "cooking_steps": {
+                                            "type": "array",
+                                            "items": {"type": "string"},
+                                        },
                                         "owned_ingredients": {
                                             "type": "array",
                                             "items": {"type": "string"},
@@ -158,6 +162,7 @@ _RECOMMENDATION_RESPONSE_SCHEMA = {
                                         "title",
                                         "image",
                                         "cook_time",
+                                        "cooking_steps",
                                         "owned_ingredients",
                                         "missing_ingredients",
                                         "shopping_list",

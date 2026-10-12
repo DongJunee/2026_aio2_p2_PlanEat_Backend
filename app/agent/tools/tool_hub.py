@@ -219,6 +219,7 @@ class PlanEatToolHub:
             title=match.recipe.title,
             image=match.recipe.image,
             cook_time=match.recipe.cook_time,
+            cooking_steps=list(match.recipe.cooking_steps),
             owned_ingredients=[item.name for item in match.owned_ingredients],
             missing_ingredients=shopping.missing_ingredients,
             shopping_list=shopping.shopping_list,

@@ -1,4 +1,4 @@
-"""선택한 식단 세트를 다크 테마 상세 PDF로 생성하고 다운로드 URL을 제공합니다."""
+"""선택한 식단 세트를 화이트 & 그린 테마 상세 PDF로 생성하고 다운로드 URL을 제공합니다."""
 
 from __future__ import annotations
 
@@ -28,14 +28,16 @@ from app.schemas.chat import RecommendationData, Recipe, RecipeSet
 
 _PAGE_WIDTH, _PAGE_HEIGHT = A4
 _MARGIN = 16 * mm
-_BACKGROUND = colors.HexColor("#06140D")
-_PANEL = colors.HexColor("#102D1D")
-_PANEL_DARK = colors.HexColor("#0B2116")
-_BORDER = colors.HexColor("#285A42")
-_TEXT = colors.HexColor("#EAF4EC")
-_MUTED = colors.HexColor("#9AB5A3")
-_LIME = colors.HexColor("#B7FF16")
-_CORAL = colors.HexColor("#FF6A4D")
+# 기존 카드·표·페이지 구조를 유지하면서, 인쇄와 화면 모두에서 읽기 쉬운
+# 백색 바탕과 그린 계열 역할 색으로만 테마를 전환한다.
+_BACKGROUND = colors.HexColor("#F7FBF8")
+_PANEL = colors.HexColor("#FFFFFF")
+_PANEL_DARK = colors.HexColor("#EEF7F0")
+_BORDER = colors.HexColor("#B8DCC2")
+_TEXT = colors.HexColor("#183B28")
+_MUTED = colors.HexColor("#6B8272")
+_ACCENT = colors.HexColor("#257A4D")
+_PLACEHOLDER = colors.HexColor("#DCEFE1")
 _RECIPE_IMAGE_HOSTS = frozenset({"foodsafetykorea.go.kr", "www.foodsafetykorea.go.kr"})
 _MAX_RECIPE_IMAGE_BYTES = 8 * 1024 * 1024
 
@@ -140,31 +142,26 @@ def _register_korean_font() -> str:
 
 
 def _draw_cover(canvas: Canvas, selected_set: RecipeSet, font_name: str) -> None:
-    """첫 페이지에 선택 레시피의 요약과 다음 페이지 안내를 표시합니다."""
+    """첫 페이지에 선택 레시피 목록과 다음 페이지 안내를 표시합니다."""
 
     _background(canvas)
-    _pill(canvas, _MARGIN, 760, 45 * mm, 11 * mm, "PLAN EAT", font_name, _LIME, _BACKGROUND)
-    _text(canvas, "TODAY'S FIVE", _MARGIN, 716, 12, _LIME, font_name)
+    _pill(canvas, _MARGIN, 760, 45 * mm, 11 * mm, "PLAN EAT", font_name, _ACCENT, colors.white)
+    _text(canvas, "TODAY'S FIVE", _MARGIN, 716, 12, _ACCENT, font_name)
     _text(canvas, "오늘의 추천 레시피 5", _MARGIN, 670, 28, _TEXT, font_name)
     _text(canvas, "확정한 재료를 먼저 활용해 고른 다섯 가지 레시피입니다.", _MARGIN, 644, 11, _MUTED, font_name)
     _text(canvas, "다음 페이지부터 레시피별 재료와 조리 방법을 한 장씩 확인할 수 있어요.", _MARGIN, 626, 11, _MUTED, font_name)
-    for index, (label, value) in enumerate((("선택 레시피", "5개"), ("보유 재료 우선", "MATCH"), ("조리 시간", "미입력"), ("추천 구성", "한 끼씩"))):
-        x = _MARGIN + index * 127
-        _round_panel(canvas, x, 470, 122, 47 * mm, _PANEL)
-        _text(canvas, label, x + 16, 575, 8, _MUTED, font_name)
-        _text(canvas, value, x + 16, 559, 13, _TEXT, font_name)
-    _text(canvas, "선택한 레시피 한눈에 보기", _MARGIN, 430, 17, _TEXT, font_name)
-    table_y, table_h = 145, 260
+    _text(canvas, "선택한 레시피 한눈에 보기", _MARGIN, 520, 17, _TEXT, font_name)
+    table_y, table_h = 225, 260
     _round_panel(canvas, _MARGIN, table_y, _PAGE_WIDTH - 2 * _MARGIN, table_h, _PANEL_DARK, _BORDER)
     for label, offset in (("#", 8), ("레시피", 42), ("분류", 190), ("시간", 310), ("열량", 380), ("구성", 456)):
         _text(canvas, label, _MARGIN + offset, table_y + table_h - 24, 8, _MUTED, font_name)
     row_y = table_y + table_h - 47
     for index, recipe in enumerate(selected_set.recipes, start=1):
         if index > 1:
-            canvas.setStrokeColor(colors.HexColor("#244A38"))
+            canvas.setStrokeColor(_BORDER)
             canvas.line(_MARGIN + 5 * mm, row_y + 15, _PAGE_WIDTH - _MARGIN - 5 * mm, row_y + 15)
         category = " · ".join(recipe.owned_ingredients[:2]) or "추천 레시피"
-        _text(canvas, f"{index:02d}", _MARGIN + 8, row_y, 12, _CORAL, font_name)
+        _text(canvas, f"{index:02d}", _MARGIN + 8, row_y, 12, _ACCENT, font_name)
         _text(canvas, _ellipsis(recipe.title, font_name, 10, 145), _MARGIN + 42, row_y + 1, 10, _TEXT, font_name)
         _text(canvas, _ellipsis(category, font_name, 8, 105), _MARGIN + 190, row_y + 2, 8, _MUTED, font_name)
         _text(canvas, _cook_time_label(recipe), _MARGIN + 310, row_y + 2, 8, _MUTED, font_name)
@@ -172,43 +169,78 @@ def _draw_cover(canvas: Canvas, selected_set: RecipeSet, font_name: str) -> None
         _text(canvas, f"{len(recipe.owned_ingredients)}/{len(recipe.shopping_list)}", _MARGIN + 456, row_y + 2, 7, _MUTED, font_name)
         row_y -= 49
     _round_panel(canvas, _MARGIN, 75, _PAGE_WIDTH - 2 * _MARGIN, 25 * mm, _PANEL)
-    _text(canvas, "NEXT", _MARGIN + 8 * mm, 103, 9, _LIME, font_name)
+    _text(canvas, "NEXT", _MARGIN + 8 * mm, 103, 9, _ACCENT, font_name)
     _text(canvas, "다음 페이지부터 레시피 01부터 05까지 상세 정보가 한 장씩 이어집니다.", _MARGIN + 32 * mm, 103, 10, _TEXT, font_name)
     _footer(canvas, 1, font_name)
 
 
 def _draw_recipe_page(canvas: Canvas, index: int, recipe: Recipe, font_name: str) -> None:
-    """시안의 카드 구성으로 레시피 한 개를 A4 한 페이지에 렌더링합니다."""
+    """이미지·재료·조리 단계가 중심이 되도록 레시피 한 개를 A4에 렌더링합니다."""
 
     _background(canvas)
     _text(canvas, "PlanEat", _MARGIN, 804, 16, _TEXT, font_name)
     _text(canvas, "내 냉장고에서 시작하는 식단", _MARGIN, 785, 8, _MUTED, font_name)
-    _pill(canvas, _PAGE_WIDTH - _MARGIN - 58 * mm, 788, 58 * mm, 12 * mm, "TODAY'S MENU", font_name, _LIME, _BACKGROUND)
-    _text(canvas, f"RECIPE {index:02d}  ·  ID {recipe.recipe_id}", _MARGIN, 740, 10, _LIME, font_name)
-    _text(canvas, _ellipsis(recipe.title, font_name, 25, _PAGE_WIDTH - 2 * _MARGIN), _MARGIN, 705, 25, _TEXT, font_name)
+    _pill(canvas, _PAGE_WIDTH - _MARGIN - 58 * mm, 788, 58 * mm, 12 * mm, "TODAY'S MENU", font_name, _ACCENT, colors.white)
+    _text(canvas, _ellipsis(recipe.title, font_name, 25, _PAGE_WIDTH - 2 * _MARGIN), _MARGIN, 728, 25, _TEXT, font_name)
     subtitle = " · ".join(recipe.owned_ingredients[:2]) or "추천 레시피"
-    _text(canvas, f"{subtitle} · 조리 시간 {_cook_time_label(recipe)}", _MARGIN, 681, 10, _MUTED, font_name)
-    _round_panel(canvas, _MARGIN, 451, 210, 181, _PANEL)
-    _text(canvas, "TODAY'S PLATE", _MARGIN + 8 * mm, 608, 8, _CORAL, font_name)
-    _draw_recipe_image(canvas, recipe.image, _MARGIN + 8 * mm, 500, 178, 102, font_name)
-    _text(canvas, _ellipsis(recipe.title, font_name, 10, 178), _MARGIN + 8 * mm, 476, 10, _TEXT, font_name)
-    for position, (label, value) in enumerate((("조리 시간", _cook_time_label(recipe)), ("레시피 ID", recipe.recipe_id), ("보유 재료", f"{len(recipe.owned_ingredients)}개 활용"))):
-        x = 272 + position * 95
-        _round_panel(canvas, x, 586, 88, 67, _PANEL_DARK, _BORDER)
-        _text(canvas, label, x + 10, 625, 8, _MUTED, font_name)
-        _text(canvas, _ellipsis(value, font_name, 12, 68), x + 10, 604, 12, _TEXT, font_name)
-    panel_width = (_PAGE_WIDTH - 2 * _MARGIN - 14) / 2
-    _ingredient_panel(canvas, _MARGIN, 254, panel_width, 155, "보유 재료", [f"✓ {item}" for item in recipe.owned_ingredients] or ["✓ 활용 가능한 재료 없음"], font_name)
-    _ingredient_panel(canvas, _MARGIN + panel_width + 14, 254, panel_width, 155, "장보기 목록", [f"□ {item.ingredient} {item.amount}" for item in recipe.shopping_list] or ["□ 추가 장보기 없음"], font_name)
+    _text(canvas, f"{subtitle} · 조리 시간 {_cook_time_label(recipe)}", _MARGIN, 700, 10, _MUTED, font_name)
+
+    content_width = _PAGE_WIDTH - 2 * _MARGIN
+    _round_panel(canvas, _MARGIN, 510, content_width, 170, _PANEL)
+    _text(canvas, "TODAY'S PLATE", _MARGIN + 8 * mm, 650, 8, _ACCENT, font_name)
+    image_x = _MARGIN + 8 * mm
+    image_width = content_width * 0.50 - 8 * mm
+    _draw_recipe_image(
+        canvas,
+        recipe.image,
+        image_x,
+        525,
+        image_width,
+        112,
+        font_name,
+    )
+
+    info_x = image_x + image_width + 8 * mm
+    info_width = content_width - image_width - 24 * mm
+    for position, (label, value) in enumerate(
+        (("조리 시간", _cook_time_label(recipe)), ("보유 재료", f"{len(recipe.owned_ingredients)}개 활용"))
+    ):
+        card_y = 584 - position * 59
+        _round_panel(canvas, info_x, card_y, info_width, 52, _PANEL_DARK, _BORDER)
+        _text(canvas, label, info_x + 12, card_y + 31, 8, _MUTED, font_name)
+        _text(canvas, _ellipsis(value, font_name, 12, info_width - 24), info_x + 12, card_y + 11, 12, _TEXT, font_name)
+
+    panel_width = (content_width - 14) / 2
+    _ingredient_panel(canvas, _MARGIN, 330, panel_width, 160, "보유 재료", [f"✓ {item}" for item in recipe.owned_ingredients] or ["✓ 활용 가능한 재료 없음"], font_name)
+    _ingredient_panel(canvas, _MARGIN + panel_width + 14, 330, panel_width, 160, "장보기 목록", [f"□ {item.ingredient} {item.amount}" for item in recipe.shopping_list] or ["□ 추가 장보기 없음"], font_name)
     _nutrition_bar(canvas, recipe, font_name)
-    _text(canvas, "조리 단계", _MARGIN, 151, 15, _TEXT, font_name)
-    _round_panel(canvas, _MARGIN, 104, _PAGE_WIDTH - 2 * _MARGIN, 35, _PANEL_DARK)
-    _text(canvas, "DATA", _MARGIN + 8 * mm, 121, 8, _MUTED, font_name)
-    _text(canvas, "제공된 레시피 데이터에 조리 단계가 포함되어 있지 않습니다.", _MARGIN + 31 * mm, 121, 9, _TEXT, font_name)
-    _round_panel(canvas, _MARGIN, 58, _PAGE_WIDTH - 2 * _MARGIN, 31, _PANEL)
-    _text(canvas, "TIP", _MARGIN + 8 * mm, 72, 8, _LIME, font_name)
-    _text(canvas, _ellipsis(_tip_text(recipe), font_name, 8.5, _PAGE_WIDTH - 2 * _MARGIN - 48 * mm), _MARGIN + 28 * mm, 72, 8.5, _TEXT, font_name)
+    _draw_cooking_steps(canvas, recipe, font_name)
+    _round_panel(canvas, _MARGIN, 100, content_width, 28, _PANEL)
+    _text(canvas, "TIP", _MARGIN + 8 * mm, 110, 8, _ACCENT, font_name)
+    _text(canvas, _ellipsis(_tip_text(recipe), font_name, 8.5, content_width - 48 * mm), _MARGIN + 28 * mm, 110, 8.5, _TEXT, font_name)
     _footer(canvas, index + 1, font_name)
+
+
+def _draw_cooking_steps(canvas: Canvas, recipe: Recipe, font_name: str) -> None:
+    """레시피 원본의 조리 단계를 번호 목록으로 표시합니다."""
+
+    content_width = _PAGE_WIDTH - 2 * _MARGIN
+    _text(canvas, "조리 단계", _MARGIN, 250, 15, _TEXT, font_name)
+    _round_panel(canvas, _MARGIN, 139, content_width, 100, _PANEL_DARK)
+    steps = recipe.cooking_steps[:7] or ["제공된 레시피 데이터에 조리 단계가 없습니다."]
+    row_y = 215
+    for index, step in enumerate(steps):
+        _text(canvas, f"{index + 1:02d}", _MARGIN + 10, row_y, 8, _ACCENT, font_name)
+        _text(
+            canvas,
+            _ellipsis(step, font_name, 7.5, content_width - 43),
+            _MARGIN + 35,
+            row_y + 1,
+            7.5,
+            _TEXT,
+            font_name,
+        )
+        row_y -= 12
 
 
 def _background(canvas: Canvas) -> None:
@@ -250,9 +282,28 @@ def _draw_recipe_image(canvas: Canvas, image_data: str | None, x: float, y: floa
 
     image = _data_uri_image(image_data)
     if image is not None:
-        canvas.drawImage(image, x, y, width=width, height=height, preserveAspectRatio=True, anchor="c", mask="auto")
+        try:
+            image_width, image_height = image.getSize()
+            scale = max(width / image_width, height / image_height)
+            draw_width = image_width * scale
+            draw_height = image_height * scale
+            clip = canvas.beginPath()
+            clip.rect(x, y, width, height)
+            canvas.saveState()
+            canvas.clipPath(clip, stroke=0, fill=0)
+            canvas.drawImage(
+                image,
+                x + (width - draw_width) / 2,
+                y + (height - draw_height) / 2,
+                width=draw_width,
+                height=draw_height,
+                mask="auto",
+            )
+            canvas.restoreState()
+        except (AttributeError, TypeError, ZeroDivisionError):
+            canvas.drawImage(image, x, y, width=width, height=height, mask="auto")
         return
-    canvas.setFillColor(colors.HexColor("#173D28"))
+    canvas.setFillColor(_PLACEHOLDER)
     canvas.rect(x, y, width, height, fill=1, stroke=0)
     _text(canvas, "RECIPE IMAGE", x + 12, y + height / 2 + 3, 8, _MUTED, font_name)
     _text(canvas, "이미지 준비 중", x + 12, y + height / 2 - 14, 10, _TEXT, font_name)
@@ -322,7 +373,7 @@ def _ingredient_panel(canvas: Canvas, x: float, y: float, width: float, height: 
 
 
 def _nutrition_bar(canvas: Canvas, recipe: Recipe, font_name: str) -> None:
-    x, y, width, height = _MARGIN, 180, _PAGE_WIDTH - 2 * _MARGIN, 49
+    x, y, width, height = _MARGIN, 274, _PAGE_WIDTH - 2 * _MARGIN, 42
     _round_panel(canvas, x, y, width, height, _PANEL_DARK, _BORDER)
     values = (("열량", f"{recipe.nutrition.calories:g} kcal"), ("단백질", f"{recipe.nutrition.protein:g} g"), ("탄수화물", f"{recipe.nutrition.carbohydrate:g} g"), ("지방", f"{recipe.nutrition.fat:g} g"))
     section = width / len(values)
@@ -331,8 +382,8 @@ def _nutrition_bar(canvas: Canvas, recipe: Recipe, font_name: str) -> None:
         if index:
             canvas.setStrokeColor(_BORDER)
             canvas.line(item_x, y + 7, item_x, y + height - 7)
-        _text(canvas, label, item_x + 12, y + 30, 8, _MUTED, font_name)
-        _text(canvas, value, item_x + 12, y + 13, 11, _TEXT, font_name)
+        _text(canvas, label, item_x + 12, y + 25, 8, _MUTED, font_name)
+        _text(canvas, value, item_x + 12, y + 10, 11, _TEXT, font_name)
 
 
 def _cook_time_label(recipe: Recipe) -> str:

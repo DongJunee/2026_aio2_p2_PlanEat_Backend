@@ -13,6 +13,7 @@ from app.schemas.chat import (
     ChatRequest,
     ChatSuccessResponse,
     ChatResponse,
+    ChatStreamEvent,
     RecommendationData,
 )
 
@@ -88,6 +89,14 @@ def test_chat_response_models_match_each_workflow_state() -> None:
         questions=["이미지를 첨부해주세요.", "식단 목표를 선택해주세요."],
     )
     assert combined_response.step == "INPUT_REQUIREMENTS"
+
+
+def test_chat_stream_event_restricts_sse_event_names() -> None:
+    event = ChatStreamEvent(event="complete", data={"http_status": 200})
+
+    assert event.event == "complete"
+    with pytest.raises(ValidationError):
+        ChatStreamEvent(event="unknown", data={})
 
 
 def test_recommendation_data_requires_two_sets_of_five_recipes() -> None:

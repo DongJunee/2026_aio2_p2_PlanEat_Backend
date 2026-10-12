@@ -47,6 +47,7 @@ class RecipePdfService:
 
     def __init__(self, settings: Settings) -> None:
         self._storage_directory = Path(settings.pdf_storage_directory)
+        self._image_timeout_seconds = settings.pdf_image_timeout_seconds
         self._public_base_url = (settings.pdf_public_base_url or "").rstrip("/")
 
     async def generate(self, *, session_id: str, recommendation: RecommendationData, selected_set_id: str) -> str:
@@ -56,7 +57,10 @@ class RecipePdfService:
         if selected_set is None:
             raise ValueError("선택한 식단 세트를 찾을 수 없습니다.")
         filename = _build_pdf_filename(selected_set_id)
-        render_set = await _embed_recipe_images(selected_set)
+        render_set = await _embed_recipe_images(
+            selected_set,
+            timeout_seconds=self._image_timeout_seconds,
+        )
         await asyncio.to_thread(self._write_pdf, self._storage_directory / filename, session_id, render_set)
         return self.public_url(filename)
 
@@ -336,7 +340,11 @@ def _data_uri_image(image_data: str | None) -> ImageReader | None:
         return None
 
 
-async def _embed_recipe_images(selected_set: RecipeSet) -> RecipeSet:
+async def _embed_recipe_images(
+    selected_set: RecipeSet,
+    *,
+    timeout_seconds: float = 60.0,
+) -> RecipeSet:
     """허용된 레시피 이미지 URL을 PDF 내부 data URI로 바꿉니다.
 
     외부 URL은 신뢰할 수 없는 입력이므로 내부 카탈로그의 공식 이미지 호스트와 이미지
@@ -344,7 +352,7 @@ async def _embed_recipe_images(selected_set: RecipeSet) -> RecipeSet:
     플레이스홀더를 유지한다.
     """
 
-    async with httpx.AsyncClient(timeout=5.0, follow_redirects=True) as client:
+    async with httpx.AsyncClient(timeout=timeout_seconds, follow_redirects=True) as client:
         recipes = await asyncio.gather(
             *(_embed_recipe_image(client, recipe) for recipe in selected_set.recipes)
         )

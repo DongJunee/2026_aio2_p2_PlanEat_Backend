@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     chroma_recipe_collection_name: str = "recipe_catalog"
     chroma_auto_index_on_startup: bool = False
     pdf_storage_directory: str = "output/pdf"
+    # 식품안전나라 이미지 서버가 느린 배포 환경에서도 PDF 생성을 완료할 수 있도록
+    # 이미지 한 건의 다운로드 제한을 넉넉하게 둔다. 다섯 건은 동시에 요청한다.
+    pdf_image_timeout_seconds: float = 60.0
     pdf_public_base_url: str | None = None
 
 

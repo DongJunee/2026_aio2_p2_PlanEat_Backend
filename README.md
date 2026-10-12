@@ -307,6 +307,7 @@ README 설명용 이미지는 [`docs/images/`](docs/images/)에, API 테스트�
 | `TYPESAFE_JEV_ENABLED` | `false` | TypeSafe Jev 선택 연동 여부 |
 | `LANGSMITH_TRACING` | `false` | LangGraph tracing 여부 |
 | `PDF_STORAGE_DIRECTORY` | `output/pdf` | 생성 PDF 저장 경로 |
+| `PDF_IMAGE_TIMEOUT_SECONDS` | `60.0` | PDF 생성 시 레시피 이미지 1건의 다운로드 제한 시간(초) |
 
 CSV를 의도적으로 변경해 재색인할 때만 아래 명령을 실행하세요.
 

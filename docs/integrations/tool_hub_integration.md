@@ -18,7 +18,7 @@ adapter다. 이 adapter는 위의 정식 5세트 결과를 기존 2세트×5레�
 별도 추천 흐름을 실행하지 않는다. 정식·호환 경로 모두 각 카드에 노출되는
 `shopping_list`는 원본 레시피 순서대로 최대 5개다.
 
-기본 앱의 호환 adapter는 `data/COOKRCP01_FINAL_WITH_INGREDIENT_GROUPS_REVISED_V2.csv`를 읽는
+기본 앱의 호환 adapter는 `data/chroma/COOKRCP01_INTEGRITY_CHECKED_V13.csv`를 읽는
 로컬 Recipe Source를 사용한다. 결과의 `source_metadata.recipe_sources`에는
 `internal:recipe-catalog`이 기록되며, 외부 Recipe API나 `mocks/chat/` fixture는 런타임 추천에
 사용하지 않는다. 동일 입력에 대한 검색·정렬은 결정적이다.

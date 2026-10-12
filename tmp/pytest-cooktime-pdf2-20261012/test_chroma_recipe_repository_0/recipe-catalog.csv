@@ -1,0 +1,3 @@
+recipe_id,title,image,cook_time,ingredients,calories,protein,carbohydrate,fat,source
+exact,두부 찜,,10,"[{""name"": ""두부"", ""amount"": ""1모""}]",200,20,10,10,test
+semantic,만두국,,15,"[{""name"": ""대파"", ""amount"": ""1대""}]",250,15,25,8,test

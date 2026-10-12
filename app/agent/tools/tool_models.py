@@ -24,6 +24,7 @@ class RecipeIngredient(ToolIngredient):
 
     required: bool = True
     importance: Literal["필수", "권장", "대체 가능", "생략 가능"] = "필수"
+    is_primary: bool = False
 
 
 class NutritionValues(BaseModel):

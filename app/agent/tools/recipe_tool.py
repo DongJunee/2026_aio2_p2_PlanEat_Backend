@@ -13,6 +13,7 @@ from app.agent.tools.tool_models import (
 
 _OWNED_RECIPE_BONUS = 1000.0
 _OWNED_INGREDIENT_BONUS = 200.0
+_OWNED_PRIMARY_INGREDIENT_BONUS = 500.0
 _MISSING_INGREDIENT_PENALTY = 3.0
 _COOK_TIME_PENALTY = 0.05
 
@@ -66,7 +67,13 @@ class RecipeTool:
                     recipe=recipe,
                     owned_ingredients=owned,
                     missing_ingredients=missing,
-                    score=_score_recipe(recipe, owned_count=len(owned), missing_count=len(missing), conditions=normalized_conditions),
+                    score=_score_recipe(
+                        recipe,
+                        owned_count=len(owned),
+                        primary_owned_count=sum(ingredient.is_primary for ingredient in owned),
+                        missing_count=len(missing),
+                        conditions=normalized_conditions,
+                    ),
                 )
             )
 
@@ -143,16 +150,22 @@ def _violates_dietary_condition(recipe: CatalogRecipe, conditions: str) -> bool:
 
 
 def _score_recipe(
-    recipe: CatalogRecipe, *, owned_count: int, missing_count: int, conditions: str
+    recipe: CatalogRecipe,
+    *,
+    owned_count: int,
+    missing_count: int,
+    conditions: str,
+    primary_owned_count: int = 0,
 ) -> float:
-    """보유 재료 활용을 우선하는 설명 가능한 점수로 후보 순위를 고정합니다."""
+    """보유 주재료 활용을 우선하는 설명 가능한 점수로 후보 순위를 고정합니다."""
 
     # 보유 재료를 하나라도 쓰는 후보를 먼저 보여주고, 같은 그룹 안에서는
-    # 보유 재료를 많이 활용할수록 점수가 크게 앞서도록 가중치를 높인다.
+    # 보유 주재료를 활용한 후보가 부재료·양념만 맞는 후보보다 앞서도록 추가 가점을 준다.
     # 부족 재료·조리 시간은 보조 기준으로 유지해 재료 활용도가 순위를 주도하게 한다.
     score = (
         (_OWNED_RECIPE_BONUS if owned_count else 0.0)
         + owned_count * _OWNED_INGREDIENT_BONUS
+        + primary_owned_count * _OWNED_PRIMARY_INGREDIENT_BONUS
         - missing_count * _MISSING_INGREDIENT_PENALTY
         - recipe.cook_time * _COOK_TIME_PENALTY
     )

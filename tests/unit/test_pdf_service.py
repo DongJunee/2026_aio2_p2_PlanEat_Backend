@@ -10,8 +10,10 @@ import httpx
 from app.schemas.chat import MissingIngredient, Nutrition, Recipe
 from app.services.pdf_service import (
     _build_pdf_filename,
+    _cook_time_label,
     _embed_recipe_image,
     _is_allowed_recipe_image_url,
+    _recipe_source_label,
     _tip_text,
 )
 
@@ -123,3 +125,10 @@ def test_recipe_pdf_tip_uses_source_optional_and_substitutable_fields() -> None:
     )
 
     assert _tip_text(recipe) == "선택 재료: 양파 · 대체 가능: 부추"
+
+
+def test_recipe_pdf_detail_includes_cook_time_and_rcp_seq() -> None:
+    recipe = _recipe(None).model_copy(update={"cook_time": 35})
+
+    assert _cook_time_label(recipe) == "35분"
+    assert _recipe_source_label(recipe) == "506"

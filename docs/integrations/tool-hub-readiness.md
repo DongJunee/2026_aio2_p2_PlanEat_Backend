@@ -35,7 +35,7 @@
 이 제약은 사용자 확인 전 이미지 인식 후보를 추천·RAG 입력으로 사용하지 않는다는 프로젝트
 계약을 코드로 강제한다.
 
-기본 실행 source는 외부 API가 아닌 `data/COOKRCP01_FINAL_WITH_INGREDIENT_GROUPS_REVISED_V2.csv`다.
+기본 실행 source는 외부 API가 아닌 `data/chroma/COOKRCP01_INTEGRITY_CHECKED_V13.csv`다.
 `PlanEatToolHub`는 이 CSV에서 후보를 읽고, 재료 보유율·선택 조리 시간·식단 조건으로 결정적으로
 정렬한다. 따라서 동일한 `confirmed_ingredients`와 `user_conditions`에는 같은 추천이 나올 수 있다.
 `mocks/chat/response-success.json`은 FE fixture와 테스트 전용이며 런타임 추천 source가 아니다.

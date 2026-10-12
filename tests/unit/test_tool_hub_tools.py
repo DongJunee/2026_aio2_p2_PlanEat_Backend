@@ -251,6 +251,27 @@ def test_recipe_score_gives_stronger_bonus_to_each_owned_ingredient() -> None:
     assert two_owned - one_owned == 203.0
 
 
+def test_recipe_score_prioritizes_owned_primary_ingredients() -> None:
+    recipe = _catalog_recipes(1)[0]
+
+    one_primary_owned = _score_recipe(
+        recipe,
+        owned_count=1,
+        primary_owned_count=1,
+        missing_count=2,
+        conditions="",
+    )
+    two_secondary_owned = _score_recipe(
+        recipe,
+        owned_count=2,
+        primary_owned_count=0,
+        missing_count=1,
+        conditions="",
+    )
+
+    assert one_primary_owned > two_secondary_owned
+
+
 def test_tool_hub_returns_existing_chat_recommendation_shape() -> None:
     local_hub = _local_tool_hub()
     request = ToolRequest(
@@ -451,6 +472,45 @@ def test_internal_csv_repository_preserves_enriched_ingredient_importance(tmp_pa
     assert recipes[0].ingredients[0].amount == "1모"
 
 
+def test_internal_csv_repository_marks_primary_ingredients_from_group_columns(tmp_path) -> None:
+    catalog_path = tmp_path / "recipe-catalog.csv"
+    catalog_path.write_text(
+        "RCP_SEQ,RCP_NM,RCP_PAT2,RCP_PARTS_DTLS,REQUIRED_INGREDIENTS,"
+        "OPTIONAL_INGREDIENTS,SUBSTITUTABLE_INGREDIENTS,REQUIRED_SEASONINGS,"
+        "SUBSTITUTABLE_SEASONINGS,INFO_ENG,INFO_PRO,INFO_CAR,INFO_FAT\n"
+        "1,두부 요리,반찬,\"주재료: 양파 1/2개\\n양념: 간장 1큰술\","
+        "두부,양파,당근,간장,,320,20,18,15\n",
+        encoding="utf-8",
+    )
+    repository = CsvRecipeRepository(catalog_path)
+
+    recipes = asyncio.run(repository.list_recipes())
+
+    assert [(item.name, item.is_primary) for item in recipes[0].ingredients] == [
+        ("두부", True),
+        ("간장", False),
+        ("당근", False),
+        ("양파", False),
+    ]
+
+
+def test_internal_csv_repository_maps_estimated_cooking_time(tmp_path) -> None:
+    catalog_path = tmp_path / "recipe-catalog.csv"
+    catalog_path.write_text(
+        "RCP_SEQ,RCP_NM,RCP_PAT2,RCP_PARTS_DTLS,ESTIMATED_COOKING_TIME_MIN,"
+        "REQUIRED_INGREDIENTS,INFO_ENG,INFO_PRO,INFO_CAR,INFO_FAT\n"
+        "506,두부 요리,반찬,두부 1모,35,두부,320,20,18,15\n",
+        encoding="utf-8",
+    )
+    repository = CsvRecipeRepository(catalog_path)
+
+    recipes = asyncio.run(repository.list_recipes())
+
+    assert recipes[0].recipe_id == "506"
+    assert recipes[0].cook_time == 35
+    assert recipes[0].source_metadata["rcp_seq"] == "506"
+
+
 def test_internal_csv_repository_extracts_recipe_amounts_from_detail_text(tmp_path) -> None:
     catalog_path = tmp_path / "recipe-catalog.csv"
     catalog_path.write_text(
@@ -515,6 +575,28 @@ def test_internal_csv_repository_prioritizes_recipes_matching_confirmed_ingredie
     recipes = asyncio.run(repository.search(query, limit=1))
 
     assert [recipe.recipe_id for recipe in recipes] == ["2"]
+
+
+def test_internal_csv_repository_prioritizes_primary_ingredient_matches(tmp_path) -> None:
+    catalog_path = tmp_path / "recipe-catalog.csv"
+    catalog_path.write_text(
+        "RCP_SEQ,RCP_NM,RCP_PAT2,RCP_PARTS_DTLS,REQUIRED_INGREDIENTS,"
+        "OPTIONAL_INGREDIENTS,SUBSTITUTABLE_INGREDIENTS,SUBSTITUTABLE_SEASONINGS,"
+        "INFO_ENG,INFO_PRO,INFO_CAR,INFO_FAT\n"
+        "1,양념 두부 요리,반찬,두부 1모,닭고기,,두부,,320,20,18,15\n"
+        "2,두부 주재료 요리,반찬,두부 1모,두부,,,,280,18,16,12\n",
+        encoding="utf-8",
+    )
+    repository = CsvRecipeRepository(catalog_path)
+    query = RecipeSearchQuery(
+        confirmed_ingredients=[ToolIngredient(name="두부", amount="1모")],
+        user_conditions={"purpose": "다이어트"},
+    )
+
+    recipes = asyncio.run(repository.search(query, limit=2))
+
+    assert [recipe.recipe_id for recipe in recipes] == ["2", "1"]
+    assert recipes[0].ingredients[0].is_primary is True
 
 
 def test_chroma_recipe_repository_merges_semantic_and_exact_candidates(tmp_path) -> None:

@@ -252,7 +252,7 @@ class JevIngredientConfirmationEvaluator:
                         "사용자가 앞서 제시된 재료 후보를 어떻게 처리할지 분류한다. "
                         "모두 맞다는 긍정, 틀렸다는 거절, 특정 재료의 추가·삭제·제거·빼기·"
                         "제외·없애기·수정은 "
-                        "각각 confirmed, rejected, edited로 분류하고 판단이 어려우면 unclear를 선택한다.
+                        "각각 confirmed, rejected, edited로 분류하고 판단이 어려우면 unclear를 선택한다."
                         "proposed_ingredients는 사용자에게 제시된 현재 재료 목록이고, "
                         "user_message는 그 목록에 대한 답변이다. 목록 전체가 맞다고 명시적으로 "
                         "확인하거나 목록 확정을 요청한 경우에만 confirmed를 선택한다. 바로 앞 질문이 "

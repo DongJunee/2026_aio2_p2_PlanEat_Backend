@@ -1418,10 +1418,6 @@ def _apply_confirmation_decision(
 def _fallback_ingredient_confirmation(user_message: str) -> IngredientConfirmationDecision:
     """Jev를 사용할 수 없을 때 확인 의도를 결정하는 최소 fallback입니다."""
 
-    if re.search(
-        rf"추가|더 넣|{_INGREDIENT_REMOVAL_PATTERN}|교체|바꿔|수정|없고|없는|대신",
-        user_message,
-    ):
     if _has_ingredient_edit_expression(user_message):
         return IngredientConfirmationDecision(intent="edited", confidence=1.0)
     if _is_generic_ingredient_rejection(user_message):
@@ -1450,7 +1446,7 @@ def _has_explicit_ingredient_mutation_expression(user_message: str) -> bool:
 
     return bool(
         re.search(
-            r"추가|더 넣|빼고|삭제|제외|교체|바꾸|바꿔|수정|없어|없고|없는|대신|"
+            rf"추가|더 넣|{_INGREDIENT_REMOVAL_PATTERN}|교체|바꾸|바꿔|수정|없어|없고|없는|대신|"
             r"자리(?:에는|는|에)?",
             user_message,
         )

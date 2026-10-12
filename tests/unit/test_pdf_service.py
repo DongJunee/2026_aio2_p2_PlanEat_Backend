@@ -23,6 +23,7 @@ def _recipe(image: str | None) -> Recipe:
         title="새우 두부 계란찜",
         image=image,
         cook_time=0,
+        cooking_steps=["재료를 손질합니다.", "팬에 넣고 익힙니다."],
         nutrition=Nutrition(calories=0, protein=0, carbohydrate=0, fat=0),
     )
 

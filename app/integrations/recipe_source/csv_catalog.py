@@ -165,6 +165,7 @@ def _recipe_from_row(row: Mapping[str, str | None], row_number: int) -> CatalogR
             title=_required_value(row, "title", row_number),
             image=_optional_value(row, "image"),
             cook_time=_number_value(row, "cook_time", row_number),
+            cooking_steps=_cooking_steps_value(row),
             ingredients=_ingredients_value(row, row_number),
             nutrition=_nutrition_value(row, row_number),
             source=_required_value(row, "source", row_number),
@@ -198,6 +199,7 @@ def _recipe_from_internal_row(
             title=title,
             image=_optional_value(row, "ATT_FILE_NO_MAIN"),
             cook_time=0,
+            cooking_steps=_internal_cooking_steps(row),
             ingredients=_internal_ingredients(row),
             nutrition=nutrition,
             source="internal:recipe-catalog",
@@ -256,6 +258,33 @@ def _optional_value(row: Mapping[str, str | None], field: str) -> str | None:
         return None
     normalized = value.strip()
     return normalized or None
+
+
+def _cooking_steps_value(row: Mapping[str, str | None]) -> list[str]:
+    """정규화 CSV의 선택적 조리 단계 열을 안전한 문자열 목록으로 읽습니다."""
+
+    raw_steps = _optional_value(row, "cooking_steps")
+    if not raw_steps:
+        return []
+    try:
+        parsed = json.loads(raw_steps)
+    except json.JSONDecodeError:
+        return [line.strip() for line in raw_steps.splitlines() if line.strip()]
+    if not isinstance(parsed, list):
+        return []
+    return [item.strip() for item in parsed if isinstance(item, str) and item.strip()]
+
+
+def _internal_cooking_steps(row: Mapping[str, str | None]) -> list[str]:
+    """보강 원본 CSV의 ``MANUAL01``~``MANUAL07`` 조리 단계를 추출합니다."""
+
+    steps: list[str] = []
+    for index in range(1, 8):
+        value = _optional_value(row, f"MANUAL{index:02d}")
+        if not value:
+            continue
+        steps.append(re.sub(r"^\s*\d+\s*[.)]\s*", "", value))
+    return steps
 
 
 def _source_metadata(row: Mapping[str, str | None]) -> dict[str, str]:

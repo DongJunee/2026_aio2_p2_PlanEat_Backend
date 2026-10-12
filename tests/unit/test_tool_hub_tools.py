@@ -102,6 +102,7 @@ def _catalog_recipes(count: int = 10) -> list[CatalogRecipe]:
             recipe_id=f"recipe-{index}",
             title=f"두부 양배추 메뉴 {index}",
             cook_time=10 + index,
+            cooking_steps=[f"{index + 1}단계 조리합니다."],
             ingredients=[
                 RecipeIngredient(name="두부", amount="1모"),
                 RecipeIngredient(name="양배추", amount="200g"),
@@ -228,6 +229,7 @@ def test_tool_hub_returns_existing_chat_recommendation_shape() -> None:
     data = RecommendationData.model_validate(result.result["data"])
     assert [len(recipe_set.recipes) for recipe_set in data.recipe_sets] == [5, 5]
     assert data.recipe_sets[0].recipes[0].missing_ingredients[0].alternative == "된장"
+    assert data.recipe_sets[0].recipes[0].cooking_steps == ["1단계 조리합니다."]
     assert result.source_metadata == {
         "recipe_sources": ["test-recipe-source"],
         "recipe_guide_sources": ["reviewed-guide.md"],
@@ -418,6 +420,24 @@ def test_internal_csv_repository_extracts_recipe_amounts_from_detail_text(tmp_pa
         ("대파", "5g(1작은술)"),
         ("참깨", "약간"),
     ]
+
+
+def test_internal_csv_repository_extracts_cooking_steps(tmp_path) -> None:
+    catalog_path = tmp_path / "recipe-catalog.csv"
+    catalog_path.write_text(
+        "RCP_SEQ,RCP_NM,RCP_PAT2,RCP_PARTS_DTLS,MANUAL01,MANUAL02,INFO_ENG,INFO_PRO,INFO_CAR,INFO_FAT\n"
+        "1,두부 요리,반찬,두부 1모,1. 두부를 썹니다.,2. 팬에 볶습니다.,320,20,18,15\n",
+        encoding="utf-8",
+    )
+    repository = CsvRecipeRepository(catalog_path)
+    query = RecipeSearchQuery(
+        confirmed_ingredients=[ToolIngredient(name="두부", amount="1모")],
+        user_conditions={"message": "간단한 메뉴"},
+    )
+
+    recipes = asyncio.run(repository.search(query, limit=1))
+
+    assert recipes[0].cooking_steps == ["두부를 썹니다.", "팬에 볶습니다."]
 
 
 def test_internal_csv_repository_prioritizes_recipes_matching_confirmed_ingredients(

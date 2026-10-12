@@ -70,6 +70,7 @@ class Recipe(BaseModel):
     title: str = Field(min_length=1)
     image: str | None = None
     cook_time: int = Field(ge=0)
+    cooking_steps: list[str] = Field(default_factory=list)
     owned_ingredients: list[str] = Field(default_factory=list)
     missing_ingredients: list[MissingIngredient] = Field(default_factory=list)
     shopping_list: list[ShoppingItem] = Field(default_factory=list)
@@ -139,3 +140,12 @@ ChatResponse = (
     | ChatIngredientConfirmResponse
     | ChatErrorResponse
 )
+
+
+class ChatStreamEvent(BaseModel):
+    """SSE로 전달하는 Chat API 스트림 프레임입니다."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    event: Literal["start", "progress", "delta", "complete", "error", "done"]
+    data: dict[str, object] = Field(default_factory=dict)

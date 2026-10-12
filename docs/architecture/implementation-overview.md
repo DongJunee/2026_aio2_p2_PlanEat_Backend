@@ -273,10 +273,11 @@ uv run uvicorn app.main:app --reload
 | `CHROMA_AUTO_INDEX_ON_STARTUP` | 서버 기동 시 CSV 재임베딩 여부 | `false`; 사전 생성 인덱스만 사용 |
 | `OPENAI_API_KEY` | 재료 추출·추가 안내 및 Tool Hub 비활성화 시 임시 추천 | 완료 단계에서 `500 ERROR` |
 | `OPENAI_MODEL` | OpenAI 모델 선택 | `gpt-4o-mini` 사용 |
+| `OPENAI_TIMEOUT_SECONDS` | OpenAI API 호출 제한 시간 | `180.0`초 |
 | `TYPESAFE_JEV_ENABLED` | Jev 자연어 조건·재료 확인 판정 사용 여부 | `false`가 기본값 |
 | `TYPESAFE_API_KEY` | Jev 인증 | Jev를 호출하지 않고 fallback |
 | `TYPESAFE_MODEL` | Jev 모델 선택 | `jev-latest` 사용 |
-| `TYPESAFE_TIMEOUT_SECONDS` | Jev 호출 제한 시간 | `2.0`초 |
+| `TYPESAFE_TIMEOUT_SECONDS` | Jev 호출 제한 시간 | `180.0`초 |
 | `TYPESAFE_JEV_MIN_CONFIDENCE` | Jev 판단 반영 기준 | `0.8` |
 | `NEMO_GUARDRAILS_ENABLED` | NeMo 입력·출력·Tool 결과 rail 사용 여부 | `true` |
 | `NEMO_GUARDRAILS_CONFIG_PATH` | NeMo `config.yml` 디렉터리 | `guardrails` |

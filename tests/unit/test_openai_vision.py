@@ -26,7 +26,7 @@ def test_vision_extractor_drops_non_food_receipt_items(monkeypatch) -> None:
         def __init__(self, api_key: str) -> None:
             self.responses = FakeResponses()
 
-    monkeypatch.setattr(openai_vision, "AsyncOpenAI", lambda api_key: FakeClient(api_key))
+    monkeypatch.setattr(openai_vision, "AsyncOpenAI", lambda api_key, **_: FakeClient(api_key))
 
     result = asyncio.run(
         OpenAIVisionIngredientExtractor(api_key="test-key").extract(

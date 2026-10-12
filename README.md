@@ -300,14 +300,16 @@ README 설명용 이미지는 [`docs/images/`](docs/images/)에, API 테스트�
 | --- | --- | --- |
 | `OPENAI_API_KEY` | 없음 | Vision · LLM 연동 |
 | `OPENAI_MODEL` | `gpt-4o-mini` | 기본 OpenAI 모델 |
+| `OPENAI_TIMEOUT_SECONDS` | `180.0` | OpenAI API 호출 최대 대기 시간(초) |
 | `TOOL_HUB_ENABLED` | `true` | 로컬 Tool Hub 사용 여부 |
 | `CHROMA_PERSIST_DIRECTORY` | `data/chroma` | 사전 생성 Chroma 인덱스 경로 |
 | `CHROMA_AUTO_INDEX_ON_STARTUP` | `false` | 기동 시 전체 CSV 재색인 여부 |
 | `NEMO_GUARDRAILS_ENABLED` | `true` | NeMo Guardrails 사용 여부 |
 | `TYPESAFE_JEV_ENABLED` | `false` | TypeSafe Jev 선택 연동 여부 |
+| `TYPESAFE_TIMEOUT_SECONDS` | `180.0` | TypeSafe Jev 호출 최대 대기 시간(초) |
 | `LANGSMITH_TRACING` | `false` | LangGraph tracing 여부 |
 | `PDF_STORAGE_DIRECTORY` | `output/pdf` | 생성 PDF 저장 경로 |
-| `PDF_IMAGE_TIMEOUT_SECONDS` | `60.0` | PDF 생성 시 레시피 이미지 1건의 다운로드 제한 시간(초) |
+| `PDF_IMAGE_TIMEOUT_SECONDS` | `180.0` | PDF 생성 시 레시피 이미지 1건의 다운로드 제한 시간(초) |
 
 CSV를 의도적으로 변경해 재색인할 때만 아래 명령을 실행하세요.
 

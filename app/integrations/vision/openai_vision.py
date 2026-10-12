@@ -76,11 +76,13 @@ class OpenAIVisionIngredientExtractor:
         api_key: str,
         model: str = "gpt-4o-mini",
         allowed_image_hosts: frozenset[str] = frozenset(),
+        timeout_seconds: float = 180.0,
     ) -> None:
         if not api_key.strip():
             raise ValueError("Vision provider용 OpenAI API 키가 필요합니다.")
         self._api_key = api_key
         self._model = model
+        self._timeout_seconds = timeout_seconds
         self._allowed_image_hosts = frozenset(host.lower() for host in allowed_image_hosts)
         self._ingredient_validator = IngredientValidationTool()
 
@@ -108,7 +110,7 @@ class OpenAIVisionIngredientExtractor:
             content.append({"type": "input_image", "image_url": image_data})
 
         try:
-            client = AsyncOpenAI(api_key=self._api_key)
+            client = AsyncOpenAI(api_key=self._api_key, timeout=self._timeout_seconds)
             response = await client.responses.create(
                 model=self._model,
                 instructions=load_vision_instructions(),

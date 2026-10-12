@@ -245,6 +245,7 @@ class OpenAIResponder:
     def __init__(self, settings: Settings) -> None:
         self._api_key = settings.openai_api_key
         self._model = settings.openai_model
+        self._timeout_seconds = settings.openai_timeout_seconds
 
     async def generate_clarification_response(
         self,
@@ -272,7 +273,7 @@ class OpenAIResponder:
         )
 
         try:
-            client = AsyncOpenAI(api_key=self._api_key)
+            client = AsyncOpenAI(api_key=self._api_key, timeout=self._timeout_seconds)
             response = await client.responses.create(
                 model=self._model,
                 instructions=load_clarification_instructions(),
@@ -365,7 +366,7 @@ class OpenAIResponder:
             input_payload = text_input
 
         try:
-            client = AsyncOpenAI(api_key=self._api_key)
+            client = AsyncOpenAI(api_key=self._api_key, timeout=self._timeout_seconds)
             response = await client.responses.create(
                 model=self._model,
                 instructions=load_ingredient_instructions(),
@@ -445,7 +446,7 @@ class OpenAIResponder:
         )
 
         try:
-            client = AsyncOpenAI(api_key=self._api_key)
+            client = AsyncOpenAI(api_key=self._api_key, timeout=self._timeout_seconds)
             response = await client.responses.create(
                 model=self._model,
                 instructions=load_recommendation_instructions(),
@@ -512,7 +513,7 @@ class OpenAIResponder:
         )
 
         try:
-            client = AsyncOpenAI(api_key=self._api_key)
+            client = AsyncOpenAI(api_key=self._api_key, timeout=self._timeout_seconds)
             response = await client.responses.create(
                 model=self._model,
                 instructions=load_completion_instructions(),

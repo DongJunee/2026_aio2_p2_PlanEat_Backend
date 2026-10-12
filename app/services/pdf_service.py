@@ -343,7 +343,7 @@ def _data_uri_image(image_data: str | None) -> ImageReader | None:
 async def _embed_recipe_images(
     selected_set: RecipeSet,
     *,
-    timeout_seconds: float = 60.0,
+    timeout_seconds: float = 180.0,
 ) -> RecipeSet:
     """허용된 레시피 이미지 URL을 PDF 내부 data URI로 바꿉니다.
 

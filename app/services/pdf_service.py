@@ -19,7 +19,7 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.pdfbase.ttfonts import TTFError, TTFont
 from reportlab.pdfgen.canvas import Canvas
 
 from app.core.config import Settings, get_settings
@@ -127,12 +127,19 @@ def _build_pdf_filename(selected_set_id: str) -> str:
 
 
 def _register_korean_font() -> str:
-    """운영체제의 한글 글꼴을 등록하고 없으면 Helvetica로 fallback합니다."""
+    """배포에 포함한 한글 글꼴을 우선 등록하고 운영체제 글꼴로 보완합니다.
+
+    Render 같은 Linux 서버에는 Windows의 ``malgun.ttf``가 없을 수 있으므로,
+    저장소의 Noto Sans KR을 먼저 사용해야 PDF에 한글 글리프가 임베드된다.
+    모든 후보가 없을 때만 Helvetica를 반환하며, 이 경우 영문만 안전하게 표시된다.
+    """
 
     font_name = "PlanEatKorean"
     if font_name in pdfmetrics.getRegisteredFontNames():
         return font_name
+    bundled_font = Path(__file__).resolve().parents[2] / "assets" / "fonts" / "NotoSansKR-VF.ttf"
     candidates = [
+        bundled_font,
         Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts" / "malgun.ttf",
         Path("/System/Library/Fonts/Supplemental/AppleGothic.ttf"),
         Path("/usr/share/fonts/truetype/nanum/NanumGothic.ttf"),
@@ -143,7 +150,7 @@ def _register_korean_font() -> str:
             try:
                 pdfmetrics.registerFont(TTFont(font_name, str(path)))
                 return font_name
-            except (OSError, TypeError):
+            except (OSError, TypeError, TTFError):
                 continue
     return "Helvetica"
 

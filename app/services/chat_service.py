@@ -1164,9 +1164,12 @@ class ChatService:
             )
 
         if pending_ingredient_action:
-            if _has_explicit_ingredient_mutation_expression(user_message):
-                return read("edited", acknowledged=(), pending=None, pending_action=None)
-            if _is_action_confirmation(user_message):
+            # 직전 질문에서 이미 재료와 동작을 정했으므로 "추가해줘"·"빼줘"처럼
+            # 대상이 생략된 답변은 일반 수정 요청보다 먼저 그 대기 항목에 연결한다.
+            # 그렇지 않으면 추출기에 재료명 없는 "추가해줘"만 전달돼 목록이 바뀌지 않는다.
+            if _confirms_pending_ingredient_action(
+                user_message, pending_ingredient_action.action
+            ):
                 name = pending_ingredient_action.ingredient_name
                 action_message = (
                     f"{name} 추가해줘."
@@ -1180,6 +1183,8 @@ class ChatService:
                     pending_action=None,
                     extraction_message=action_message,
                 )
+            if _has_explicit_ingredient_mutation_expression(user_message):
+                return read("edited", acknowledged=(), pending=None, pending_action=None)
             if _is_action_rejection(user_message):
                 return read(
                     "unclear",
@@ -1928,6 +1933,38 @@ def _is_action_confirmation(user_message: str) -> bool:
         "해주세요",
         "진행해",
         "진행해주세요",
+    }
+
+
+def _confirms_pending_ingredient_action(
+    user_message: str, action: Literal["add", "remove"]
+) -> bool:
+    """대기 중인 추가·제외 질문에 대상 없이 답한 표현을 판별합니다."""
+
+    normalized = _normalize_confirmation_message(user_message)
+    if _is_action_confirmation(user_message):
+        return True
+    if action == "add":
+        return normalized in {
+            "추가",
+            "추가해줘",
+            "추가해주세요",
+            "넣어줘",
+            "넣어주세요",
+        }
+    return normalized in {
+        "빼",
+        "빼줘",
+        "빼주세요",
+        "제거",
+        "제거해줘",
+        "제거해주세요",
+        "삭제",
+        "삭제해줘",
+        "삭제해주세요",
+        "제외",
+        "제외해줘",
+        "제외해주세요",
     }
 
 

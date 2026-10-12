@@ -1638,7 +1638,7 @@ def test_bare_new_ingredient_confirms_addition_before_editing() -> None:
     waiting_session = asyncio.run(repository.get("bare-new-ingredient-session"))
     edited, edited_status = asyncio.run(
         service.handle(
-            ChatRequest(session_id="bare-new-ingredient-session", message="응")
+            ChatRequest(session_id="bare-new-ingredient-session", message="추가해줘")
         )
     )
     final_session = asyncio.run(repository.get("bare-new-ingredient-session"))

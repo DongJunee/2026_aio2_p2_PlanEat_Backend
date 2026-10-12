@@ -1436,6 +1436,7 @@ def test_confirmation_negation_is_not_treated_as_final_confirmation(message: str
 def test_bare_no_after_edit_question_confirms_the_whole_ingredient_list() -> None:
     """주어 없는 '없어'는 추가·수정할 내용이 없다는 최종 확인으로 처리합니다."""
 
+    message = "없어"
     repository = InMemoryChatSessionRepository()
     provider = RecordingToolHubProvider()
     candidates = (

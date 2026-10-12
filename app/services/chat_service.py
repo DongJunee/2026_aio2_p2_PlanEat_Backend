@@ -1796,7 +1796,6 @@ def _is_explicit_final_ingredient_confirmation(user_message: str) -> bool:
     ):
         return False
     return normalized in {
-    if normalized in {
         "네",
         "예",
         "어",

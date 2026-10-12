@@ -4,7 +4,7 @@ Jev는 사용자에게 보여 줄 문구를 생성하지 않습니다. 고정된
 LangGraph에 전달해, 외부 모델의 불확실한 결과가 API 계약을 바꾸지 않게 합니다.
 """
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -222,22 +222,42 @@ class JevIngredientConfirmationEvaluator:
         self._timeout_seconds = settings.typesafe_timeout_seconds
         self._min_confidence = settings.typesafe_jev_min_confidence
 
-    async def evaluate(self, user_message: str) -> IngredientConfirmationDecision | None:
-        """재료 확인·거절·수정·모호함 중 하나를 신뢰도와 함께 반환합니다."""
+    async def evaluate(
+        self,
+        user_message: str,
+        proposed_ingredients: Sequence[Mapping[str, str]],
+    ) -> IngredientConfirmationDecision | None:
+        """제안 목록과 답변을 함께 보고 재료 확인 의도를 반환합니다.
+
+        단일 재료에 대한 긍정과 전체 목록 확정은 전혀 다른 의도다. 따라서 후보
+        목록을 함께 보내, ``계란은 아니고 삼겹살은 맞아`` 같은 수정 답변이 전체
+        확인으로 오분류되지 않게 한다.
+        """
 
         if not self._enabled or not self._api_key:
             return None
 
         payload = {
-            "state": user_message,
+            "state": {
+                "proposed_ingredients": [
+                    dict(ingredient) for ingredient in proposed_ingredients
+                ],
+                "user_message": user_message,
+            },
             "model": self._model,
             "questions": {
                 _INGREDIENT_CONFIRMATION_KEY: {
                     "type": "choice",
                     "instructions": (
-                        "사용자가 앞서 제시된 재료 후보를 어떻게 처리할지 분류한다. "
-                        "모두 맞다는 긍정, 틀렸다는 거절, 특정 재료의 추가·삭제·수정은 "
-                        "각각 confirmed, rejected, edited로 분류하고 판단이 어려우면 unclear를 선택한다."
+                        "proposed_ingredients는 사용자에게 제시된 현재 재료 목록이고, "
+                        "user_message는 그 목록에 대한 답변이다. 목록 전체가 맞다고 명시적으로 "
+                        "확인하거나 목록 확정을 요청한 경우에만 confirmed를 선택한다. 바로 앞 질문이 "
+                        "'더 추가하거나 수정할 내용이 있나요?'인 상황이므로, 주어 없이 단독으로 "
+                        "'맞아' 또는 '없어'라고 답한 경우와 '재료 맞아'는 목록 전체 confirmed다. "
+                        "특정 재료 하나만 맞다고 말한 답변은 confirmed가 아니라 unclear다. 특정 재료가 "
+                        "아니라고만 한 답변과 '틀려', '재료 아니야'처럼 무엇을 바꿀지 없는 부정도 "
+                        "unclear다. 추가·삭제·교체·수량 변경처럼 실제 변경 내용이 있는 경우만 edited, "
+                        "목록 전체가 틀려 재인식이 필요한 경우는 rejected를 선택한다."
                     ),
                     "criteria": {
                         "confirmed": "제시된 재료가 모두 맞다고 확인한다.",

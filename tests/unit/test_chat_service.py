@@ -1836,6 +1836,55 @@ def test_compact_addition_is_reconciled_when_the_extractor_omits_the_new_ingredi
     )
 
 
+def test_partial_quantity_edit_keeps_the_other_ingredient_candidates() -> None:
+    """추출기가 수량을 바꾼 항목만 반환해도 기존 후보를 유지합니다."""
+
+    repository = InMemoryChatSessionRepository()
+    candidates = (
+        IngredientCandidate(name="두부", amount="1모"),
+        IngredientCandidate(name="계란", amount="4개"),
+        IngredientCandidate(name="양파", amount="1개"),
+    )
+    asyncio.run(
+        repository.save(
+            "partial-quantity-edit-session",
+            ChatSessionState(
+                step="WAITING_INGREDIENT_CONFIRM",
+                ingredient_candidates=candidates,
+                user_conditions={"message": "다이어트 식단"},
+            ),
+        )
+    )
+    service = ChatService(
+        # 모델이 변경한 항목만 반환하는 부분 응답을 재현한다.
+        llm_responder=FakeCompletionMessageGenerator(
+            edited_ingredients=[{"name": "계란", "amount": "2개"}]
+        ),
+        ingredient_confirmation_evaluator=FakeIngredientConfirmationEvaluator("unclear"),
+        session_repository=repository,
+    )
+
+    payload, status_code = asyncio.run(
+        service.handle(
+            ChatRequest(
+                session_id="partial-quantity-edit-session",
+                message="계란 수량을 2개로 수정해줘",
+            )
+        )
+    )
+    session = asyncio.run(repository.get("partial-quantity-edit-session"))
+
+    expected = (
+        IngredientCandidate(name="두부", amount="1모"),
+        IngredientCandidate(name="계란", amount="2개"),
+        IngredientCandidate(name="양파", amount="1개"),
+    )
+    assert status_code == 200
+    assert payload["step"] == "INGREDIENT_CONFIRM"
+    assert "수량 변경: 계란(4개 → 2개)" in payload["response"]
+    assert session.ingredient_candidates == expected
+
+
 def test_trailing_go_confirms_the_reconciled_replacement() -> None:
     """'파프리카 대신 피망 고'는 피망을 남기고 수정·확정까지 한 번에 처리한다."""
 

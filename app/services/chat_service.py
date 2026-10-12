@@ -75,6 +75,13 @@ _INGREDIENT_REMOVAL_PATTERN = (
     r"(?:빼\s*(?:줘|주세요|고|서|자|버려)?|삭제|제거|제외|없애|덜어|"
     r"넣지\s*(?:말|마)|안\s*넣)"
 )
+_QUANTITY_EXPRESSION_PATTERN = re.compile(
+    r"(?:수량|개수|분량|양)|"
+    r"(?:\d+(?:[.,]\d+)?|반|한|두|세|네|다섯|여섯|일곱|여덟|아홉|열)\s*"
+    r"(?:개|알|모|팩|봉|캔|병|장|줄|근|g|kg|ml|l|인분|마리|포기|통|단|대|쪽|"
+    r"스푼|큰술|작은술)",
+    flags=re.IGNORECASE,
+)
 _PROMPT_DISCLOSURE_RESPONSE = (
     "요청하신 내용은 안내할 수 없습니다. 레시피 추천을 원하시면 "
     "사용 가능한 재료와 식단 목표를 알려주세요."
@@ -1984,6 +1991,16 @@ def _reconcile_explicit_ingredient_edits(
     """
 
     updated = list(extracted)
+    if _is_partial_ingredient_quantity_update(before, extracted, user_message):
+        # 추출 모델이 수량을 바꾼 항목만 반환해도, 나머지 기존 후보를 누락하지 않는다.
+        # 삭제·교체·추가 요청은 아래의 명시 표현 보정으로 별도 처리한다.
+        extracted_by_key = {
+            _ingredient_candidate_key(item.name): item for item in extracted
+        }
+        updated = [
+            extracted_by_key.get(_ingredient_candidate_key(item.name), item)
+            for item in before
+        ]
     for candidate in before:
         if _is_explicit_candidate_removal(candidate.name, user_message):
             updated = [
@@ -2026,6 +2043,43 @@ def _reconcile_explicit_ingredient_edits(
         if not any(_ingredient_candidate_key(item.name) == _ingredient_candidate_key(name) for item in updated):
             updated.append(IngredientCandidate(name=name, amount="수량 미정"))
     return tuple(updated)
+
+
+def _is_partial_ingredient_quantity_update(
+    before: Sequence[IngredientCandidate],
+    extracted: Sequence[IngredientCandidate],
+    user_message: str,
+) -> bool:
+    """수량만 바꾼 부분 추출 결과인지 반환합니다.
+
+    수량 수정에서 모델이 변경한 재료 하나만 반환하는 경우가 있다. 이때 전체 목록을
+    덮어쓰면 나머지 후보가 사라지므로, 기존 목록의 항목을 갱신하는 경로로 합친다.
+    삭제·교체·추가 표현은 의도적으로 이 보정에서 제외해 각 명시 보정이 처리하게 한다.
+    """
+
+    if (
+        not before
+        or not extracted
+        or len(extracted) >= len(before)
+        or not _QUANTITY_EXPRESSION_PATTERN.search(user_message)
+        or re.search(r"추가|더\s*넣", user_message)
+    ):
+        return False
+
+    before_by_key = {
+        _ingredient_candidate_key(item.name): item for item in before
+    }
+    extracted_keys = [_ingredient_candidate_key(item.name) for item in extracted]
+    if any(key not in before_by_key for key in extracted_keys):
+        return False
+    if any(_is_explicit_candidate_removal(item.name, user_message) for item in before):
+        return False
+    if _explicit_replacements_from_message(before, user_message):
+        return False
+    return any(
+        before_by_key[key].amount != item.amount
+        for key, item in zip(extracted_keys, extracted)
+    )
 
 
 def _is_explicit_candidate_removal(candidate_name: str, user_message: str) -> bool:

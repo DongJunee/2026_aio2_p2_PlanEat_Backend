@@ -1558,6 +1558,142 @@ def test_generic_or_whole_list_negative_requests_the_specific_ingredient() -> No
         assert provider.requests == []
 
 
+def test_bare_existing_ingredient_confirms_removal_before_editing() -> None:
+    """동작 없는 기존 재료명은 즉시 삭제하지 않고 제외 여부를 다시 묻는다."""
+
+    repository = InMemoryChatSessionRepository()
+    asyncio.run(
+        repository.save(
+            "bare-existing-ingredient-session",
+            ChatSessionState(
+                step="WAITING_INGREDIENT_CONFIRM",
+                ingredient_candidates=(
+                    IngredientCandidate(name="감자", amount="2개"),
+                    IngredientCandidate(name="양파", amount="1개"),
+                ),
+            ),
+        )
+    )
+    service = ChatService(
+        llm_responder=FakeCompletionMessageGenerator(
+            edited_ingredients=[{"name": "양파", "amount": "1개"}]
+        ),
+        ingredient_confirmation_evaluator=FakeIngredientConfirmationEvaluator("unclear"),
+        session_repository=repository,
+    )
+
+    question, question_status = asyncio.run(
+        service.handle(
+            ChatRequest(session_id="bare-existing-ingredient-session", message="감자")
+        )
+    )
+    waiting_session = asyncio.run(repository.get("bare-existing-ingredient-session"))
+    edited, edited_status = asyncio.run(
+        service.handle(
+            ChatRequest(session_id="bare-existing-ingredient-session", message="응")
+        )
+    )
+    final_session = asyncio.run(repository.get("bare-existing-ingredient-session"))
+
+    assert question_status == edited_status == 200
+    assert question["step"] == "INGREDIENT_CONFIRM"
+    assert "감자는 현재 재료 목록에 있어요." in question["response"]
+    assert "감자를 뺄까요?" in question["response"]
+    assert waiting_session.pending_ingredient_action is not None
+    assert waiting_session.pending_ingredient_action.action == "remove"
+    assert "제외한 재료: 감자" in edited["response"]
+    assert final_session.ingredient_candidates == (
+        IngredientCandidate(name="양파", amount="1개"),
+    )
+    assert final_session.pending_ingredient_action is None
+
+
+def test_bare_new_ingredient_confirms_addition_before_editing() -> None:
+    """동작 없는 새 재료명은 즉시 추가하지 않고 추가 여부를 다시 묻는다."""
+
+    repository = InMemoryChatSessionRepository()
+    asyncio.run(
+        repository.save(
+            "bare-new-ingredient-session",
+            ChatSessionState(
+                step="WAITING_INGREDIENT_CONFIRM",
+                ingredient_candidates=(IngredientCandidate(name="감자", amount="2개"),),
+            ),
+        )
+    )
+    service = ChatService(
+        # 추출기가 새 재료를 누락해도 명시적인 추가 문장을 서비스가 보완해야 한다.
+        llm_responder=FakeCompletionMessageGenerator(
+            edited_ingredients=[{"name": "감자", "amount": "2개"}]
+        ),
+        ingredient_confirmation_evaluator=FakeIngredientConfirmationEvaluator("unclear"),
+        session_repository=repository,
+    )
+
+    question, question_status = asyncio.run(
+        service.handle(
+            ChatRequest(session_id="bare-new-ingredient-session", message="고기")
+        )
+    )
+    waiting_session = asyncio.run(repository.get("bare-new-ingredient-session"))
+    edited, edited_status = asyncio.run(
+        service.handle(
+            ChatRequest(session_id="bare-new-ingredient-session", message="응")
+        )
+    )
+    final_session = asyncio.run(repository.get("bare-new-ingredient-session"))
+
+    assert question_status == edited_status == 200
+    assert question["step"] == "INGREDIENT_CONFIRM"
+    assert "고기는 현재 재료 목록에 없어요." in question["response"]
+    assert "고기를 추가할까요?" in question["response"]
+    assert waiting_session.pending_ingredient_action is not None
+    assert waiting_session.pending_ingredient_action.action == "add"
+    assert "추가한 재료: 고기" in edited["response"]
+    assert final_session.ingredient_candidates == (
+        IngredientCandidate(name="감자", amount="2개"),
+        IngredientCandidate(name="고기", amount="수량 미정"),
+    )
+    assert final_session.pending_ingredient_action is None
+
+
+def test_recipe_name_waits_for_ingredient_confirmation() -> None:
+    """요리명만 말하면 재료 확정 전에 추천 단계로 진행하지 않는다."""
+
+    repository = InMemoryChatSessionRepository()
+    candidates = (IngredientCandidate(name="돼지고기", amount="300g"),)
+    asyncio.run(
+        repository.save(
+            "recipe-name-before-confirmation-session",
+            ChatSessionState(
+                step="WAITING_INGREDIENT_CONFIRM",
+                ingredient_candidates=candidates,
+            ),
+        )
+    )
+    service = ChatService(
+        llm_responder=FakeCompletionMessageGenerator(),
+        ingredient_confirmation_evaluator=FakeIngredientConfirmationEvaluator("confirmed"),
+        session_repository=repository,
+    )
+
+    payload, status_code = asyncio.run(
+        service.handle(
+            ChatRequest(
+                session_id="recipe-name-before-confirmation-session",
+                message="돼지고기 찌개",
+            )
+        )
+    )
+    session = asyncio.run(repository.get("recipe-name-before-confirmation-session"))
+
+    assert status_code == 200
+    assert payload["step"] == "INGREDIENT_CONFIRM"
+    assert "요리명으로 보여요" in payload["response"]
+    assert "먼저 재료 목록을 확정" in payload["response"]
+    assert session.ingredient_candidates == candidates
+
+
 def test_specific_ingredient_confirmation_waits_for_the_remaining_candidates() -> None:
     """특정 재료 긍정은 해당 재료만 기록하고, 나머지를 확인한 뒤에 확정합니다."""
 

@@ -213,7 +213,14 @@ def test_shopping_tool_limits_the_visible_list_to_five_items() -> None:
 
     plan = ShoppingTool().build(match)
 
-    assert len(plan.missing_ingredients) == 7
+    assert len(plan.missing_ingredients) == 5
+    assert plan.missing_ingredients == [
+        {"name": "필수1", "importance": "필수", "alternative": None},
+        {"name": "필수2", "importance": "필수", "alternative": None},
+        {"name": "권장1", "importance": "권장", "alternative": None},
+        {"name": "권장2", "importance": "권장", "alternative": None},
+        {"name": "권장3", "importance": "권장", "alternative": None},
+    ]
     assert plan.shopping_list == [
         {"ingredient": "필수1", "amount": "1개"},
         {"ingredient": "필수2", "amount": "1개"},

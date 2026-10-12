@@ -10,6 +10,9 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 
+_MAX_SHOPPING_ITEMS = 5
+
+
 class ToolIngredient(BaseModel):
     """Tool Hub 도구가 받거나 반환하는 재료와 수량입니다."""
 
@@ -101,8 +104,15 @@ class ToolRecipeCard(BaseModel):
     owned_ingredients: list[str] = Field(default_factory=list)
     optional_ingredients: list[str] = Field(default_factory=list)
     substitutable_ingredients: list[str] = Field(default_factory=list)
-    missing_ingredients: list[dict[str, str | None]] = Field(default_factory=list)
-    shopping_list: list[dict[str, str]] = Field(default_factory=list)
+    # Tool Hub 외부로 나가는 카드도 장보기 재료 최대 5개 계약을 명시한다.
+    missing_ingredients: list[dict[str, str | None]] = Field(
+        default_factory=list,
+        max_length=_MAX_SHOPPING_ITEMS,
+    )
+    shopping_list: list[dict[str, str]] = Field(
+        default_factory=list,
+        max_length=_MAX_SHOPPING_ITEMS,
+    )
     nutrition: NutritionValues
 
 

@@ -38,6 +38,7 @@ from app.repositories.chat_session import (
     ConversationMessage,
     InMemoryChatSessionRepository,
     IngredientCandidate,
+    PendingIngredientAction,
 )
 from app.schemas.chat import (
     ChatRequest,
@@ -81,6 +82,30 @@ _QUANTITY_EXPRESSION_PATTERN = re.compile(
     r"(?:개|알|모|팩|봉|캔|병|장|줄|근|g|kg|ml|l|인분|마리|포기|통|단|대|쪽|"
     r"스푼|큰술|작은술)",
     flags=re.IGNORECASE,
+)
+_DISH_NAME_SUFFIXES = (
+    "찌개",
+    "전골",
+    "볶음",
+    "조림",
+    "구이",
+    "찜",
+    "국",
+    "탕",
+    "밥",
+    "죽",
+    "면",
+    "라면",
+    "파스타",
+    "샐러드",
+    "덮밥",
+    "김밥",
+    "비빔밥",
+    "카레",
+    "스튜",
+    "수프",
+    "피자",
+    "샌드위치",
 )
 _PROMPT_DISCLOSURE_RESPONSE = (
     "요청하신 내용은 안내할 수 없습니다. 레시피 추천을 원하시면 "
@@ -170,6 +195,7 @@ class IngredientConfirmationRead:
     guidance: str | None
     acknowledged_ingredient_names: tuple[str, ...]
     pending_ingredient_correction: str | None
+    pending_ingredient_action: PendingIngredientAction | None
     extraction_message: str | None = None
 
 
@@ -306,6 +332,7 @@ class ChatService:
         ingredient_confirmation_message: str | None = None
         acknowledged_ingredient_names = session.acknowledged_ingredient_names
         pending_ingredient_correction = session.pending_ingredient_correction
+        pending_ingredient_action = session.pending_ingredient_action
         ingredient_extraction_message = request.message
         if replace_confirmed_ingredients:
             # 완료 이후에도 사용자가 명시적으로 새 재료를 지정하면 피드백이 아닌
@@ -392,11 +419,13 @@ class ChatService:
                 session.ingredient_candidates,
                 acknowledged_ingredient_names=session.acknowledged_ingredient_names,
                 pending_ingredient_correction=session.pending_ingredient_correction,
+                pending_ingredient_action=session.pending_ingredient_action,
             )
             confirmation_decision = confirmation_read.decision
             ingredient_confirmation_message = confirmation_read.guidance
             acknowledged_ingredient_names = confirmation_read.acknowledged_ingredient_names
             pending_ingredient_correction = confirmation_read.pending_ingredient_correction
+            pending_ingredient_action = confirmation_read.pending_ingredient_action
             ingredient_extraction_message = _normalize_ingredient_edit_message(
                 confirmation_read.extraction_message or request.message
             )
@@ -471,6 +500,7 @@ class ChatService:
             if confirmation_decision.intent in {"confirmed", "rejected", "edited"}:
                 acknowledged_ingredient_names = tuple()
                 pending_ingredient_correction = None
+                pending_ingredient_action = None
         elif previous_step == "WAITING_IMAGE" and not request.attachments:
             # 첫 요청인지와 관계없이 사용자가 텍스트로 재료를 직접 입력하면 이미지
             # 요청보다 자연어 입력을 우선한다. 이미지 인식 후보가 아니라 사용자 명시
@@ -580,6 +610,11 @@ class ChatService:
             ),
             pending_ingredient_correction=(
                 pending_ingredient_correction
+                if confirmation_decision is not None or extracted_ingredients is not None
+                else None
+            ),
+            pending_ingredient_action=(
+                pending_ingredient_action
                 if confirmation_decision is not None or extracted_ingredients is not None
                 else None
             ),
@@ -1090,6 +1125,7 @@ class ChatService:
         *,
         acknowledged_ingredient_names: Sequence[str] = (),
         pending_ingredient_correction: str | None = None,
+        pending_ingredient_action: PendingIngredientAction | None = None,
     ) -> IngredientConfirmationRead:
         """재료 확인 답변의 주어·긍정/부정을 구분해 다음 동작을 정합니다.
         명시적인 재료 수정은 로컬로 먼저 확정하고, 나머지는 Jev로 판정합니다.
@@ -1115,6 +1151,7 @@ class ChatService:
             guidance: str | None = None,
             acknowledged: Sequence[str] = acknowledged_names,
             pending: str | None = pending_ingredient_correction,
+            pending_action: PendingIngredientAction | None = pending_ingredient_action,
             extraction_message: str | None = None,
         ) -> IngredientConfirmationRead:
             return IngredientConfirmationRead(
@@ -1122,7 +1159,43 @@ class ChatService:
                 guidance=guidance,
                 acknowledged_ingredient_names=tuple(acknowledged),
                 pending_ingredient_correction=pending,
+                pending_ingredient_action=pending_action,
                 extraction_message=extraction_message,
+            )
+
+        if pending_ingredient_action:
+            if _has_explicit_ingredient_mutation_expression(user_message):
+                return read("edited", acknowledged=(), pending=None, pending_action=None)
+            if _is_action_confirmation(user_message):
+                name = pending_ingredient_action.ingredient_name
+                action_message = (
+                    f"{name} 추가해줘."
+                    if pending_ingredient_action.action == "add"
+                    else f"{name} 빼줘."
+                )
+                return read(
+                    "edited",
+                    acknowledged=(),
+                    pending=None,
+                    pending_action=None,
+                    extraction_message=action_message,
+                )
+            if _is_action_rejection(user_message):
+                return read(
+                    "unclear",
+                    guidance=(
+                        "알겠어요. 현재 목록은 그대로 둘게요. "
+                        "이 목록으로 재료를 확정할까요? 더 추가하거나 수정할 내용이 있다면 말씀해주세요."
+                    ),
+                    pending=None,
+                    pending_action=None,
+                )
+            return read(
+                "unclear",
+                guidance=(
+                    f"{_with_topic_particle(pending_ingredient_action.ingredient_name)} "
+                    f"{_pending_action_question(pending_ingredient_action.action)}"
+                ),
             )
 
         if pending_ingredient_correction:
@@ -1213,6 +1286,48 @@ class ChatService:
             # 재료를 사용자가 직접 지정한 요청도 Jev 분류 결과와 무관하게 수정으로
             # 처리한다. 그렇지 않으면 Jev의 rejected 결과가 후보를 초기화할 수 있다.
             return read("edited", acknowledged=(), pending=None)
+
+        if _looks_like_recipe_name(user_message):
+            return read(
+                "unclear",
+                guidance=(
+                    "말씀하신 내용은 요리명으로 보여요. 지금은 재료를 확인하는 단계예요. "
+                    "먼저 재료 목록을 확정한 뒤 원하시는 요리를 말씀해주세요."
+                ),
+            )
+
+        mentioned_ingredient = _bare_ingredient_name(user_message)
+        if mentioned_ingredient:
+            existing = next(
+                (
+                    candidate
+                    for candidate in proposed_ingredients
+                    if _ingredient_candidate_key(candidate.name)
+                    == _ingredient_candidate_key(mentioned_ingredient)
+                ),
+                None,
+            )
+            if existing:
+                return read(
+                    "unclear",
+                    guidance=(
+                        f"{_with_topic_particle(existing.name)} 현재 재료 목록에 있어요. "
+                        f"{_with_object_particle(existing.name)} 뺄까요?"
+                    ),
+                    pending_action=PendingIngredientAction(
+                        action="remove", ingredient_name=existing.name
+                    ),
+                )
+            return read(
+                "unclear",
+                guidance=(
+                    f"{_with_topic_particle(mentioned_ingredient)} 현재 재료 목록에 없어요. "
+                    f"{_with_object_particle(mentioned_ingredient)} 추가할까요?"
+                ),
+                pending_action=PendingIngredientAction(
+                    action="add", ingredient_name=mentioned_ingredient
+                ),
+            )
 
         candidate_payload = [
             {"name": ingredient.name, "amount": ingredient.amount}
@@ -1310,6 +1425,7 @@ def _next_session_state(
     confirmed_ingredients: tuple[IngredientCandidate, ...] | None = None,
     acknowledged_ingredient_names: tuple[str, ...] | None = None,
     pending_ingredient_correction: str | None = None,
+    pending_ingredient_action: PendingIngredientAction | None = None,
     messages: tuple[ConversationMessage, ...] | None = None,
     summary: str | None = None,
 ) -> ChatSessionState:
@@ -1325,6 +1441,7 @@ def _next_session_state(
             next_session,
             ingredient_candidates=ingredient_candidates,
             pending_ingredient_correction=pending_ingredient_correction,
+            pending_ingredient_action=pending_ingredient_action,
         )
     if confirmed_ingredients is not None:
         next_session = replace(next_session, confirmed_ingredients=confirmed_ingredients)
@@ -1340,6 +1457,7 @@ def _next_session_state(
             confirmed_ingredients=tuple(),
             acknowledged_ingredient_names=tuple(),
             pending_ingredient_correction=None,
+            pending_ingredient_action=None,
         )
     if user_conditions is not None:
         return replace(next_session, user_conditions=user_conditions)
@@ -1780,6 +1898,127 @@ def _with_subject_particle(name: str) -> str:
     if "가" <= last_character <= "힣" and (ord(last_character) - ord("가")) % 28:
         return f"{name}이"
     return f"{name}가"
+
+
+def _with_object_particle(name: str) -> str:
+    """간단한 한국어 목적격 조사 처리를 적용한 재료명을 반환합니다."""
+
+    last_character = name[-1] if name else ""
+    if "가" <= last_character <= "힣" and (ord(last_character) - ord("가")) % 28:
+        return f"{name}을"
+    return f"{name}를"
+
+
+def _is_action_confirmation(user_message: str) -> bool:
+    """추가·제외 여부를 다시 물은 직후의 긍정 답변을 판별합니다."""
+
+    return _normalize_confirmation_message(user_message) in {
+        "네",
+        "예",
+        "어",
+        "응",
+        "그래",
+        "좋아",
+        "좋아요",
+        "맞아",
+        "맞아요",
+        "맞습니다",
+        "해",
+        "해줘",
+        "해주세요",
+        "진행해",
+        "진행해주세요",
+    }
+
+
+def _is_action_rejection(user_message: str) -> bool:
+    """추가·제외 여부를 다시 물은 직후의 거절 답변을 판별합니다."""
+
+    return _normalize_confirmation_message(user_message) in {
+        "아니",
+        "아니요",
+        "아뇨",
+        "아니야",
+        "아니에요",
+        "말고",
+        "하지마",
+        "하지마요",
+        "안돼",
+        "싫어",
+        "됐어",
+    }
+
+
+def _pending_action_question(action: Literal["add", "remove"]) -> str:
+    """확인 중인 재료 동작을 다시 묻는 짧은 문장을 반환합니다."""
+
+    return "추가할까요?" if action == "add" else "뺄까요?"
+
+
+def _looks_like_recipe_name(user_message: str) -> bool:
+    """재료 확인 단계에서 들어온 요리명·요리 요청을 보수적으로 감지합니다."""
+
+    normalized = _normalize_confirmation_message(user_message)
+    if not normalized:
+        return False
+    if any(marker in normalized for marker in ("요리", "레시피", "메뉴")):
+        return True
+    return len(normalized) > 1 and any(
+        normalized.endswith(suffix) for suffix in _DISH_NAME_SUFFIXES
+    )
+
+
+def _bare_ingredient_name(user_message: str) -> str | None:
+    """추가·제외 동작 없이 말한 짧은 재료명을 반환합니다.
+
+    이 함수는 식품 사전을 이용해 재료를 단정하지 않는다. 재료명처럼 보이는 짧은
+    답변만 골라 사용자에게 추가·제외 의도를 다시 묻는 용도다.
+    """
+
+    name = user_message.strip(" \t\n,.!?~")
+    if not name or len(name) > 30:
+        return None
+    if not re.fullmatch(r"[가-힣A-Za-z0-9]+(?:\s+[가-힣A-Za-z0-9]+){0,2}", name):
+        return None
+    normalized = _normalize_confirmation_message(name)
+    if normalized in {
+        "음",
+        "음음",
+        "글쎄",
+        "모르겠어",
+        "모르겠어요",
+        "아니",
+        "아니요",
+        "아뇨",
+        "네",
+        "예",
+        "어",
+        "응",
+        "그래",
+    }:
+        return None
+    if any(
+        marker in normalized
+        for marker in (
+            "재료",
+            "목록",
+            "확정",
+            "추가",
+            "삭제",
+            "제거",
+            "제외",
+            "빼",
+            "바꾸",
+            "교체",
+            "수정",
+            "다이어트",
+            "고단백",
+            "저탄",
+            "채식",
+        )
+    ):
+        return None
+    return name
 
 
 def _normalize_confirmation_message(user_message: str) -> str:

@@ -26,6 +26,14 @@ class IngredientCandidate:
 
 
 @dataclass(frozen=True)
+class PendingIngredientAction:
+    """단독 재료명에 대해 사용자에게 다시 확인 중인 추가·제외 동작입니다."""
+
+    action: Literal["add", "remove"]
+    ingredient_name: str
+
+
+@dataclass(frozen=True)
 class ChatSessionState:
     """Tool 요청 준비에 필요한 세션별 대화 상태입니다."""
 
@@ -38,6 +46,8 @@ class ChatSessionState:
     acknowledged_ingredient_names: tuple[str, ...] = field(default_factory=tuple)
     # "돼지고기는 아니야" 뒤에 "무엇으로 바꿀까요?"를 이어 묻기 위한 대상이다.
     pending_ingredient_correction: str | None = None
+    # "고기"처럼 동작 없이 재료명만 답한 경우, 추가·제외 여부를 한 번 더 확인한다.
+    pending_ingredient_action: PendingIngredientAction | None = None
     user_conditions: Mapping[str, object] | None = None
     recommendation_data: Mapping[str, object] | None = None
     selected_set_id: str | None = None

@@ -1142,6 +1142,52 @@ def test_bare_agreement_after_edit_question_confirms_the_whole_ingredient_list(
     assert len(provider.requests) == 1
 
 
+@pytest.mark.parametrize(
+    "message",
+    ["이 재료 맞아", "이 재료로 확정해줘", "현재 재료로 확정할게요"],
+)
+def test_contextual_whole_list_confirmation_is_accepted(
+    message: str,
+) -> None:
+    """'이 재료로 확정'은 바로 앞 후보 목록 전체를 확정해야 한다."""
+
+    repository = InMemoryChatSessionRepository()
+    provider = RecordingToolHubProvider()
+    candidates = (
+        IngredientCandidate(name="참치", amount="1캔"),
+        IngredientCandidate(name="양배추", amount="반 통"),
+    )
+    asyncio.run(
+        repository.save(
+            f"contextual-confirmation-{message}",
+            ChatSessionState(
+                step="WAITING_INGREDIENT_CONFIRM",
+                ingredient_candidates=candidates,
+                user_conditions={"message": "다이어트 식단"},
+            ),
+        )
+    )
+    service = ChatService(
+        llm_responder=FakeCompletionMessageGenerator(),
+        ingredient_confirmation_evaluator=FakeIngredientConfirmationEvaluator("unclear"),
+        tool_provider=provider,
+        session_repository=repository,
+    )
+
+    payload, status_code = asyncio.run(
+        service.handle(
+            ChatRequest(session_id=f"contextual-confirmation-{message}", message=message)
+        )
+    )
+
+    assert status_code == 200
+    assert payload["step"] == "COMPLETED"
+    assert provider.requests[0].confirmed_ingredients == (
+        {"name": "참치", "amount": "1캔"},
+        {"name": "양배추", "amount": "반 통"},
+    )
+
+
 def test_generic_or_whole_list_negative_requests_the_specific_ingredient() -> None:
     """'틀려'와 '재료 아니야'는 재인식 대신 수정 대상을 질문해야 합니다."""
 

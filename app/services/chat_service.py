@@ -1677,7 +1677,7 @@ def _is_explicit_final_ingredient_confirmation(user_message: str) -> bool:
     """
 
     normalized = _normalize_confirmation_message(user_message)
-    return normalized in {
+    if normalized in {
         "네",
         "예",
         "어",
@@ -1732,7 +1732,19 @@ def _is_explicit_final_ingredient_confirmation(user_message: str) -> bool:
         "확정지을게요",
         "가자",
         "고",
-    }
+    }:
+        return True
+    # 바로 앞에서 보여 준 후보 목록을 가리키는 말은 전체 확정 의도가 분명하다.
+    # 재료 하나를 지칭하는 "돼지고기 맞아"와는 달리 "이 재료"·"현재 재료"는
+    # 바로 앞 목록 전체를 뜻하므로 Jev가 unclear를 반환해도 확정으로 승격한다.
+    return bool(
+        re.fullmatch(
+            r"(?:(?:이|현재|그)재료(?:목록)?|(?:이|현재)목록|이대로|그대로)(?:로)?"
+            r"(?:맞아|맞아요|맞습니다|확정|확정해|확정해줘|확정해주세요|"
+            r"확정할게|확정할게요|확정합니다)",
+            normalized,
+        )
+    )
 
 
 def _requests_finalization_after_edit(user_message: str) -> bool:

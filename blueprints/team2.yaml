@@ -1,0 +1,48 @@
+# 2팀 Blueprint. 단위프로젝트 저장소에 같은 경로(blueprints/team2.yaml)로 복사해서 씁니다.
+# Render에서 Blueprint를 만들 때 Blueprint Path에 blueprints/team2.yaml을 넣습니다.
+#
+# [바꾸지 말 것] 이름 4개: aio2-team2, agentservice-team2, agent-db-team2, fromDatabase의 agent-db-team2
+#   Render는 같은 이름의 서비스가 워크스페이스에 이미 있으면 오류 없이 그 서비스에 덮어씁니다.
+#   4개 팀이 한 워크스페이스를 쓰므로 이름이 같으면 다른 팀 서비스를 망가뜨립니다.
+# [프로젝트에 맞게 바꿀 것] "바꿀 곳" 표시가 있는 줄만.
+# 그대로 두면 참고 구현(이 저장소의 gateway/agent 챗봇) 기준으로 동작합니다.
+
+projects:
+  - name: aio2-team2
+    environments:
+      - name: production
+        databases:
+          - name: agent-db-team2
+            databaseName: app
+            user: app
+            plan: 0.1c-256mb          # $6/월
+            diskSizeGB: 1             # 생략하면 15GB가 잡혀 $4.50이 추가됩니다
+        services:
+          - type: web
+            name: agentservice-team2    # URL: agentservice-team2-xxxx.onrender.com
+            runtime: python
+            plan: 0.5c-512mb          # $7/월. 메모리 512MB. 로컬 임베딩 모델(torch 등)을 쓰면 부족합니다
+            buildCommand: pip install uv && uv sync --locked
+            # 바꿀 곳: FastAPI 앱 위치. "모듈경로:app 객체". 예) app.main:app, main:app
+            startCommand: uv run uvicorn gateway.main:app --host 0.0.0.0 --port $PORT
+            # 바꿀 곳: 200을 돌려주는 가벼운 GET 경로. DB·LLM을 부르지 않는 것으로
+            healthCheckPath: /healthz
+            envVars:
+              - key: DATABASE_URL         # 코드가 다른 이름으로 읽으면 key만 그 이름으로 바꿉니다
+                fromDatabase:
+                  name: agent-db-team2
+                  property: connectionString
+              - key: GATEWAY_API_KEY      # Streamlit Secrets에 같은 값을 넣습니다
+                generateValue: true
+              # 바꿀 곳: 프로젝트가 쓰는 비밀 값. sync: false는 Blueprint 처음 만들 때 입력 칸이 뜹니다
+              - key: OPENAI_API_KEY
+                sync: false
+              - key: OPENAI_MODEL
+                value: gpt-4o-mini
+              # 예) LangSmith, Tavily를 쓰면 주석을 풀어 추가합니다
+              # - key: LANGSMITH_API_KEY
+              #   sync: false
+              # - key: LANGSMITH_TRACING
+              #   value: "true"
+              # - key: TAVILY_API_KEY
+              #   sync: false

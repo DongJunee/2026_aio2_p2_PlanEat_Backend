@@ -186,7 +186,8 @@ PlanEat Backend는 냉장고·영수증 이미지 또는 자연어 재료를 입
 | Safety | 입력 · LLM 출력 · Tool 결과의 안전성 검사 |
 | LangSmith | 원문 대신 비식별 실행 metadata를 선택적으로 tracing |
 
-기본 Tool Hub는 프로젝트 내부 CSV와 사전 생성 Chroma 인덱스를 사용합니다. 외부 Tool Hub endpoint와 별도
+기본 Tool Hub는 프로젝트 내부 CSV를 사용합니다. `CHROMA_PERSIST_DIRECTORY`를 명시하면 사전 생성
+Chroma 인덱스를 추가 검색에 사용할 수 있습니다. 외부 Tool Hub endpoint와 별도
 Vision 서비스 endpoint는 아직 연동하지 않았고, adapter와 Tool node를 향후 교체 지점으로 분리했습니다.
 `TOOL_HUB_ENABLED=false`일 때는 OpenAI 기반 임시 추천 경로로 fallback합니다.
 
@@ -301,7 +302,7 @@ README 설명용 이미지는 [`docs/images/`](docs/images/)에, API 테스트�
 | `OPENAI_API_KEY` | 없음 | Vision · LLM 연동 |
 | `OPENAI_MODEL` | `gpt-4o-mini` | 기본 OpenAI 모델 |
 | `TOOL_HUB_ENABLED` | `true` | 로컬 Tool Hub 사용 여부 |
-| `CHROMA_PERSIST_DIRECTORY` | `data/chroma` | 사전 생성 Chroma 인덱스 경로 |
+| `CHROMA_PERSIST_DIRECTORY` | 없음 | 선택적 사전 생성 Chroma 인덱스 경로 |
 | `CHROMA_AUTO_INDEX_ON_STARTUP` | `false` | 기동 시 전체 CSV 재색인 여부 |
 | `NEMO_GUARDRAILS_ENABLED` | `true` | NeMo Guardrails 사용 여부 |
 | `TYPESAFE_JEV_ENABLED` | `false` | TypeSafe Jev 선택 연동 여부 |

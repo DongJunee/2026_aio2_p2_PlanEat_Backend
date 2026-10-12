@@ -266,7 +266,7 @@ uv run uvicorn app.main:app --reload
 | --- | --- | --- |
 | `TOOL_HUB_ENABLED` | 완료 단계 Tool Hub node 사용 여부 | `false`이면 임시 LLM 추천 |
 | `TOOL_HUB_CATALOG_PATH` | Tool Hub Recipe Tool 카탈로그 경로 | 프로젝트 내부 CSV 사용 |
-| `CHROMA_PERSIST_DIRECTORY` | 저장소에 포함된 사전 생성 Chroma 인덱스 경로 | `data/chroma`; 비우면 Chroma 검색 미사용 |
+| `CHROMA_PERSIST_DIRECTORY` | 선택적 사전 생성 Chroma 인덱스 경로 | 기본값 없음; `data/chroma`를 명시하면 Chroma 검색 사용 |
 | `CHROMA_COLLECTION_NAME` | Chroma Recipe Guide collection | `recipe_guides` |
 | `CHROMA_RECIPE_COLLECTION_NAME` | Chroma 레시피 의미 검색 collection | `recipe_catalog` |
 | `CHROMA_AUTO_INDEX_ON_STARTUP` | 서버 기동 시 CSV 재임베딩 여부 | `false`; 사전 생성 인덱스만 사용 |

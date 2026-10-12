@@ -15,24 +15,24 @@ projects:
           - name: agent-db-team2
             databaseName: app
             user: app
-            plan: 0.1c-256mb          # $6/월
-            diskSizeGB: 1             # 생략하면 15GB가 잡혀 $4.50이 추가됩니다
+            plan: 0.1c-256mb # $6/월
+            diskSizeGB: 1 # 생략하면 15GB가 잡혀 $4.50이 추가됩니다
         services:
           - type: web
-            name: agentservice-team2    # URL: agentservice-team2-xxxx.onrender.com
+            name: agentservice-team2 # URL: agentservice-team2-xxxx.onrender.com
             runtime: python
-            plan: 0.5c-512mb          # $7/월. 메모리 512MB. 로컬 임베딩 모델(torch 등)을 쓰면 부족합니다
+            plan: 0.5c-512mb # $7/월. 메모리 512MB. 로컬 임베딩 모델(torch 등)을 쓰면 부족합니다
             buildCommand: pip install uv && uv sync --locked
             # 바꿀 곳: FastAPI 앱 위치. "모듈경로:app 객체". 예) app.main:app, main:app
-            startCommand: uv run uvicorn gateway.main:app --host 0.0.0.0 --port $PORT
+            startCommand: uv run uvicorn app.main:app --host 0.0.0.0 --port $PORT
             # 바꿀 곳: 200을 돌려주는 가벼운 GET 경로. DB·LLM을 부르지 않는 것으로
-            healthCheckPath: /healthz
+            healthCheckPath: /health
             envVars:
-              - key: DATABASE_URL         # 코드가 다른 이름으로 읽으면 key만 그 이름으로 바꿉니다
+              - key: DATABASE_URL # 코드가 다른 이름으로 읽으면 key만 그 이름으로 바꿉니다
                 fromDatabase:
                   name: agent-db-team2
                   property: connectionString
-              - key: GATEWAY_API_KEY      # Streamlit Secrets에 같은 값을 넣습니다
+              - key: GATEWAY_API_KEY # Streamlit Secrets에 같은 값을 넣습니다
                 generateValue: true
               # 바꿀 곳: 프로젝트가 쓰는 비밀 값. sync: false는 Blueprint 처음 만들 때 입력 칸이 뜹니다
               - key: OPENAI_API_KEY

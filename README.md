@@ -121,6 +121,23 @@ flowchart LR
 
 핵심은 **사진 인식 결과를 바로 추천에 쓰지 않는 것**입니다. 사용자가 재료를 확인한 뒤에만 추천을 시작하므로, 인식 오류 때문에 만들 수 없는 메뉴가 추천되는 문제를 줄입니다.
 
+### 사용자 흐름 예시
+
+아래 화면은 서비스 동작 방식의 주요 단계를 보여줍니다. 이미지에서 찾은 재료는 먼저 확인·수정할 수 있고, 확정된 재료와 식단 조건을 바탕으로 추천 결과를 제공합니다.
+
+<table>
+  <tr>
+    <th align="center">① 재료 후보 확인</th>
+    <th align="center">② 영수증 기반 재료 입력</th>
+    <th align="center">③ 식단 추천 결과</th>
+  </tr>
+  <tr>
+    <td><img src="docs/images/fridge-ingredient-confirmation.png" alt="냉장고 재료 후보 확인 화면" width="300"></td>
+    <td><img src="docs/images/receipt-ingredient-confirmation.png" alt="영수증 재료 후보 확인 화면" width="300"></td>
+    <td><img src="docs/images/recipe-recommendations.png" alt="추천 결과 화면" width="300"></td>
+  </tr>
+</table>
+
 ### 사용자 피드백 루프와 검증 범위
 
 추천 완료 뒤 사용자가 "단백질을 더 높여줘" 또는 "다른 메뉴로 다시 추천해줘"처럼 피드백을 보내면, 서비스는 피드백 의도를 분류하고 기존 식단 조건에 누적합니다. 누적된 조건으로 같은 Tool Hub 추천·DTO·Guardrails 검증 경로를 다시 실행하므로, 이전에 확정한 재료와 조건은 유지하면서 결과를 조정할 수 있습니다. 최근 피드백은 최대 10개까지 세션에 보관합니다.
@@ -251,25 +268,6 @@ PlanEat은 모든 기능을 한 모델에 맡기지 않고, 역할별 서비스�
 | **NeMo Guardrails** | AI 입력·출력에 안전 규칙을 적용하는 보호 장치입니다. PlanEat에서는 내부 프롬프트 공개나 API 키 노출 같은 위험한 내용을 차단합니다. |
 
 특히 Jev와 NeMo Guardrails의 역할은 다릅니다. **Jev는 “다음에 무엇을 할지” 판단**하고, **NeMo Guardrails는 “이 내용을 보여줘도 안전한지” 검사**합니다. 따라서 Jev가 실패하면 규칙 기반 전이로, NeMo가 실패하면 기존 자체 안전성 검사로 각각 fallback합니다.
-
-<br>
-
-### 사용자 흐름 예시
-
-이미지에서 찾은 재료는 확인 화면에서 수정할 수 있고, 확정된 재료와 조건을 기준으로 추천 결과를 보여줍니다.
-
-<table>
-  <tr>
-    <th align="center">① 재료 후보 확인</th>
-    <th align="center">② 영수증 기반 재료 입력</th>
-    <th align="center">③ 식단 추천 결과</th>
-  </tr>
-  <tr>
-    <td><img src="docs/images/fridge-ingredient-confirmation.png" alt="냉장고 재료 후보 확인 화면" width="300"></td>
-    <td><img src="docs/images/receipt-ingredient-confirmation.png" alt="영수증 재료 후보 확인 화면" width="300"></td>
-    <td><img src="docs/images/recipe-recommendations.png" alt="추천 결과 화면" width="300"></td>
-  </tr>
-</table>
 
 <br>
 

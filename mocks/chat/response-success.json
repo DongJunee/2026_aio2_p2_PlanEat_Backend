@@ -7,7 +7,9 @@
   "data": {
     "recipe_sets": [
       {
-        "set_id": "SET001",
+        "set_id": "냉장고 재료와 가장 잘 맞아요",
+        "set_key": "SET001",
+        "label": "냉장고 재료와 가장 잘 맞아요",
         "recipes": [
       {
         "recipe_id": "R001",
@@ -160,7 +162,9 @@
         ]
       },
       {
-        "set_id": "SET002",
+        "set_id": "이런 식단도 있어요",
+        "set_key": "SET002",
+        "label": "이런 식단도 있어요",
         "recipes": [
           {
             "recipe_id": "R101",

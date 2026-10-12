@@ -18,12 +18,15 @@ POST /chat
 
 현재 활성화한 패턴은 다음과 같다.
 
-- 입력: 이전 지시 무시, 시스템/개발자 프롬프트 공개, prompt injection, jailbreak 등
-- 출력·Tool 결과: 시스템/개발자 프롬프트, API 키·OpenAI 키 등 내부 정보 노출
+- 입력: 이전 지시 무시, 시스템·개발자 지시/규칙/메시지·프롬프트 공개, prompt injection,
+  jailbreak 등
+- 출력·Tool 결과: 시스템·개발자 지시/규칙/메시지·프롬프트, API 키·OpenAI 키 등 내부 정보 노출
 
 기존 [`app/core/safety.py`](../app/core/safety.py)의 NFKC·구분자 제거 검사는 그대로
-유지한다. 두 계층 중 하나라도 입력을 차단하면 외부 계약에 맞춰 `400 ERROR`를 반환하고,
-최종 출력·Tool 결과가 차단되면 원문을 노출하지 않고 `500 ERROR`를 반환한다.
+유지한다. 시스템·개발자·내부 프롬프트/지시/규칙/메시지 공개 요청이 두 계층 중 하나에서
+차단되면 FE 오류 화면 대신 `200 NEED_MORE_INFO / CONDITION_INPUT`과 안전한 레시피 입력
+안내를 반환한다. 그 외 입력 안전성 위반은 `400 ERROR`로 반환하고, 최종 출력·Tool 결과가
+차단되면 원문을 노출하지 않고 `500 ERROR`를 반환한다.
 
 ## 설정
 
@@ -37,8 +40,8 @@ NEMO_GUARDRAILS_CONFIG_PATH=guardrails
 사용자 메시지·이미지 원문·Tool 결과를 설정이나 로그에 저장하지 않는다.
 
 NeMo 검사에 장애가 생기면 이 어댑터는 검사 실패를 로그에 남기되(오류 유형만 기록),
-기존 결정적 안전성 검사로 fallback한다. 따라서 외부 `/chat` 상태 코드 계약은 바뀌지
-않는다. 장애를 재현하거나 긴급 우회할 때만 `NEMO_GUARDRAILS_ENABLED=false`를 사용한다.
+기존 결정적 안전성 검사로 fallback한다. 따라서 외부 `/chat`의 안전 응답 계약은 유지된다.
+장애를 재현하거나 긴급 우회할 때만 `NEMO_GUARDRAILS_ENABLED=false`를 사용한다.
 
 ## Tool Hub 확장 지점
 

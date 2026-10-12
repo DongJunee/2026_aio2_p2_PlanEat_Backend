@@ -12,15 +12,20 @@ FE 개발용 `POST /chat` 요청·응답 fixture입니다.
 | `request-image-base64.json` | 테스트 냉장고 이미지 3장을 Base64 Data URL로 포함한 Swagger 요청 |
 | `response-input-requirements.json` | 이미지와 조건을 한 번에 수집하는 응답 |
 | `response-image-input.json` | 이미지 첨부 요청 응답 |
+| `response-image-retry.json` | 냉장고·영수증이 아닌 이미지 재첨부 안내 |
 | `response-ingredient-confirm.json` | 인식 재료 확인 단계 |
 | `response-condition-input.json` | 추가 조건 질문 단계 |
+| `response-guardrail-refusal.json` | 시스템·내부 지시 공개 요청을 FE 호환 응답으로 안내하는 예시 |
 | `response-success.json` | 추천 완료 응답 |
 | `response-error.json` | 오류 응답 |
 | `stream-events.json` | `Accept: text/event-stream` SSE 이벤트 형식 |
 
 `response-success.json`은 `recipe_sets` 2개와 세트별 레시피 5개로 구성되어 있으며, 각 레시피의
 `cooking_steps`와 함께 완료 후 두 세트 중 하나를 선택하면 상세 PDF를 생성한다는 안내와
-`available_set_ids`를 포함합니다.
+`available_set_ids`를 포함합니다. `data.recipe_sets[*].set_id`는 화면에 바로 표시할 문구이고,
+서버 내부 선택 키는 같은 객체의 `set_key`에 담깁니다. `label`은 이전 FE 호환용으로 `set_id`와
+같은 문구를 제공합니다. 기본 매핑은 `BEST_MATCH` 또는 첫 번째 세트가
+`냉장고 재료와 가장 잘 맞아요`, `MORE_OPTIONS` 또는 두 번째 세트가 `이런 식단도 있어요`입니다.
 
 ## Base64 이미지 테스트
 

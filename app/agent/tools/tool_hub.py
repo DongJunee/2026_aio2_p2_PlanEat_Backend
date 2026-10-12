@@ -221,6 +221,16 @@ class PlanEatToolHub:
             cook_time=match.recipe.cook_time,
             cooking_steps=list(match.recipe.cooking_steps),
             owned_ingredients=[item.name for item in match.owned_ingredients],
+            optional_ingredients=[
+                item.name
+                for item in match.recipe.ingredients
+                if item.importance in {"권장", "생략 가능"}
+            ],
+            substitutable_ingredients=[
+                item.name
+                for item in match.recipe.ingredients
+                if item.importance == "대체 가능"
+            ],
             missing_ingredients=shopping.missing_ingredients,
             shopping_list=shopping.shopping_list,
             nutrition=nutrition.values,

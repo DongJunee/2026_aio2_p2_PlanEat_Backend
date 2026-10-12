@@ -7,11 +7,12 @@ from datetime import datetime, timezone
 
 import httpx
 
-from app.schemas.chat import Nutrition, Recipe
+from app.schemas.chat import MissingIngredient, Nutrition, Recipe
 from app.services.pdf_service import (
     _build_pdf_filename,
     _embed_recipe_image,
     _is_allowed_recipe_image_url,
+    _tip_text,
 )
 
 
@@ -76,3 +77,49 @@ def test_recipe_pdf_filename_has_timestamp_unique_suffix_and_set_id(monkeypatch)
     filename = _build_pdf_filename("BEST_MATCH")
 
     assert re.fullmatch(r"20261009T073045Z-[0-9a-f]{8}-BEST_MATCH\.pdf", filename)
+
+
+def test_recipe_pdf_tip_prefers_optional_or_alternative_ingredients() -> None:
+    recipe = _recipe(None).model_copy(
+        update={
+            "missing_ingredients": [
+                MissingIngredient(name="간장", importance="필수"),
+                MissingIngredient(name="레몬즙", importance="생략 가능", alternative="식초"),
+                MissingIngredient(name="후추", importance="대체 가능"),
+            ]
+        }
+    )
+
+    assert _tip_text(recipe) == (
+        "선택 재료: 레몬즙 · 대체 가능: 후추 · 대체안: 레몬즙 → 식초"
+    )
+
+
+def test_recipe_pdf_tip_does_not_repeat_required_ingredient() -> None:
+    recipe = _recipe(None).model_copy(
+        update={
+            "missing_ingredients": [
+                MissingIngredient(name="간장", importance="필수"),
+            ]
+        }
+    )
+
+    assert _tip_text(recipe) == (
+        "선택 재료나 대체 가능한 재료 정보가 없습니다. 장보기 목록을 확인해 주세요."
+    )
+
+
+def test_recipe_pdf_tip_uses_source_optional_and_substitutable_fields() -> None:
+    """보유 여부와 무관하게 원본 CSV의 선택·대체 재료를 팁에 표시합니다."""
+
+    recipe = _recipe(None).model_copy(
+        update={
+            "optional_ingredients": ["양파"],
+            "substitutable_ingredients": ["부추"],
+            "missing_ingredients": [
+                MissingIngredient(name="간장", importance="필수"),
+            ],
+        }
+    )
+
+    assert _tip_text(recipe) == "선택 재료: 양파 · 대체 가능: 부추"

@@ -228,6 +228,19 @@ def test_tool_hub_returns_existing_chat_recommendation_shape() -> None:
     assert result.result is not None
     data = RecommendationData.model_validate(result.result["data"])
     assert [len(recipe_set.recipes) for recipe_set in data.recipe_sets] == [5, 5]
+    assert [recipe_set.set_id for recipe_set in data.recipe_sets] == [
+        "냉장고 재료와 가장 잘 맞아요",
+        "이런 식단도 있어요",
+    ]
+    assert [recipe_set.set_key for recipe_set in data.recipe_sets] == [
+        "BEST_MATCH",
+        "MORE_OPTIONS",
+    ]
+    assert [recipe_set.label for recipe_set in data.recipe_sets] == [
+        "냉장고 재료와 가장 잘 맞아요",
+        "이런 식단도 있어요",
+    ]
+    assert "간장" in data.recipe_sets[0].recipes[0].substitutable_ingredients
     assert data.recipe_sets[0].recipes[0].missing_ingredients[0].alternative == "된장"
     assert data.recipe_sets[0].recipes[0].cooking_steps == ["1단계 조리합니다."]
     assert result.source_metadata == {

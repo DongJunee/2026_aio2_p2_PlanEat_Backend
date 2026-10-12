@@ -29,7 +29,7 @@ route_chat → (COMPLETED인 경우) Tool Hub recipe_recommendation Tool node
                          │
                          └── RecommendationData·NeMo Guardrails 검증
   ▼
-ChatResponse JSON 또는 Accept: text/event-stream SSE → 피드백 재추천 또는 세트 선택
+ChatResponse JSON → 피드백 재추천 또는 세트 선택
                          ├── Jev Plan → 조건 갱신 → 재추천·재검증
                          └── 선택 세트 → PDF 생성·저장 → pdf_url
 ```
@@ -37,8 +37,8 @@ ChatResponse JSON 또는 Accept: text/event-stream SSE → 피드백 재추천 �
 | 영역 | 주요 파일 | 역할 |
 | --- | --- | --- |
 | 앱 생성·공통 오류 형식 | `app/main.py` | FastAPI 앱, router 등록, 요청 DTO 검증 오류를 `ERROR` JSON으로 변환, OpenAPI 정리 |
-| HTTP 진입점 | `app/api/v1/endpoints/chat/router.py` | `POST /chat` 요청 수신, JSON/SSE 응답 직렬화, HTTP 상태 설정 |
-| DTO·API 계약 | `app/schemas/chat.py` | 요청·응답·SSE 이벤트 Pydantic 모델 및 필드 제약 |
+| HTTP 진입점 | `app/api/v1/endpoints/chat/router.py` | `POST /chat` 요청 수신, JSON 응답 직렬화, HTTP 상태 설정 |
+| DTO·API 계약 | `app/schemas/chat.py` | 요청·응답 Pydantic 모델 및 필드 제약 |
 | 상태 전이 | `app/agent/graph.py` | LangGraph `ChatState`와 단계별 분기 규칙 |
 | 세션·응답 조립 | `app/services/chat_service.py` | 세션 상태 저장, Graph 실행, Tool Hub/LLM 추천·응답 변환 |
 | 재료 추출 | `app/integrations/llm/openai_responder.py` | 이미지·자연어 입력에서 재료와 수량을 Structured Outputs로 추출·검증 |
@@ -52,8 +52,7 @@ ChatResponse JSON 또는 Accept: text/event-stream SSE → 피드백 재추천 �
 ## 2. Chat API 계약
 
 진입점은 `POST /chat`이며, 상세 명세는 [Chat API](../api/chat.md)를 기준으로 한다.
-기본 응답은 JSON이고, `Accept: text/event-stream` 요청에서는 같은 경로가 SSE 이벤트를 반환한다.
-SSE의 `complete.data.payload`는 기존 `ChatResponse`와 동일한 최종 응답이다.
+응답은 항상 `ChatResponse` JSON입니다.
 
 ### 요청
 

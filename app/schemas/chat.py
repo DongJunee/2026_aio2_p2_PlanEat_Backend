@@ -224,12 +224,3 @@ ChatResponse = (
     | ChatIngredientConfirmResponse
     | ChatErrorResponse
 )
-
-
-class ChatStreamEvent(BaseModel):
-    """SSE로 전달하는 Chat API 스트림 프레임입니다."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    event: Literal["start", "progress", "delta", "complete", "error", "done"]
-    data: dict[str, object] = Field(default_factory=dict)

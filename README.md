@@ -230,7 +230,7 @@ uv run uvicorn app.main:app --reload --port 8000
 
 | Method | Path | 설명 |
 | --- | --- | --- |
-| `POST` | `/chat` | 세션별 대화 처리. 기본 JSON, `Accept: text/event-stream`이면 SSE |
+| `POST` | `/chat` | 세션별 대화 처리 JSON 응답 |
 | `GET` | `/health` | 서버 상태 확인 |
 | `GET` | `/pdfs/{filename}` | 선택한 추천 세트의 상세 PDF 다운로드 |
 

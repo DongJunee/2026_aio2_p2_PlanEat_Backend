@@ -43,3 +43,4 @@ tmp/pdfs/
 .vscode/
 .DS_Store
 Thumbs.db
+*.ses

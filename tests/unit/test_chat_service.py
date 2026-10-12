@@ -25,6 +25,7 @@ from app.services.chat_service import (
     ChatService,
     _apply_ingredient_edit,
     _fallback_ingredient_confirmation,
+    _is_explicit_final_ingredient_confirmation,
     _parse_selected_set_id,
     chat_service,
 )
@@ -975,6 +976,277 @@ def test_image_step_keeps_ingredients_as_unconfirmed_candidates() -> None:
     assert session.confirmed_ingredients == ()
 
 
+def test_additional_image_merges_with_pending_ingredient_candidates() -> None:
+    """재료 확인 중인 후속 이미지는 첫 이미지 후보를 덮어쓰지 않습니다."""
+
+    class SequentialImageGenerator(FakeCompletionMessageGenerator):
+        def __init__(self) -> None:
+            super().__init__()
+            self.image_batches = [
+                [{"name": "두부", "amount": "1모"}],
+                [{"name": "계란", "amount": "4개"}],
+            ]
+
+        async def extract_ingredients(
+            self,
+            user_message: str,
+            attachments: list[dict[str, str]] | tuple[dict[str, str], ...],
+            current_ingredients: list[dict[str, str]] = (),
+        ) -> list[dict[str, str]]:
+            del user_message, current_ingredients
+            if attachments:
+                return self.image_batches.pop(0)
+            return []
+
+    repository = InMemoryChatSessionRepository()
+    service = ChatService(
+        llm_responder=SequentialImageGenerator(),
+        session_repository=repository,
+    )
+
+    first_payload, first_status = asyncio.run(
+        service.handle(
+            ChatRequest(
+                session_id="additional-image-candidates-session",
+                message="첫 번째 냉장고 사진이에요",
+                attachments=[{"type": "image", "data": "https://example.com/fridge-1.jpg"}],
+            )
+        )
+    )
+    second_payload, second_status = asyncio.run(
+        service.handle(
+            ChatRequest(
+                session_id="additional-image-candidates-session",
+                message="재료가 더 있는 사진을 추가할게요",
+                attachments=[{"type": "image", "data": "https://example.com/fridge-2.jpg"}],
+            )
+        )
+    )
+    session = asyncio.run(repository.get("additional-image-candidates-session"))
+
+    assert first_status == second_status == 200
+    assert first_payload["step"] == "INGREDIENT_CONFIRM"
+    assert first_payload["confirmed_ingredients"] == []
+    assert second_payload["step"] == "INGREDIENT_CONFIRM"
+    assert "추가 이미지에서 확인한 재료" in second_payload["response"]
+    assert second_payload["ingredients"] == [
+        {"name": "두부", "amount": "1모"},
+        {"name": "계란", "amount": "4개"},
+    ]
+    assert second_payload["confirmed_ingredients"] == []
+    assert session.ingredient_candidates == (
+        IngredientCandidate(name="두부", amount="1모"),
+        IngredientCandidate(name="계란", amount="4개"),
+    )
+    assert session.confirmed_ingredients == ()
+
+
+def test_additional_image_keeps_existing_confirmed_ingredients_separate() -> None:
+    """조건 입력 중 후속 이미지는 새 재료만 확인 후보로 추가합니다."""
+
+    repository = InMemoryChatSessionRepository()
+    provider = RecordingToolHubProvider()
+    asyncio.run(
+        repository.save(
+            "additional-image-confirmed-session",
+            ChatSessionState(
+                step="WAITING_CONDITIONS",
+                confirmed_ingredients=(IngredientCandidate(name="두부", amount="1모"),),
+                user_conditions={"message": "다이어트 식단"},
+            ),
+        )
+    )
+    service = ChatService(
+        llm_responder=FakeCompletionMessageGenerator(
+            image_ingredients=[{"name": "계란", "amount": "4개"}]
+        ),
+        tool_provider=provider,
+        session_repository=repository,
+    )
+
+    payload, status_code = asyncio.run(
+        service.handle(
+            ChatRequest(
+                session_id="additional-image-confirmed-session",
+                message="재료 사진을 하나 더 올렸어요",
+                attachments=[{"type": "image", "data": "https://example.com/fridge-2.jpg"}],
+            )
+        )
+    )
+    session = asyncio.run(repository.get("additional-image-confirmed-session"))
+
+    assert status_code == 200
+    assert payload["step"] == "INGREDIENT_CONFIRM"
+    assert payload["ingredients"] == [
+        {"name": "계란", "amount": "4개"},
+    ]
+    assert payload["confirmed_ingredients"] == [{"name": "두부", "amount": "1모"}]
+    assert session.ingredient_candidates == (
+        IngredientCandidate(name="계란", amount="4개"),
+    )
+    assert session.confirmed_ingredients == (IngredientCandidate(name="두부", amount="1모"),)
+    assert provider.requests == []
+
+    confirmed_payload, confirmed_status = asyncio.run(
+        service.handle(
+            ChatRequest(
+                session_id="additional-image-confirmed-session",
+                message="네, 모두 맞아요",
+            )
+        )
+    )
+    confirmed_session = asyncio.run(repository.get("additional-image-confirmed-session"))
+
+    assert confirmed_status == 200
+    assert confirmed_payload["step"] == "COMPLETED"
+    assert confirmed_session.ingredient_candidates == ()
+    assert confirmed_session.confirmed_ingredients == (
+        IngredientCandidate(name="두부", amount="1모"),
+        IngredientCandidate(name="계란", amount="4개"),
+    )
+    assert provider.requests[0].confirmed_ingredients == (
+        {"name": "두부", "amount": "1모"},
+        {"name": "계란", "amount": "4개"},
+    )
+
+
+def test_additional_image_after_completed_keeps_all_confirmed_ingredients() -> None:
+    """추천 완료 후 새 이미지를 올려도 기존 확정 재료 전체에 새 재료를 더합니다."""
+
+    class ReadyConditionEvaluator:
+        async def evaluate(self, user_message: str) -> ConditionReadinessDecision:
+            del user_message
+            return ConditionReadinessDecision(is_ready=True, confidence=1.0)
+
+    class SequentialImageGenerator(FakeCompletionMessageGenerator):
+        def __init__(self) -> None:
+            super().__init__()
+            self.image_batches = [
+                [
+                    {"name": f"재료{index}", "amount": "1개"}
+                    for index in range(1, 21)
+                ],
+                [{"name": "새 재료", "amount": "2개"}],
+            ]
+
+        async def extract_ingredients(
+            self,
+            user_message: str,
+            attachments: list[dict[str, str]] | tuple[dict[str, str], ...],
+            current_ingredients: list[dict[str, str]] = (),
+        ) -> list[dict[str, str]]:
+            del user_message, current_ingredients
+            if attachments:
+                return self.image_batches.pop(0)
+            return []
+
+    repository = InMemoryChatSessionRepository()
+    provider = RecordingToolHubProvider()
+    service = ChatService(
+        llm_responder=SequentialImageGenerator(),
+        condition_evaluator=ReadyConditionEvaluator(),
+        ingredient_confirmation_evaluator=FakeIngredientConfirmationEvaluator("confirmed"),
+        tool_provider=provider,
+        session_repository=repository,
+    )
+    session_id = "completed-additional-image-session"
+
+    first_payload, first_status = asyncio.run(
+        service.handle(
+            ChatRequest(
+                session_id=session_id,
+                message="다이어트 식단 추천을 위해 냉장고 사진 2장을 올렸어요.",
+                attachments=[
+                    {"type": "image", "data": "https://example.com/fridge-1.jpg"},
+                    {"type": "image", "data": "https://example.com/fridge-2.jpg"},
+                ],
+            )
+        )
+    )
+    first_confirmed_payload, first_confirmed_status = asyncio.run(
+        service.handle(
+            ChatRequest(session_id=session_id, message="네, 모두 맞아요")
+        )
+    )
+    additional_payload, additional_status = asyncio.run(
+        service.handle(
+            ChatRequest(
+                session_id=session_id,
+                message="재료가 더 있는 사진을 추가할게요.",
+                attachments=[{"type": "image", "data": "https://example.com/fridge-3.jpg"}],
+            )
+        )
+    )
+    final_payload, final_status = asyncio.run(
+        service.handle(ChatRequest(session_id=session_id, message="네, 모두 맞아요"))
+    )
+
+    session = asyncio.run(repository.get(session_id))
+    expected_initial = tuple(
+        IngredientCandidate(name=f"재료{index}", amount="1개")
+        for index in range(1, 21)
+    )
+
+    assert first_status == first_confirmed_status == additional_status == final_status == 200
+    assert first_payload["step"] == "INGREDIENT_CONFIRM"
+    assert len(first_payload["ingredients"]) == 20
+    assert first_confirmed_payload["step"] == "COMPLETED"
+    assert len(provider.requests[0].confirmed_ingredients) == 20
+    assert additional_payload["step"] == "INGREDIENT_CONFIRM"
+    assert additional_payload["ingredients"] == [{"name": "새 재료", "amount": "2개"}]
+    assert additional_payload["confirmed_ingredients"] == [
+        {"name": f"재료{index}", "amount": "1개"}
+        for index in range(1, 21)
+    ]
+    assert final_payload["step"] == "COMPLETED"
+    assert provider.requests[1].confirmed_ingredients == tuple(
+        [{"name": f"재료{index}", "amount": "1개"} for index in range(1, 21)]
+        + [{"name": "새 재료", "amount": "2개"}]
+    )
+    assert session.confirmed_ingredients == expected_initial + (
+        IngredientCandidate(name="새 재료", amount="2개"),
+    )
+
+
+def test_rejecting_additional_image_keeps_existing_confirmed_ingredients() -> None:
+    """추가 이미지 후보를 거절해도 기존 확정 재료는 유지합니다."""
+
+    repository = InMemoryChatSessionRepository()
+    provider = RecordingToolHubProvider()
+    asyncio.run(
+        repository.save(
+            "reject-additional-image-session",
+            ChatSessionState(
+                step="WAITING_INGREDIENT_CONFIRM",
+                ingredient_candidates=(IngredientCandidate(name="계란", amount="4개"),),
+                confirmed_ingredients=(IngredientCandidate(name="두부", amount="1모"),),
+                user_conditions={"message": "다이어트 식단"},
+            ),
+        )
+    )
+    service = ChatService(
+        llm_responder=FakeCompletionMessageGenerator(),
+        tool_provider=provider,
+        session_repository=repository,
+    )
+
+    payload, status_code = asyncio.run(
+        service.handle(
+            ChatRequest(
+                session_id="reject-additional-image-session",
+                message="아니요, 틀렸어요",
+            )
+        )
+    )
+    session = asyncio.run(repository.get("reject-additional-image-session"))
+
+    assert status_code == 200
+    assert payload["step"] == "COMPLETED"
+    assert session.ingredient_candidates == ()
+    assert session.confirmed_ingredients == (IngredientCandidate(name="두부", amount="1모"),)
+    assert provider.requests[0].confirmed_ingredients == ({"name": "두부", "amount": "1모"},)
+
+
 def test_unrecognized_image_returns_image_retry_instead_of_server_error(monkeypatch) -> None:
     """재료가 없는 이미지는 500이 아니라 냉장고·영수증 재첨부 안내를 반환합니다."""
 
@@ -1099,11 +1371,70 @@ def test_confirmation_requires_an_explicit_whole_list_answer_before_tool_call() 
     ]
 
 
-@pytest.mark.parametrize("message", ["없어", "어"])
-def test_bare_agreement_after_edit_question_confirms_the_whole_ingredient_list(
+@pytest.mark.parametrize(
+    "message",
+    (
+        "이 재료로 확정해줘",
+        "재료 확정",
+        "이 재료가 맞아",
+        "재료 맞아",
+        "현재 재료 목록으로 확정할게요",
+    ),
+)
+def test_related_whole_ingredient_confirmation_phrases_are_confirmed(
     message: str,
 ) -> None:
-    """주어 없는 짧은 긍정은 추가·수정할 내용이 없다는 최종 확인으로 처리합니다."""
+    """같은 의미의 재료 확정 표현도 Jev 결과와 무관하게 전체 확정으로 처리합니다."""
+
+    repository = InMemoryChatSessionRepository()
+    provider = RecordingToolHubProvider()
+    candidates = (
+        IngredientCandidate(name="계란", amount="4개"),
+        IngredientCandidate(name="삼겹살", amount="300g"),
+    )
+    session_id = f"related-confirmation-{message}"
+    asyncio.run(
+        repository.save(
+            session_id,
+            ChatSessionState(
+                step="WAITING_INGREDIENT_CONFIRM",
+                ingredient_candidates=candidates,
+                user_conditions={"message": "다이어트 식단"},
+            ),
+        )
+    )
+    service = ChatService(
+        llm_responder=FakeCompletionMessageGenerator(),
+        # 모델이 표현을 unclear로 반환해도 로컬 명시 확정 규칙을 우선한다.
+        ingredient_confirmation_evaluator=FakeIngredientConfirmationEvaluator("unclear"),
+        tool_provider=provider,
+        session_repository=repository,
+    )
+
+    payload, status_code = asyncio.run(
+        service.handle(ChatRequest(session_id=session_id, message=message))
+    )
+
+    assert status_code == 200
+    assert payload["step"] == "COMPLETED"
+    assert provider.requests[0].confirmed_ingredients == (
+        {"name": "계란", "amount": "4개"},
+        {"name": "삼겹살", "amount": "300g"},
+    )
+
+
+@pytest.mark.parametrize(
+    "message",
+    ("이 재료로 확정하지 마", "재료 확정하지 말고 수정해줘"),
+)
+def test_confirmation_negation_is_not_treated_as_final_confirmation(message: str) -> None:
+    """확정 부정 표현은 새 확정 패턴에 포함되지 않아야 합니다."""
+
+    assert not _is_explicit_final_ingredient_confirmation(message)
+
+
+def test_bare_no_after_edit_question_confirms_the_whole_ingredient_list() -> None:
+    """주어 없는 '없어'는 추가·수정할 내용이 없다는 최종 확인으로 처리합니다."""
 
     repository = InMemoryChatSessionRepository()
     provider = RecordingToolHubProvider()

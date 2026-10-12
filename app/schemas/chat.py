@@ -208,6 +208,7 @@ class ChatIngredientConfirmResponse(BaseModel):
     step: Literal["INGREDIENT_CONFIRM"]
     response: str
     ingredients: list[IngredientConfirmation] = Field(min_length=1)
+    confirmed_ingredients: list[IngredientConfirmation] = Field(default_factory=list)
 
 
 class ChatErrorResponse(BaseModel):

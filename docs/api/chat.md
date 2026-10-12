@@ -39,6 +39,11 @@ Content-Type: application/json
 모델이 실제로 확인한 재료명만 구조화해 사용자 입력 확정 재료로 사용합니다. 이미지 인식 후보가 아니므로
 별도 `INGREDIENT_CONFIRM` 단계 없이 조건이 준비된 경우 추천 단계로 진행합니다.
 
+이미지 후보 확인 중(`INGREDIENT_CONFIRM`)이거나 첫 재료를 확정한 뒤 조건을 입력하는 중
+(`CONDITION_INPUT`)에 추가 이미지를 보내면, 새 이미지에서 인식한 재료를 기존 재료 목록에
+중복 없이 합칩니다. 병합된 전체 목록은 다시 `INGREDIENT_CONFIRM`으로 반환되며, 새 이미지
+재료도 사용자 확인 전까지 확정 재료로 Tool에 전달하지 않습니다.
+
 식단 목적은 필수이고 조리 가능 시간은 선택 입력이며, 둘 다 별도 JSON 필드가 아닌 `message`의
 자연어로 전달합니다. 예를 들어 `"다이어트 식단으로 20분 안에 만들고 싶어요."`처럼 이미지와
 함께 보낼 수 있습니다. 서버는 Jev 판정과 보수적 fallback 규칙으로 목적이 충분한지 판단하며,
@@ -106,7 +111,7 @@ FE용 이벤트 예시는 [`mocks/chat/stream-events.json`](../../mocks/chat/str
 | `NEED_MORE_INFO` | `INPUT_REQUIREMENTS` | 이미지와 조건을 동시에 수집해야 하는 호환 응답입니다. |
 | `NEED_MORE_INFO` | `IMAGE_INPUT` | 재료가 없을 때 이미지 또는 자연어 재료 입력을 안내합니다. |
 | `NEED_MORE_INFO` | `CONDITION_INPUT` | `questions`를 표시하고 추가 조건을 입력받습니다. 프롬프트 공개 요청도 FE 호환을 위해 이 단계의 안전한 안내로 반환합니다. |
-| `NEED_MORE_INFO` | `INGREDIENT_CONFIRM` | `ingredients`를 표시하고 인식 재료를 확인받습니다. |
+| `NEED_MORE_INFO` | `INGREDIENT_CONFIRM` | `ingredients`는 새 후보, `confirmed_ingredients`는 기존 확정 재료로 표시하고 새 후보를 확인받습니다. |
 
 `ERROR` 응답에는 `step`을 포함하지 않습니다.
 
@@ -275,18 +280,25 @@ FE에서 사용할 수 있는 전체 성공 응답은 [`mocks/chat/response-succ
     { "name": "두부", "amount": "1모" },
     { "name": "양배추", "amount": "반 통" },
     { "name": "계란", "amount": "4개" }
-  ]
+  ],
+  "confirmed_ingredients": []
 }
 ```
 
 FE는 별도 확인 DTO를 보내지 않고 사용자의 자연어 답변을 `message`로 다시 전송합니다.
 Orchestrator는 Jev의 `choice` 판정으로 답변 의도를 분류합니다.
 
+`ingredients`는 이번에 새로 확인할 후보이고, `confirmed_ingredients`는 이전 턴에서 이미
+확정되어 유지되는 재료입니다. 확정 답변을 받으면 두 목록을 중복 없이 합쳐 Tool 입력으로
+사용합니다. 따라서 조건 입력 중 또는 추천 완료 후 추가 이미지를 보내도 기존 확정 재료를
+다시 확인할 필요 없이 새로 인식된 재료만 확인할 수 있습니다. 새 후보를 확정하면 기존
+확정 재료와 함께 재추천합니다.
+
 | 내부 판정 | 처리 | 외부 응답 |
 |---|---|---|
-| `confirmed` | 후보를 확정 재료로 이동하고, 조건이 있으면 ToolRequest를 준비합니다. | `COMPLETED` 또는 `CONDITION_INPUT` |
+| `confirmed` | 새 후보를 기존 `confirmed_ingredients`에 중복 없이 합치고, 조건이 있으면 ToolRequest를 준비합니다. | `COMPLETED` 또는 `CONDITION_INPUT` |
 | `edited` | 추가·삭제·제거·빼기·제외·없애기·수량 변경을 후보에 반영하고 다시 확인받습니다. | `INGREDIENT_CONFIRM` |
-| `rejected` | 후보를 폐기하고 이미지를 다시 요청합니다. | `IMAGE_INPUT` |
+| `rejected` | 새 후보만 폐기하고 기존 `confirmed_ingredients`는 유지합니다. | `COMPLETED` 또는 `CONDITION_INPUT` |
 | `unclear` | 후보를 유지하고 확인 답변을 다시 요청합니다. | `INGREDIENT_CONFIRM` |
 
 예를 들어 `"계란은 빼고 양파 1개 추가해줘"`, `"방울토마토 제거해줘"`,
@@ -309,8 +321,9 @@ Orchestrator는 Jev의 `choice` 판정으로 답변 의도를 분류합니다.
 ```
 
 바로 앞 질문이 이 확인 질문인 경우, 주어 없는 `"맞아"`, `"없어"`와 `"재료 맞아"`는
-목록 전체 `confirmed`로 처리합니다. `"확정해줘"`, `"목록 확정"`, `"네, 모두 맞아요"`도
-동일합니다. 반면 `"틀려"`, `"재료 아니야"`는 어떤 재료를 수정할지 되묻고, `"돼지고기 맞아"`는
+목록 전체 `confirmed`로 처리합니다. `"이 재료로 확정해줘"`, `"재료 확정"`, `"이 재료가 맞아"`,
+`"확정해줘"`, `"목록 확정"`, `"네, 모두 맞아요"`처럼 같은 의미의 표현도 동일하게 처리합니다.
+반면 `"틀려"`, `"재료 아니야"`는 어떤 재료를 수정할지 되묻고, `"돼지고기 맞아"`는
 돼지고기만 확인한 뒤 나머지 재료도 맞는지 묻습니다. `"돼지고기 아니야"`는 돼지고기 대신 어떤
 재료인지 확인한 뒤에만 후보 목록을 수정합니다.
 

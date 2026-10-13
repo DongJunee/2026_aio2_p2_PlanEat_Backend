@@ -45,7 +45,8 @@ Jev가 활성화되어도 `/chat` 요청·응답의 `status`, `step`, DTO는 변
 최종 추천 이후에는 `feedback_plan` choice가 **다음 노드**를 먼저 선택한다. `regenerate`는
 이전 레시피 ID를 제외해 Recipe·Shopping Tool node를 다시 실행하고, `update_conditions`는
 새 조건을 누적해 같은 Tool node를 실행한다. `replace_ingredients`는 기존 식단 목적을 유지한
-채 OpenAI 구조화 추출기로 보유 재료만 갱신한 뒤 Tool node를 다시 실행한다. `select_set`은
+채 OpenAI 구조화 추출기로 보유 재료 후보를 갱신하고, 사용자 재확인을 받은 뒤에만 Tool node를
+다시 실행한다. `select_set`은
 이미 검증된 `available_set_ids` 안에서만 대상 세트를 찾아 PDF node로 보낸다. `reconsider`,
 `out_of_scope`, `unclear`는 Tool을 재실행하지 않고 현재 추천을 보존한 채 다음 입력을 안내한다.
 

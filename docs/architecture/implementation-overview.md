@@ -26,8 +26,8 @@ route_chat → (COMPLETED인 경우) Tool Hub recipe_recommendation Tool node
   ├── INPUT_REQUIREMENTS / IMAGE_INPUT / INGREDIENT_CONFIRM / CONDITION_INPUT
   │      └── message 직접 입력 재료가 있으면 이미지 없이 조건 확인·추천으로 우회
   └── COMPLETED → Jev feedback_plan이 다음 노드 선택
-                         ├── regenerate / update_conditions / replace_ingredients
-                         │      └── Tool Hub 결과 또는 비활성화 시 OpenAI 임시 추천
+                         ├── regenerate / update_conditions → Tool Hub 재실행
+                         ├── replace_ingredients → 재료 재확인 → Tool Hub 재실행
                          ├── select_set → PDF 생성·저장 → pdf_url
                          └── reconsider / out_of_scope / unclear → 현재 추천 유지·안내
                          │

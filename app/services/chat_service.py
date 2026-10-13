@@ -364,9 +364,9 @@ class ChatService:
         pending_ingredient_action = session.pending_ingredient_action
         ingredient_extraction_message = request.message
         if replace_confirmed_ingredients:
-            # 완료 이후에도 사용자가 명시적으로 새 재료를 지정하면 피드백이 아닌
-            # 재료 교체로 처리한다. 그렇지 않으면 이전 확정 재료가 그대로 Tool Hub로
-            # 전달되어 같은 레시피가 반복된다.
+            # 완료 이후 보유 재료가 바뀌었다면 곧바로 Tool Hub로 보내지 않는다.
+            # 추출한 새 목록을 후보로 되돌려 사용자 확인을 다시 받은 뒤에만
+            # Recipe/Shopping node가 확정 재료를 사용하도록 한다.
             try:
                 extracted_ingredients = await self._extract_ingredients(
                     user_message=request.message,
@@ -379,8 +379,29 @@ class ChatService:
                     "response": "새 재료 입력을 해석하는 중 오류가 발생했습니다.",
                 }, 500
             if extracted_ingredients:
-                candidate_ingredients = tuple()
-                confirmed_ingredients = extracted_ingredients
+                candidate_ingredients = extracted_ingredients
+                confirmed_ingredients = tuple()
+                confirmation_decision = IngredientConfirmationDecision(
+                    intent="edited", confidence=1.0
+                )
+                ingredient_edit_summary = _summarize_ingredient_changes(
+                    before=session.confirmed_ingredients,
+                    after=candidate_ingredients,
+                    user_message=request.message,
+                )
+            else:
+                return {
+                    "status": "NEED_MORE_INFO",
+                    "step": "INGREDIENT_CONFIRM",
+                    "response": (
+                        "바뀐 보유 재료를 확인하지 못했어요. 추가하거나 제외할 재료를 "
+                        "한 번 더 알려주세요."
+                    ),
+                    "ingredients": _ingredient_payload(session.confirmed_ingredients),
+                    "confirmed_ingredients": _ingredient_payload(
+                        session.confirmed_ingredients
+                    ),
+                }, 200
         elif request.attachments and previous_step in {
             "WAITING_INGREDIENT_CONFIRM",
             "WAITING_CONDITIONS",
@@ -585,6 +606,10 @@ class ChatService:
             candidate_ingredients = extracted_ingredients
         messages = [*session.messages, {"role": "user", "content": request.message}]
         workflow_step = previous_step
+        if replace_confirmed_ingredients and confirmation_decision is not None:
+            # 완료 상태에서 재료 변경을 감지한 경우에는, 갱신된 후보를 먼저
+            # 복명복창하고 사용자의 확정을 기다리는 노드로 명시적으로 되돌린다.
+            workflow_step = "WAITING_INGREDIENT_CONFIRM"
         if (
             request.attachments
             and previous_step in {"WAITING_CONDITIONS", "COMPLETED"}

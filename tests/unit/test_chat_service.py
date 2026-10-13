@@ -611,6 +611,77 @@ def test_jev_reconsider_plan_keeps_recommendation_without_running_tool_hub() -> 
     assert "현재 추천은 그대로" in payload["response"]
 
 
+def test_jev_ingredient_update_returns_to_confirmation_before_recommending() -> None:
+    """완료 뒤 보유 재료 변경은 갱신 목록을 다시 확정한 뒤 Tool Hub를 실행한다."""
+
+    repository = InMemoryChatSessionRepository()
+    provider = RecordingToolHubProvider()
+    previous_data = _mock_recommendation_data()
+    asyncio.run(
+        repository.save(
+            "jev-ingredient-update-session",
+            ChatSessionState(
+                step="COMPLETED",
+                confirmed_ingredients=(
+                    IngredientCandidate(name="두부", amount="1모"),
+                    IngredientCandidate(name="양파", amount="1개"),
+                ),
+                user_conditions={"message": "다이어트 식단", "purpose": "다이어트"},
+                recommendation_data=previous_data,
+            ),
+        )
+    )
+    service = ChatService(
+        llm_responder=FakeCompletionMessageGenerator(
+            edited_ingredients=[
+                {"name": "두부", "amount": "1모"},
+                {"name": "양파", "amount": "1개"},
+                {"name": "마늘", "amount": "수량 미정"},
+            ]
+        ),
+        ingredient_confirmation_evaluator=FakeIngredientConfirmationEvaluator("confirmed"),
+        tool_provider=provider,
+        session_repository=repository,
+        feedback_planner=FakeFeedbackPlanner("replace_ingredients"),
+    )
+
+    confirmation, confirmation_status = asyncio.run(
+        service.handle(
+            ChatRequest(
+                session_id="jev-ingredient-update-session",
+                message="아, 냉장고에 마늘도 있다!",
+            )
+        )
+    )
+    waiting_session = asyncio.run(repository.get("jev-ingredient-update-session"))
+
+    assert confirmation_status == 200
+    assert confirmation["step"] == "INGREDIENT_CONFIRM"
+    assert provider.requests == []
+    assert waiting_session.step == "WAITING_INGREDIENT_CONFIRM"
+    assert waiting_session.confirmed_ingredients == ()
+    assert {item.name for item in waiting_session.ingredient_candidates} == {
+        "두부",
+        "양파",
+        "마늘",
+    }
+
+    completed, completed_status = asyncio.run(
+        service.handle(
+            ChatRequest(session_id="jev-ingredient-update-session", message="응, 이 목록으로 확정해줘")
+        )
+    )
+
+    assert completed_status == 200
+    assert completed["step"] == "COMPLETED"
+    assert len(provider.requests) == 1
+    assert {item["name"] for item in provider.requests[0].confirmed_ingredients} == {
+        "두부",
+        "양파",
+        "마늘",
+    }
+
+
 def test_missing_image_after_first_request_uses_natural_language_fallback() -> None:
     service = ChatService(
         llm_responder=FakeClarificationGenerator(),

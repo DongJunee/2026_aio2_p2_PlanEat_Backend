@@ -1706,6 +1706,17 @@ def _parse_selected_set_id(
     ]
     normalized_message = re.sub(r"[\s_-]+", "", user_message).upper()
     has_selection_intent = bool(_SELECTION_INTENT_PATTERN.search(user_message))
+    # 세트 화면에서 ``첫번째``, ``첫번째 세트``, ``1번``처럼 대상만 답하는
+    # 표현도 선택 의도가 명확하다. 기존에는 선택 동작어가 없으면 이 표현을
+    # 일반 피드백으로 흘려보내 기존 추천 안내를 다시 보여줬다.
+    has_ordinal_selection = bool(
+        re.search(
+            r"(?<!\d)[1-9]\s*(?:번|번째)|첫\s*(?:번째|번)|둘째|"
+            r"두\s*(?:번째|번)",
+            user_message,
+        )
+    )
+    has_selection_intent = has_selection_intent or has_ordinal_selection
     for index, recipe_set in enumerate(recommendation.recipe_sets):
         set_key = get_recipe_set_key(recipe_set, index)
         normalized_key = re.sub(r"[\s_-]+", "", set_key).upper()

@@ -23,25 +23,41 @@ LangGraph가 다음 단계를 정하는 보조 판단기로만 사용한다.
 | `ready` | 설정한 최저 confidence 이상 | 조건이 준비된 것으로 저장하고 이미지·재료 확인 단계의 다음 전이를 진행한다. |
 | API 오류, 응답 형식 오류, 최저 confidence 미만 | 관계없음 | Jev 결과를 사용하지 않고 기존 결정적 전이로 fallback한다. |
 
-재료 확인 단계에서는 별도의 `ingredient_confirmation` 질문을 사용한다. Jev는 수정 의도만
-반환하고, 수정된 재료·수량은 OpenAI 구조화 추출기가 반영한다.
+재료 확인 단계에서는 별도의 `ingredient_confirmation` 질문을 사용한다. Jev가 confidence
+기준을 통과한 `confirmed`·`edited`·`rejected` 결정을 먼저 반환하면, Orchestrator는 표현별
+정규식으로 그 결정을 다시 분류하지 않는다. `edited`의 재료명·수량은 OpenAI 구조화 추출기가
+제안하고, 서버는 그 변경이 실제 사용자 메시지에 언급된 재료에만 적용되는지 검증한다.
+이 검증은 Jev의 문맥 판단을 대체하지 않고, 모델이 언급되지 않은 재료를 추가·삭제·수정하는
+것만 막는다.
+
+다만 `이대로 가자`, `가자`, `그대로 해줘`처럼 바로 전 재료 목록을 확정한다는 명시적 진행
+표현은 `confirmed`로 처리한다. 이 표현을 Jev가 `rejected`로 일시적으로 오분류해 후보 목록을
+전부 비우는 일이 없도록 하는 상태 보존 규칙이다. `상추 x`, `상추X`, `상추 ❌`처럼 재료명 뒤의
+제외 표기는 `edited`의 재료 삭제로 해석한다.
 
 | Jev 결과 | LangGraph 처리 |
 |---|---|
 | `confirmed` | 새 후보를 기존 `confirmed_ingredients`에 중복 없이 합치고 조건 입력 여부를 확인한다. |
-| `edited` | 추가·삭제·제거·빼기·제외·없애기·수량 변경을 후보에 반영한 뒤 재확인한다. |
+| `edited` | 구조화 추출 결과를 제안으로 받고, 사용자 발화 범위를 벗어나지 않는 변경만 후보에 반영한 뒤 재확인한다. |
 | `rejected` | 새 후보만 폐기하고 기존 확정 재료는 유지한다. |
-| `unclear` | 후보를 유지하고 확인 답변을 다시 요청한다. |
+| `unclear`, API 오류, 저신뢰 | 후보를 유지하고 확인 답변을 다시 요청한다. 이때만 기존의 제한적 fallback을 사용한다. |
 
 예를 들어 `다이어트 메뉴 추천해줘`는 조리 시간이 없어도 완료 단계로 진행할 수 있다.
 `다이어트 식단으로 20분 안에 만들고 싶어요`는 목적과 선택 시간이 함께 저장되어 시간 필터도 적용한다.
 
 Jev가 활성화되어도 `/chat` 요청·응답의 `status`, `step`, DTO는 변경되지 않는다.
 
-최종 추천 이후 사용자의 개선 의견은 `feedback_plan` choice로 분류한다. Orchestrator는 Jev의
-판정 자체를 사용자에게 노출하지 않고, 피드백 원문과 추출된 조건 슬롯을 기존 조건에 누적한 뒤
-동일한 추천 Tool·RecommendationData·Output Guardrail 검증을 다시 실행한다. 세트 선택은
-검증된 `available_set_ids`와 자연어 선택 표현을 비교해 처리한다.
+최종 추천 이후에는 `feedback_plan` choice가 **다음 노드**를 먼저 선택한다. `regenerate`는
+이전 레시피 ID를 제외해 Recipe·Shopping Tool node를 다시 실행하고, `update_conditions`는
+새 조건을 누적해 같은 Tool node를 실행한다. `replace_ingredients`는 기존 식단 목적을 유지한
+채 OpenAI 구조화 추출기로 보유 재료 후보를 갱신하고, 사용자 재확인을 받은 뒤에만 Tool node를
+다시 실행한다. `select_set`은
+이미 검증된 `available_set_ids` 안에서만 대상 세트를 찾아 PDF node로 보낸다. `reconsider`,
+`out_of_scope`, `unclear`는 Tool을 재실행하지 않고 현재 추천을 보존한 채 다음 입력을 안내한다.
+
+Jev가 활성화되어 정상 응답한 경우에는 정규식이 이 판단을 덮어쓰지 않는다. Jev가 비활성화되어
+있거나 timeout·형식 오류가 발생한 경우에만 기존의 제한적인 문구 parser가 호환 fallback으로
+사용된다.
 
 ## 3. API 키 발급
 

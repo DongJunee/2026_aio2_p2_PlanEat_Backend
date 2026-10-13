@@ -24,9 +24,13 @@ from app.repositories.chat_session import (
 from app.services.chat_service import (
     ChatService,
     _apply_ingredient_edit,
+    _explicit_addition_names,
     _fallback_ingredient_confirmation,
+    _has_explicit_ingredient_edit,
+    _is_explicit_candidate_removal,
     _is_explicit_final_ingredient_confirmation,
     _parse_selected_set_id,
+    _validate_ingredient_edit_result,
     chat_service,
 )
 
@@ -215,6 +219,23 @@ class FakeIngredientConfirmationEvaluator:
         return IngredientConfirmationDecision(intent=self.intent, confidence=0.99)  # type: ignore[arg-type]
 
 
+class FakeFeedbackPlanner:
+    """완료 뒤 Jev의 다음 노드 결정을 고정하는 fake입니다."""
+
+    def __init__(self, intent: str) -> None:
+        self.intent = intent
+        self.messages: list[str] = []
+
+    async def plan(
+        self,
+        user_message: str,
+        current_conditions: dict[str, object] | None,
+    ) -> FeedbackPlan:
+        del current_conditions
+        self.messages.append(user_message)
+        return FeedbackPlan(intent=self.intent, confidence=0.99)  # type: ignore[arg-type]
+
+
 class RecordingToolHubProvider:
     """완료 단계에서 Tool Hub로 전달할 ToolRequest와 결과를 기록하는 fake입니다."""
 
@@ -378,10 +399,12 @@ def test_selected_set_generates_pdf_url_and_saves_selection() -> None:
         llm_responder=FakeCompletionMessageGenerator(),
         session_repository=repository,
         pdf_service=pdf_service,
+        # Jev가 선택 의도를 놓쳐도 명확한 세트 대상은 서버가 처리해야 한다.
+        feedback_planner=FakeFeedbackPlanner("unclear"),
     )
 
     payload, status_code = asyncio.run(
-        service.handle(ChatRequest(session_id="pdf-session", message="1번 세트 선택"))
+        service.handle(ChatRequest(session_id="pdf-session", message="첫번째 세트"))
     )
     session = asyncio.run(repository.get("pdf-session"))
 
@@ -440,7 +463,19 @@ def test_korean_best_match_selection_generates_pdf_url() -> None:
         ("가장 잘 맞는 걸로 해줘", "SET001"),
         ("냉장고 재료와 가장 잘 맞아요로 진행할게", "SET001"),
         ("1번으로 발급해줘", "SET001"),
+        ("첫번째", "SET001"),
+        ("첫번째 세트", "SET001"),
+        ("2번", "SET002"),
+        ("두 번째 세트", "SET002"),
         ("두 번째 걸로 PDF 보내줘", "SET002"),
+        ("왼쪽", "SET001"),
+        ("왼쪽 세트로 해줘", "SET001"),
+        ("좌", "SET001"),
+        ("오른쪽", "SET002"),
+        ("오른쪽 세트로 선택해줘", "SET002"),
+        ("우", "SET002"),
+        ("닭가슴살 양배추 샐러드가 들어간 쪽을 선택해줘", "SET001"),
+        ("닭가슴살 양배추 샐러드", "SET001"),
         ("이런 식단도 있어요 선택", "SET002"),
     ],
 )
@@ -497,13 +532,15 @@ def test_regeneration_excludes_previous_recipes_and_uses_new_response_message() 
         service.handle(
             ChatRequest(
                 session_id="regeneration-session",
-                message="식단이 맘에 안들어서 다시 만들어줘",
+                # 실제 화면에서 쓰는 표현도 Jev fallback 시 재추천으로 처리해야 한다.
+                message="레시피 다시 짜줘",
             )
         )
     )
 
     assert status_code == 200
     assert provider.requests[0].user_conditions["excluded_recipe_ids"] == previous_recipe_ids
+    assert "regenerated_recipe_request" not in provider.requests[0].user_conditions
     assert payload["response"].startswith("기존 추천과 다른 레시피로 식단을 다시 추천했습니다.")
     returned_recipe_ids = {
         recipe["recipe_id"]
@@ -511,6 +548,263 @@ def test_regeneration_excludes_previous_recipes_and_uses_new_response_message() 
         for recipe in recipe_set["recipes"]
     }
     assert returned_recipe_ids.isdisjoint(previous_recipe_ids)
+    saved_session = asyncio.run(repository.get("regeneration-session"))
+    assert "regenerated_recipe_request" not in saved_session.user_conditions
+
+
+def test_explicit_ingredient_addition_overrides_regeneration_plan() -> None:
+    """재료 추가와 재추천을 함께 말하면 재료 확인을 먼저 거칩니다."""
+
+    repository = InMemoryChatSessionRepository()
+    provider = RecordingToolHubProvider()
+    previous_data = _mock_recommendation_data()
+    asyncio.run(
+        repository.save(
+            "completed-ingredient-addition-session",
+            ChatSessionState(
+                step="COMPLETED",
+                confirmed_ingredients=(IngredientCandidate(name="가지", amount="1개"),),
+                user_conditions={"message": "다이어트 식단", "purpose": "다이어트"},
+                recommendation_data=previous_data,
+            ),
+        )
+    )
+    service = ChatService(
+        llm_responder=FakeCompletionMessageGenerator(
+            edited_ingredients=[
+                {"name": "가지", "amount": "1개"},
+                {"name": "깻잎", "amount": "수량 미정"},
+            ]
+        ),
+        tool_provider=provider,
+        session_repository=repository,
+        feedback_planner=FakeFeedbackPlanner("regenerate"),
+    )
+
+    payload, status_code = asyncio.run(
+        service.handle(
+            ChatRequest(
+                session_id="completed-ingredient-addition-session",
+                message="재료에 깻잎 추가해서 레시피 다시 짜줘",
+            )
+        )
+    )
+
+    assert status_code == 200
+    assert payload["step"] == "INGREDIENT_CONFIRM"
+    assert provider.requests == []
+    assert payload["ingredients"] == [
+        {"name": "가지", "amount": "1개"},
+        {"name": "깻잎", "amount": "수량 미정"},
+    ]
+    saved_session = asyncio.run(
+        repository.get("completed-ingredient-addition-session")
+    )
+    assert saved_session.user_conditions["excluded_recipe_ids"]
+
+
+def test_addition_name_parser_does_not_split_oi() -> None:
+    """'오이 추가'를 '오'와 조사 '이'로 분리하지 않는다."""
+
+    assert _explicit_addition_names("가지 빼고 오이 추가") == ["오이"]
+    assert _has_explicit_ingredient_edit(
+        "재료에 깻잎 추가해서 레시피 다시 짜줘", ()
+    )
+
+
+def test_jev_regeneration_plan_reaches_tool_hub_without_phrase_matching() -> None:
+    """Jev의 regenerate 판단은 기존 정규식 문구와 무관하게 추천 노드를 다시 탄다."""
+
+    repository = InMemoryChatSessionRepository()
+    provider = RecordingToolHubProvider()
+    previous_data = _mock_recommendation_data()
+    for recipe_set in previous_data["recipe_sets"]:
+        for recipe in recipe_set["recipes"]:
+            recipe["recipe_id"] = f"old-{recipe['title']}"
+    asyncio.run(
+        repository.save(
+            "jev-regenerate-session",
+            ChatSessionState(
+                step="COMPLETED",
+                confirmed_ingredients=(IngredientCandidate(name="두부", amount="1모"),),
+                user_conditions={"message": "다이어트 식단", "purpose": "다이어트"},
+                recommendation_data=previous_data,
+            ),
+        )
+    )
+    planner = FakeFeedbackPlanner("regenerate")
+    service = ChatService(
+        llm_responder=FakeCompletionMessageGenerator(),
+        tool_provider=provider,
+        session_repository=repository,
+        feedback_planner=planner,
+    )
+
+    payload, status_code = asyncio.run(
+        service.handle(
+            ChatRequest(
+                session_id="jev-regenerate-session",
+                message="이번에는 완전히 색다른 조합으로 보고 싶어",
+            )
+        )
+    )
+
+    assert status_code == 200
+    assert planner.messages == ["이번에는 완전히 색다른 조합으로 보고 싶어"]
+    assert provider.requests[0].user_conditions["excluded_recipe_ids"]
+    assert "regenerated_recipe_request" not in provider.requests[0].user_conditions
+    assert payload["response"].startswith("기존 추천과 다른 레시피로 식단을 다시 추천했습니다.")
+
+
+def test_regeneration_message_is_limited_to_the_regeneration_turn() -> None:
+    """재추천 뒤 일반 조건 피드백은 재추천 안내 문구를 재사용하지 않는다."""
+
+    repository = InMemoryChatSessionRepository()
+    provider = RecordingToolHubProvider()
+    previous_data = _mock_recommendation_data()
+    asyncio.run(
+        repository.save(
+            "regeneration-message-session",
+            ChatSessionState(
+                step="COMPLETED",
+                confirmed_ingredients=(IngredientCandidate(name="두부", amount="1모"),),
+                user_conditions={"message": "다이어트 식단", "purpose": "다이어트"},
+                recommendation_data=previous_data,
+            ),
+        )
+    )
+    planner = FakeFeedbackPlanner("regenerate")
+    service = ChatService(
+        llm_responder=FakeCompletionMessageGenerator(),
+        tool_provider=provider,
+        session_repository=repository,
+        feedback_planner=planner,
+    )
+
+    first, first_status = asyncio.run(
+        service.handle(
+            ChatRequest(session_id="regeneration-message-session", message="다시 짜줘")
+        )
+    )
+    planner.intent = "update_conditions"
+    second, second_status = asyncio.run(
+        service.handle(
+            ChatRequest(session_id="regeneration-message-session", message="단백질을 더 높여줘")
+        )
+    )
+
+    assert first_status == second_status == 200
+    assert first["response"].startswith("기존 추천과 다른 레시피로 식단을 다시 추천했습니다.")
+    assert second["response"].startswith("확정한 재료와 조건에 맞는 메인·반찬 식단을 추천했습니다.")
+    assert "regenerated_recipe_request" not in provider.requests[1].user_conditions
+
+
+def test_jev_reconsider_plan_keeps_recommendation_without_running_tool_hub() -> None:
+    """설명·비교 요청은 Tool Hub 재실행 대신 현재 결과를 유지한다."""
+
+    repository = InMemoryChatSessionRepository()
+    provider = RecordingToolHubProvider()
+    previous_data = _mock_recommendation_data()
+    asyncio.run(
+        repository.save(
+            "jev-reconsider-session",
+            ChatSessionState(
+                step="COMPLETED",
+                confirmed_ingredients=(IngredientCandidate(name="두부", amount="1모"),),
+                user_conditions={"message": "다이어트 식단", "purpose": "다이어트"},
+                recommendation_data=previous_data,
+            ),
+        )
+    )
+    service = ChatService(
+        llm_responder=FakeCompletionMessageGenerator(),
+        tool_provider=provider,
+        session_repository=repository,
+        feedback_planner=FakeFeedbackPlanner("reconsider"),
+    )
+
+    payload, status_code = asyncio.run(
+        service.handle(
+            ChatRequest(session_id="jev-reconsider-session", message="두 세트를 비교해줘")
+        )
+    )
+
+    assert status_code == 200
+    assert provider.requests == []
+    assert payload["status"] == "SUCCESS"
+    assert payload["data"] == previous_data
+    assert "현재 추천은 그대로" in payload["response"]
+
+
+def test_jev_ingredient_update_returns_to_confirmation_before_recommending() -> None:
+    """완료 뒤 보유 재료 변경은 갱신 목록을 다시 확정한 뒤 Tool Hub를 실행한다."""
+
+    repository = InMemoryChatSessionRepository()
+    provider = RecordingToolHubProvider()
+    previous_data = _mock_recommendation_data()
+    asyncio.run(
+        repository.save(
+            "jev-ingredient-update-session",
+            ChatSessionState(
+                step="COMPLETED",
+                confirmed_ingredients=(
+                    IngredientCandidate(name="두부", amount="1모"),
+                    IngredientCandidate(name="양파", amount="1개"),
+                ),
+                user_conditions={"message": "다이어트 식단", "purpose": "다이어트"},
+                recommendation_data=previous_data,
+            ),
+        )
+    )
+    service = ChatService(
+        llm_responder=FakeCompletionMessageGenerator(
+            edited_ingredients=[
+                {"name": "두부", "amount": "1모"},
+                {"name": "양파", "amount": "1개"},
+                {"name": "마늘", "amount": "수량 미정"},
+            ]
+        ),
+        ingredient_confirmation_evaluator=FakeIngredientConfirmationEvaluator("confirmed"),
+        tool_provider=provider,
+        session_repository=repository,
+        feedback_planner=FakeFeedbackPlanner("replace_ingredients"),
+    )
+
+    confirmation, confirmation_status = asyncio.run(
+        service.handle(
+            ChatRequest(
+                session_id="jev-ingredient-update-session",
+                message="아, 냉장고에 마늘도 있다!",
+            )
+        )
+    )
+    waiting_session = asyncio.run(repository.get("jev-ingredient-update-session"))
+
+    assert confirmation_status == 200
+    assert confirmation["step"] == "INGREDIENT_CONFIRM"
+    assert provider.requests == []
+    assert waiting_session.step == "WAITING_INGREDIENT_CONFIRM"
+    assert waiting_session.confirmed_ingredients == ()
+    assert {item.name for item in waiting_session.ingredient_candidates} == {
+        "두부",
+        "양파",
+        "마늘",
+    }
+
+    completed, completed_status = asyncio.run(
+        service.handle(
+            ChatRequest(session_id="jev-ingredient-update-session", message="응, 이 목록으로 확정해줘")
+        )
+    )
+
+    assert completed_status == 200
+    assert completed["step"] == "COMPLETED"
+    assert len(provider.requests) == 1
+    assert {item["name"] for item in provider.requests[0].confirmed_ingredients} == {
+        "두부",
+        "양파",
+        "마늘",
+    }
 
 
 def test_missing_image_after_first_request_uses_natural_language_fallback() -> None:
@@ -691,13 +985,11 @@ def test_jev_low_confidence_or_invalid_choice_is_ignored() -> None:
 
 def test_jev_feedback_plan_accepts_only_confident_supported_choices() -> None:
     payload = {
-        "answers": {
-            "feedback_plan": {"choice": "update_conditions", "confidence": 0.9}
-        }
+        "answers": {"feedback_plan": {"choice": "regenerate", "confidence": 0.9}}
     }
 
     assert JevFeedbackPlanner.parse_feedback_plan(payload, min_confidence=0.8) == FeedbackPlan(
-        intent="update_conditions", confidence=0.9
+        intent="regenerate", confidence=0.9
     )
     assert (
         JevFeedbackPlanner.parse_feedback_plan(
@@ -719,7 +1011,6 @@ def test_jev_ingredient_confirmation_accepts_only_supported_high_confidence_choi
     decision = JevIngredientConfirmationEvaluator.parse_ingredient_confirmation(
         confirmed, min_confidence=0.8
     )
-
     assert decision == IngredientConfirmationDecision(intent="confirmed", confidence=0.9)
     assert (
         JevIngredientConfirmationEvaluator.parse_ingredient_confirmation(
@@ -727,6 +1018,37 @@ def test_jev_ingredient_confirmation_accepts_only_supported_high_confidence_choi
         )
         is None
     )
+
+
+def test_ingredient_edit_validation_allows_only_user_mentioned_changes() -> None:
+    """구조화 추출기가 제안해도 사용자 발화 밖 재료 변경은 적용하지 않는다."""
+
+    before = (
+        IngredientCandidate(name="토마토", amount="2개"),
+        IngredientCandidate(name="양파", amount="1개"),
+    )
+    valid = _validate_ingredient_edit_result(
+        before=before,
+        proposed=(
+            IngredientCandidate(name="참치", amount="1캔"),
+            IngredientCandidate(name="양파", amount="1개"),
+        ),
+        user_message="토마토 대신 참치로 바꿔줘",
+    )
+    unsafe = _validate_ingredient_edit_result(
+        before=before,
+        proposed=(
+            IngredientCandidate(name="양파", amount="1개"),
+            IngredientCandidate(name="두부", amount="1모"),
+        ),
+        user_message="토마토는 빼줘",
+    )
+
+    assert valid == (
+        IngredientCandidate(name="참치", amount="1캔"),
+        IngredientCandidate(name="양파", amount="1개"),
+    )
+    assert unsafe is None
 
 
 def test_high_confidence_jev_decision_keeps_condition_step() -> None:
@@ -831,7 +1153,9 @@ def test_condition_clarification_does_not_request_optional_cooking_time() -> Non
 
     assert status_code == 200
     assert payload["step"] == "CONDITION_INPUT"
-    assert payload["questions"] == ["식단 목적은 무엇인가요?"]
+    assert payload["questions"] == [
+        "식단 목적은 무엇인가요? 예: 다이어트, 식단 관리, 일반식"
+    ]
 
 
 def test_tool_request_rejects_unconfirmed_ingredient_candidates() -> None:
@@ -1300,6 +1624,7 @@ def test_confirmation_requires_an_explicit_whole_list_answer_before_tool_call() 
         "이 재료가 맞아",
         "재료 맞아",
         "현재 재료 목록으로 확정할게요",
+        "이대로 가자",
     ),
 )
 def test_related_whole_ingredient_confirmation_phrases_are_confirmed(
@@ -1342,6 +1667,94 @@ def test_related_whole_ingredient_confirmation_phrases_are_confirmed(
         {"name": "계란", "amount": "4개"},
         {"name": "삼겹살", "amount": "300g"},
     )
+
+
+def test_confirmed_ingredients_survive_the_following_condition_turn() -> None:
+    """재료 확정 뒤 목적을 입력해도 같은 세션의 재료를 Tool에 전달한다."""
+
+    repository = InMemoryChatSessionRepository()
+    provider = RecordingToolHubProvider()
+    candidates = (
+        IngredientCandidate(name="계란", amount="4개"),
+        IngredientCandidate(name="삼겹살", amount="300g"),
+    )
+    session_id = "confirm-then-condition-session"
+    asyncio.run(
+        repository.save(
+            session_id,
+            ChatSessionState(
+                step="WAITING_INGREDIENT_CONFIRM",
+                ingredient_candidates=candidates,
+            ),
+        )
+    )
+    service = ChatService(
+        llm_responder=FakeCompletionMessageGenerator(),
+        # "이대로 가자"의 명시 확정 규칙이 Jev 오분류보다 우선해야 한다.
+        ingredient_confirmation_evaluator=FakeIngredientConfirmationEvaluator("unclear"),
+        tool_provider=provider,
+        session_repository=repository,
+    )
+
+    confirmation, confirmation_status = asyncio.run(
+        service.handle(ChatRequest(session_id=session_id, message="이대로 가자"))
+    )
+    saved_after_confirmation = asyncio.run(repository.get(session_id))
+    completion, completion_status = asyncio.run(
+        service.handle(ChatRequest(session_id=session_id, message="다이어트"))
+    )
+
+    assert confirmation_status == completion_status == 200
+    assert confirmation["step"] == "CONDITION_INPUT"
+    assert saved_after_confirmation.step == "WAITING_CONDITIONS"
+    assert saved_after_confirmation.confirmed_ingredients == candidates
+    assert completion["step"] == "COMPLETED"
+    assert provider.requests[0].confirmed_ingredients == (
+        {"name": "계란", "amount": "4개"},
+        {"name": "삼겹살", "amount": "300g"},
+    )
+
+
+def test_explicit_progress_phrase_overrides_misclassified_rejection() -> None:
+    """'이대로 가자'는 Jev가 거절로 오분류해도 후보를 지우지 않고 확정한다."""
+
+    repository = InMemoryChatSessionRepository()
+    provider = RecordingToolHubProvider()
+    asyncio.run(
+        repository.save(
+            "progress-phrase-session",
+            ChatSessionState(
+                step="WAITING_INGREDIENT_CONFIRM",
+                ingredient_candidates=(IngredientCandidate(name="연어", amount="2팩"),),
+                user_conditions={"message": "다이어트 식단", "purpose": "다이어트"},
+            ),
+        )
+    )
+    service = ChatService(
+        llm_responder=FakeCompletionMessageGenerator(),
+        ingredient_confirmation_evaluator=FakeIngredientConfirmationEvaluator("rejected"),
+        tool_provider=provider,
+        session_repository=repository,
+    )
+
+    payload, status_code = asyncio.run(
+        service.handle(
+            ChatRequest(session_id="progress-phrase-session", message="이대로 가자")
+        )
+    )
+
+    assert status_code == 200
+    assert payload["step"] == "COMPLETED"
+    assert provider.requests[0].confirmed_ingredients == (
+        {"name": "연어", "amount": "2팩"},
+    )
+
+
+@pytest.mark.parametrize("message", ("상추 x", "상추X", "상추 ❌"))
+def test_symbolic_x_after_ingredient_means_removal(message: str) -> None:
+    """채팅에서 쓰는 x/X/❌ 제외 표기를 재료명 뒤에서만 허용한다."""
+
+    assert _is_explicit_candidate_removal("상추", message)
 
 
 @pytest.mark.parametrize(

@@ -25,12 +25,16 @@ route_chat → (COMPLETED인 경우) Tool Hub recipe_recommendation Tool node
 응답 변환
   ├── INPUT_REQUIREMENTS / IMAGE_INPUT / INGREDIENT_CONFIRM / CONDITION_INPUT
   │      └── message 직접 입력 재료가 있으면 이미지 없이 조건 확인·추천으로 우회
-  └── COMPLETED → Tool Hub 결과 또는 비활성화 시 OpenAI 임시 추천
+  └── COMPLETED → Jev feedback_plan이 다음 노드 선택
+                         ├── regenerate / update_conditions → Tool Hub 재실행
+                         ├── replace_ingredients → 재료 재확인 → Tool Hub 재실행
+                         ├── select_set → PDF 생성·저장 → pdf_url
+                         └── reconsider / out_of_scope / unclear → 현재 추천 유지·안내
                          │
                          └── RecommendationData·NeMo Guardrails 검증
   ▼
 ChatResponse JSON → 피드백 재추천 또는 세트 선택
-                         ├── Jev Plan → 조건 갱신 → 재추천·재검증
+                         ├── Jev Plan → 기존 Tool node 재실행 또는 현재 추천 유지
                          └── 선택 세트 → PDF 생성·저장 → pdf_url
 ```
 
@@ -220,13 +224,15 @@ Vision·재료 정규화 결과가 준비되면 해당 결과 어댑터로 교�
 | 결과 | 세션·Graph 처리 |
 |---|---|
 | `confirmed` | `ingredient_candidates`를 비우고 `confirmed_ingredients`로 이동한다. 조건이 있으면 ToolRequest를 생성한다. |
-| `edited` | 제한적인 추가·삭제·수량 변경 parser를 적용하고 `INGREDIENT_CONFIRM`을 다시 반환한다. |
+| `edited` | OpenAI 구조화 추출기가 제안한 변경을 사용자 발화와 대조해 검증하고, 통과한 목록으로 `INGREDIENT_CONFIRM`을 다시 반환한다. |
 | `rejected` | 후보·확정 재료를 비우고 `IMAGE_INPUT`으로 재촬영을 요청한다. |
 | `unclear` | 후보를 유지하고 `INGREDIENT_CONFIRM` 재확인을 요청한다. |
 
-Jev가 비활성화·실패·저신뢰이면 `ChatService`의 확인 표현 fallback을 사용한다. `edited` 요청의
-복잡한 식재료명·수량 변경은 OpenAI 구조화 추출기가 반영하며, 수량이 없는 재료는 `수량 미정`으로
-보정한다. 이미지 후보는 사용자 확인 전까지 Tool 입력에 포함하지 않는다.
+Jev가 비활성화·실패·저신뢰이면 `ChatService`의 확인 표현 fallback을 사용한다. Jev가 고신뢰로
+결정한 경우에는 서버의 표현별 parser가 그 판단을 덮어쓰지 않는다. `edited` 요청의 복잡한
+식재료명·수량 변경은 OpenAI 구조화 추출기가 제안하고, 서버는 사용자 메시지에 없는 재료의
+추가·삭제·수량 변경을 거부한다. 수량이 없는 재료는 `수량 미정`으로 보정한다. 이미지 후보는
+사용자 확인 전까지 Tool 입력에 포함하지 않는다.
 
 외부 API 호출은 세션 잠금 밖에서 수행해, 한 세션의 네트워크 지연이 다른 세션의 처리를
 막지 않게 한다. API 키·사용자 메시지 원문은 애플리케이션 로그에 기록하지 않는다.

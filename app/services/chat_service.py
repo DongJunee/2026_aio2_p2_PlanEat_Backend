@@ -2,7 +2,9 @@
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
+import hashlib
 import json
+import logging
 import re
 from typing import Literal, Protocol
 
@@ -119,6 +121,8 @@ _ADDITIONAL_IMAGE_RESPONSE = (
     "현재 목록으로 확정할까요? 더 추가하거나 수정할 재료가 있다면 말씀해주세요."
 )
 
+logger = logging.getLogger(__name__)
+
 
 def _guardrail_rejection(message: str) -> tuple[dict[str, object], int]:
     """공개 요청은 FE 오류 화면 대신 기존 추가 입력 계약으로 안전하게 안내합니다."""
@@ -192,7 +196,7 @@ class IngredientConfirmationRead:
 
 
 class FeedbackPlanner(Protocol):
-    """완료된 추천에 대한 사용자 피드백의 재추천 계획 경계입니다."""
+    """완료된 추천에 대한 사용자 피드백의 다음 노드 계획 경계입니다."""
 
     async def plan(
         self,
@@ -252,17 +256,18 @@ class ChatService:
         session = await self._session_repository.get(request.session_id)
         previous_step = session.step
         stored_recommendation = _stored_recommendation(session)
-        regenerate_with_new_recipes = (
-            previous_step == "COMPLETED"
-            and stored_recommendation is not None
-            and _is_recipe_regeneration_request(request.message)
+        session_token = _session_log_token(request.session_id)
+        logger.info(
+            "chat_session_loaded token=%s step=%s confirmed=%d candidates=%d "
+            "stored_recommendation=%s",
+            session_token,
+            previous_step,
+            len(session.confirmed_ingredients),
+            len(session.ingredient_candidates),
+            stored_recommendation is not None,
         )
-        replace_confirmed_ingredients = (
-            previous_step == "COMPLETED"
-            and stored_recommendation is not None
-            and not request.attachments
-            and _looks_like_ingredient_replacement(request.message)
-        )
+        regenerate_with_new_recipes = False
+        replace_confirmed_ingredients = False
         completed_additional_image = (
             previous_step == "COMPLETED" and bool(request.attachments)
         )
@@ -271,7 +276,61 @@ class ChatService:
             and stored_recommendation is not None
             and not completed_additional_image
         ):
-            selected_set_id = _parse_selected_set_id(request.message, stored_recommendation)
+            feedback_context = {
+                **dict(session.user_conditions or {}),
+                "available_recipe_sets": [
+                    recipe_set.set_id for recipe_set in stored_recommendation.recipe_sets
+                ],
+            }
+            feedback_plan = await self._feedback_planner.plan(
+                request.message,
+                feedback_context,
+            )
+
+            # Jev가 완료 단계의 다음 노드를 먼저 고른다. 아래의 문자열 parser는
+            # Jev 비활성화·timeout 같은 fallback에만 쓰며, 정상 Jev 판단을 덮어쓰지
+            # 않는다. 다만 명시적인 보유 재료 변경은 Tool 입력을 바꾸는 작업이므로
+            # Jev가 regenerate/update_conditions로 잘못 분류해도 재료 확인 경로를
+            # 우선한다. 세트 ID는 이미 생성된 Tool 결과 안에서만 해석한다.
+            is_jev_fallback = feedback_plan.source == "fallback"
+            requested_regeneration = feedback_plan.intent == "regenerate" or (
+                is_jev_fallback and _is_recipe_regeneration_request(request.message)
+            )
+            explicit_ingredient_edit = _has_explicit_ingredient_edit(
+                request.message,
+                session.confirmed_ingredients,
+            )
+            if explicit_ingredient_edit and feedback_plan.intent != "replace_ingredients":
+                # 완료 피드백에서 보유 재료를 직접 바꾼다는 표현은 Jev가
+                # regenerate/update_conditions로 분류해도 재료 확인이 먼저다.
+                feedback_plan = replace(feedback_plan, intent="replace_ingredients")
+            regenerate_with_new_recipes = requested_regeneration
+            replace_confirmed_ingredients = (
+                feedback_plan.intent == "replace_ingredients"
+                or explicit_ingredient_edit
+                or (
+                    is_jev_fallback
+                    and _looks_like_ingredient_replacement(request.message)
+                )
+            )
+            # replace_confirmed_ingredients인 경우에도 regenerate 플래그는 유지한다.
+            # 그래프는 WAITING_INGREDIENT_CONFIRM에서 멈추므로 이번 턴에 Tool을
+            # 실행하지 않지만, 기존 레시피 제외 목록은 세션 조건에 보존되어
+            # 사용자가 새 재료를 확정한 다음 실제로 다른 레시피를 받게 된다.
+            logger.info(
+                "chat_completed_feedback token=%s intent=%s source=%s "
+                "explicit_ingredient_edit=%s regenerate=%s",
+                session_token,
+                feedback_plan.intent,
+                feedback_plan.source,
+                explicit_ingredient_edit,
+                regenerate_with_new_recipes,
+            )
+            # 명확한 세트 대상(첫번째·1번·두 번째 세트 등)은 Jev가 unclear로
+            # 분류해도 서버가 먼저 선택 처리한다.
+            selected_set_id = _parse_selected_set_id(
+                request.message, stored_recommendation
+            )
             if selected_set_id is not None:
                 return await self._handle_set_selection(
                     request=request,
@@ -279,29 +338,41 @@ class ChatService:
                     recommendation=stored_recommendation,
                     selected_set_id=selected_set_id,
                 )
+            wants_set_selection = feedback_plan.intent == "select_set" or is_jev_fallback
+            if wants_set_selection:
+                if feedback_plan.intent == "select_set":
+                    return await self._respond_to_incomplete_set_selection(
+                        request=request,
+                        session=session,
+                        recommendation=stored_recommendation,
+                    )
 
-            # 완료 결과 이후에는 새 메시지를 단순한 재추천 요청으로 취급하지 않고
-            # Jev Plan을 거쳐 조건·피드백을 누적한 뒤 같은 Tool 검증 경로를 다시 탄다.
-            feedback_plan = await self._feedback_planner.plan(
-                request.message,
-                session.user_conditions,
-            )
-            request_conditions = _merge_feedback_conditions(
-                session.user_conditions,
-                request.message,
-                feedback_plan,
-            )
+            if feedback_plan.intent in {"reconsider", "out_of_scope", "unclear"}:
+                return await self._respond_to_completed_feedback(
+                    request=request,
+                    session=session,
+                    recommendation=stored_recommendation,
+                    intent=feedback_plan.intent,
+                )
+
+            if replace_confirmed_ingredients:
+                # 보유 재료 수정은 기존 식단 목적을 유지한다. 재료를 조건 원문에
+                # 섞으면 Tool Hub가 "돼지고기"를 식단 목적처럼 읽을 수 있다.
+                request_conditions = {
+                    **dict(session.user_conditions or {}),
+                    "feedback_plan": feedback_plan.intent,
+                }
+            else:
+                request_conditions = _merge_feedback_conditions(
+                    session.user_conditions,
+                    request.message,
+                    feedback_plan,
+                )
             if regenerate_with_new_recipes:
                 request_conditions = _exclude_previously_recommended_recipes(
                     request_conditions,
                     stored_recommendation,
                 )
-            else:
-                # 이전 재생성 플래그가 다음 일반 피드백 응답의 문구까지 바꾸지 않게 한다.
-                request_conditions = {
-                    **request_conditions,
-                    "regenerated_recipe_request": False,
-                }
             condition_ready = _has_required_condition(request_conditions)
         elif completed_additional_image:
             # 완료 후 이미지를 올리는 경우에는 피드백·재추천 문장으로 해석하지 않고,
@@ -327,9 +398,9 @@ class ChatService:
         pending_ingredient_action = session.pending_ingredient_action
         ingredient_extraction_message = request.message
         if replace_confirmed_ingredients:
-            # 완료 이후에도 사용자가 명시적으로 새 재료를 지정하면 피드백이 아닌
-            # 재료 교체로 처리한다. 그렇지 않으면 이전 확정 재료가 그대로 Tool Hub로
-            # 전달되어 같은 레시피가 반복된다.
+            # 완료 이후 보유 재료가 바뀌었다면 곧바로 Tool Hub로 보내지 않는다.
+            # 추출한 새 목록을 후보로 되돌려 사용자 확인을 다시 받은 뒤에만
+            # Recipe/Shopping node가 확정 재료를 사용하도록 한다.
             try:
                 extracted_ingredients = await self._extract_ingredients(
                     user_message=request.message,
@@ -342,8 +413,29 @@ class ChatService:
                     "response": "새 재료 입력을 해석하는 중 오류가 발생했습니다.",
                 }, 500
             if extracted_ingredients:
-                candidate_ingredients = tuple()
-                confirmed_ingredients = extracted_ingredients
+                candidate_ingredients = extracted_ingredients
+                confirmed_ingredients = tuple()
+                confirmation_decision = IngredientConfirmationDecision(
+                    intent="edited", confidence=1.0
+                )
+                ingredient_edit_summary = _summarize_ingredient_changes(
+                    before=session.confirmed_ingredients,
+                    after=candidate_ingredients,
+                    user_message=request.message,
+                )
+            else:
+                return {
+                    "status": "NEED_MORE_INFO",
+                    "step": "INGREDIENT_CONFIRM",
+                    "response": (
+                        "바뀐 보유 재료를 확인하지 못했어요. 추가하거나 제외할 재료를 "
+                        "한 번 더 알려주세요."
+                    ),
+                    "ingredients": _ingredient_payload(session.confirmed_ingredients),
+                    "confirmed_ingredients": _ingredient_payload(
+                        session.confirmed_ingredients
+                    ),
+                }, 200
         elif request.attachments and previous_step in {
             "WAITING_INGREDIENT_CONFIRM",
             "WAITING_CONDITIONS",
@@ -447,20 +539,34 @@ class ChatService:
                         "status": "ERROR",
                         "response": "재료 입력을 해석하는 중 오류가 발생했습니다.",
                     }, 500
-                # 빈 결과는 사용자가 전체 후보를 삭제한 경우가 아니라 모델이 수정 내용을
-                # 해석하지 못한 경우일 수 있으므로, 기존 후보를 보존해 빈 확인 응답을 막는다.
-                # 또한 사용자가 이름까지 직접 말한 추가·제거·교체는 추출 모델이 일부
-                # 누락해도 결정적으로 한 번 더 반영한다.
-                candidate_ingredients = _reconcile_explicit_ingredient_edits(
+                # OpenAI는 수정된 전체 목록을 제안할 뿐 직접 상태를 바꾸지 않는다.
+                # 서버는 사용자 문장에 없는 재료의 추가·제거·수량 변경을 거부한다.
+                # 명시적으로 말한 짧은 동작어는 모델이 누락해도 안전하게 보완한다.
+                proposed_candidates = _reconcile_explicit_ingredient_edits(
                     before=session.ingredient_candidates,
-                    extracted=extracted_ingredients or candidate_ingredients,
+                    extracted=extracted_ingredients,
                     user_message=ingredient_extraction_message,
                 )
-                ingredient_edit_summary = _summarize_ingredient_changes(
+                candidate_ingredients = _validate_ingredient_edit_result(
                     before=session.ingredient_candidates,
-                    after=candidate_ingredients,
+                    proposed=proposed_candidates,
                     user_message=ingredient_extraction_message,
                 )
+                if candidate_ingredients is None:
+                    candidate_ingredients = session.ingredient_candidates
+                    confirmation_decision = IngredientConfirmationDecision(
+                        intent="unclear", confidence=confirmation_decision.confidence
+                    )
+                    ingredient_confirmation_message = (
+                        "말씀하신 변경 내용을 현재 목록에서 안전하게 확인하지 못했어요. "
+                        "추가하거나 제외할 재료명을 다시 알려주세요."
+                    )
+                else:
+                    ingredient_edit_summary = _summarize_ingredient_changes(
+                        before=session.ingredient_candidates,
+                        after=candidate_ingredients,
+                        user_message=ingredient_extraction_message,
+                    )
                 if not candidate_ingredients and confirmed_ingredients:
                     confirmation_decision = IngredientConfirmationDecision(
                         intent="confirmed", confidence=confirmation_decision.confidence
@@ -534,6 +640,10 @@ class ChatService:
             candidate_ingredients = extracted_ingredients
         messages = [*session.messages, {"role": "user", "content": request.message}]
         workflow_step = previous_step
+        if replace_confirmed_ingredients and confirmation_decision is not None:
+            # 완료 상태에서 재료 변경을 감지한 경우에는, 갱신된 후보를 먼저
+            # 복명복창하고 사용자의 확정을 기다리는 노드로 명시적으로 되돌린다.
+            workflow_step = "WAITING_INGREDIENT_CONFIRM"
         if (
             request.attachments
             and previous_step in {"WAITING_CONDITIONS", "COMPLETED"}
@@ -558,6 +668,9 @@ class ChatService:
             "ingredient_confirmation": (
                 confirmation_decision.intent if confirmation_decision is not None else None
             ),
+            # 재추천 안내 문구는 이번 요청의 Jev 판단에만 연결한다. 추천 조건은
+            # excluded_recipe_ids만 영구 보관하며, 표시용 bool은 세션에 저장하지 않는다.
+            "regenerated_this_turn": regenerate_with_new_recipes,
         }
         if ingredient_edit_summary:
             state["ingredient_edit_summary"] = ingredient_edit_summary
@@ -626,6 +739,7 @@ class ChatService:
                 request.message,
                 next_session,
                 tool_result=result.get("tool_result"),
+                regenerated=bool(result.get("regenerated_this_turn")),
             )
         except LLMResponseError:
             return {"status": "ERROR", "response": "추천 응답 생성 중 오류가 발생했습니다."}, 500
@@ -636,6 +750,74 @@ class ChatService:
             messages=(
                 *next_session.messages,
                 _conversation_message("assistant", response["response"]),
+            ),
+        )
+        await self._session_repository.save(request.session_id, next_session)
+        return response, 200
+
+    async def _respond_to_completed_feedback(
+        self,
+        *,
+        request: ChatRequest,
+        session: ChatSessionState,
+        recommendation: RecommendationData,
+        intent: Literal["reconsider", "out_of_scope", "unclear"],
+    ) -> tuple[dict[str, object], int]:
+        """Tool 실행 없이 완료된 추천을 유지하고 다음 입력을 안내합니다."""
+
+        if intent == "out_of_scope":
+            response_message = (
+                "PlanEat에서는 현재 식단을 바꾸거나 다른 식단을 다시 추천하고, "
+                "추천 세트의 상세 PDF를 만들 수 있어요."
+            )
+        elif intent == "reconsider":
+            response_message = (
+                "현재 추천은 그대로 두었어요. 다른 메뉴가 필요하면 '다시 추천해줘', "
+                "조건을 바꾸려면 원하시는 조건을 말씀해주세요."
+            )
+        else:
+            response_message = (
+                "원하시는 다음 작업을 조금만 더 알려주세요. 예를 들어 '다시 추천해줘', "
+                "'20분 이내로 바꿔줘', '1번 세트 PDF 만들어줘'라고 말할 수 있어요."
+            )
+        response = _completed_feedback_response(
+            recommendation=recommendation,
+            response_message=response_message,
+        )
+        next_session = replace(
+            session,
+            messages=(
+                *session.messages,
+                _conversation_message("user", request.message),
+                _conversation_message("assistant", response_message),
+            ),
+        )
+        await self._session_repository.save(request.session_id, next_session)
+        return response, 200
+
+    async def _respond_to_incomplete_set_selection(
+        self,
+        *,
+        request: ChatRequest,
+        session: ChatSessionState,
+        recommendation: RecommendationData,
+    ) -> tuple[dict[str, object], int]:
+        """Jev가 세트 선택으로 판단했지만 대상이 없을 때만 한 번 더 묻습니다."""
+
+        labels = ", ".join(
+            recipe_set.set_id for recipe_set in recommendation.recipe_sets
+        )
+        response_message = f"선택할 식단 세트를 알려주세요. 현재 선택 가능한 세트는 {labels}예요."
+        response = _completed_feedback_response(
+            recommendation=recommendation,
+            response_message=response_message,
+        )
+        next_session = replace(
+            session,
+            messages=(
+                *session.messages,
+                _conversation_message("user", request.message),
+                _conversation_message("assistant", response_message),
             ),
         )
         await self._session_repository.save(request.session_id, next_session)
@@ -706,6 +888,7 @@ class ChatService:
         user_message: str,
         session: ChatSessionState,
         tool_result: object = None,
+        regenerated: bool = False,
     ) -> dict[str, object]:
         """LangGraph의 내부 단계를 외부 Chat API 응답 형식으로 변환합니다."""
 
@@ -811,7 +994,9 @@ class ChatService:
                 state=state,
                 session=session,
                 fallback_response="추천을 위해 몇 가지 정보를 더 알려주세요.",
-                fallback_questions=["식단 목표가 무엇인가요? 예: 다이어트, 고단백, 채식"],
+                fallback_questions=[
+                    "식단 목표가 무엇인가요? 예: 다이어트, 식단 관리, 일반식"
+                ],
             )
             return {
                 "status": "NEED_MORE_INFO",
@@ -822,7 +1007,7 @@ class ChatService:
         if tool_result is not None:
             return await self._response_from_tool_hub(
                 tool_result,
-                regenerated=_is_regenerated_recipe_request(session.user_conditions),
+                regenerated=regenerated,
                 ingredient_edit_summary=_ingredient_edit_summary_from_state(state),
             )
 
@@ -833,7 +1018,7 @@ class ChatService:
         _generated_message, recipe_sets = generated_recommendation
         completion_message = _with_ingredient_edit_confirmation(
             _completion_selection_message(
-                regenerated=_is_regenerated_recipe_request(session.user_conditions)
+                regenerated=regenerated
             ),
             _ingredient_edit_summary_from_state(state),
         )
@@ -956,6 +1141,11 @@ class ChatService:
                 for question in normalized_questions
                 if not _is_optional_condition_question(question)
             ]
+            if response_kind == "CONDITION_INPUT":
+                normalized_questions = [
+                    _with_condition_goal_examples(question)
+                    for question in normalized_questions
+                ]
             if _contains_optional_condition_question(message):
                 # 본문에 선택값을 요구하는 문장이 남으면 질문 목록만 고쳐도 UX가
                 # 일관되지 않으므로, 서버가 보장하는 단계별 fallback 문구를 사용한다.
@@ -1060,16 +1250,11 @@ class ChatService:
         pending_ingredient_correction: str | None = None,
         pending_ingredient_action: PendingIngredientAction | None = None,
     ) -> IngredientConfirmationRead:
-        """재료 확인 답변의 주어·긍정/부정을 구분해 다음 동작을 정합니다.
-        명시적인 재료 수정은 로컬로 먼저 확정하고, 나머지는 Jev로 판정합니다.
+        """Jev의 자연어 판단을 우선하고, 서버는 상태 변경만 검증합니다.
 
-        ``빼줘``·``제거해줘``처럼 의도가 분명한 재료 수정 표현까지 외부 판정에
-        맡기면 모델이 ``unclear``로 반환해 후보 목록이 그대로 남을 수 있다. 명시적인
-        수정 명령은 로컬 판정을 우선하고, 긍정·거절·모호한 표현만 Jev에 위임한다.
-
-        단독 ``맞아``·``없어``는 바로 전의 "더 수정할 내용이 있나요?"라는 질문에 대한
-        목록 전체 확인으로 본다. 반면 특정 후보명에 붙은 긍정·부정은 그 후보 하나에만
-        적용하며, 부정한 후보는 무엇으로 바꿀지 후속 턴에서 받는다.
+        Jev는 목록 전체 확정·수정·재인식 여부처럼 문맥 판단이 필요한 일을 맡는다.
+        서버의 표현별 parser는 Jev가 불명확하거나 사용할 수 없을 때의 fallback 및
+        이미 질문한 추가·교체의 후속 답변을 연결하는 용도로만 사용한다.
         """
 
         acknowledged_names = _known_acknowledged_ingredients(
@@ -1157,6 +1342,43 @@ class ChatService:
                 ),
             )
 
+        candidate_payload = [
+            {"name": ingredient.name, "amount": ingredient.amount}
+            for ingredient in proposed_ingredients
+        ]
+        jev_decision = await self._ingredient_confirmation_evaluator.evaluate(
+            user_message,
+            candidate_payload,
+        )
+        if (
+            jev_decision is not None
+            and _is_explicit_final_ingredient_confirmation(user_message)
+            and jev_decision.intent in {"rejected", "unclear"}
+        ):
+            # 후보 목록을 모두 비우는 전이는 되돌리기 어려운 상태 변경이다. 바로 전
+            # 질문에 대한 명시적인 진행·확정 답변이라면 Jev의 일시적 오분류보다
+            # 사용자 의도를 우선해 후보를 확정한다.
+            return read(
+                "confirmed",
+                confidence=jev_decision.confidence,
+                acknowledged=(),
+                pending=None,
+                pending_action=None,
+            )
+        if jev_decision is not None and jev_decision.intent != "unclear":
+            # Jev가 충분한 신뢰도로 의미를 판단한 경우, "빼줘" 같은 표면 표현을
+            # 다시 정규식으로 분류하지 않는다. 수정 내용은 다음 단계의 구조화
+            # 추출 결과를 서버가 검증한 뒤에만 상태에 반영한다.
+            return read(
+                jev_decision.intent,
+                confidence=jev_decision.confidence,
+                acknowledged=(),
+                pending=None,
+                pending_action=None,
+            )
+
+        # Jev가 불확실하거나 비활성일 때만 기존의 보수적 fallback을 사용한다.
+        # 이 경로는 모델 판단을 덮어쓰는 주 경로가 아니라 서비스 연속성 장치다.
         candidate_replies = _candidate_subject_replies(user_message, proposed_ingredients)
         negative_names = [name for name, sentiment in candidate_replies if sentiment == "negative"]
         positive_names = [name for name, sentiment in candidate_replies if sentiment == "positive"]
@@ -1267,16 +1489,7 @@ class ChatService:
                 ),
             )
 
-        candidate_payload = [
-            {"name": ingredient.name, "amount": ingredient.amount}
-            for ingredient in proposed_ingredients
-        ]
-        decision = await self._ingredient_confirmation_evaluator.evaluate(
-            user_message,
-            candidate_payload,
-        )
-        if decision is None:
-            decision = _fallback_ingredient_confirmation(user_message)
+        decision = jev_decision or _fallback_ingredient_confirmation(user_message)
         if decision.intent in {"confirmed", "unclear"} and _has_ingredient_edit_expression(
             user_message
         ):
@@ -1421,6 +1634,12 @@ def _stored_recommendation(session: ChatSessionState) -> RecommendationData | No
         return None
 
 
+def _session_log_token(session_id: str) -> str:
+    """원본 세션 ID를 로그에 남기지 않는 짧은 요청 추적용 식별자입니다."""
+
+    return hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:12]
+
+
 def _store_recommendation_if_present(
     session: ChatSessionState, response: Mapping[str, object]
 ) -> ChatSessionState:
@@ -1458,6 +1677,26 @@ def _find_recipe_set(
     )
 
 
+def _completed_feedback_response(
+    *,
+    recommendation: RecommendationData,
+    response_message: str,
+) -> dict[str, object]:
+    """완료 상태를 유지하는 피드백 응답을 기존 FE 계약으로 조립합니다."""
+
+    return {
+        "status": "SUCCESS",
+        "step": "COMPLETED",
+        "response": response_message,
+        "data": recommendation.model_dump(),
+        "next_action": "FEEDBACK_OR_SET_SELECTION",
+        "available_set_ids": [
+            get_recipe_set_key(recipe_set, index)
+            for index, recipe_set in enumerate(recommendation.recipe_sets)
+        ],
+    }
+
+
 def _parse_selected_set_id(
     user_message: str, recommendation: RecommendationData
 ) -> str | None:
@@ -1469,10 +1708,59 @@ def _parse_selected_set_id(
     ]
     normalized_message = re.sub(r"[\s_-]+", "", user_message).upper()
     has_selection_intent = bool(_SELECTION_INTENT_PATTERN.search(user_message))
+    # 세트 화면에서 ``첫번째``, ``첫번째 세트``, ``1번``처럼 대상만 답하는
+    # 표현도 선택 의도가 명확하다. 기존에는 선택 동작어가 없으면 이 표현을
+    # 일반 피드백으로 흘려보내 기존 추천 안내를 다시 보여줬다.
+    has_ordinal_selection = bool(
+        re.search(
+            r"(?<!\d)[1-9]\s*(?:번|번째)|첫\s*(?:번째|번)|둘째|"
+            r"두\s*(?:번째|번)",
+            user_message,
+        )
+    )
+    left_position = bool(
+        re.search(
+            r"왼\s*(?:쪽|편)|좌\s*(?:측|편)|(?<![가-힣])좌(?![가-힣])",
+            user_message,
+        )
+    )
+    right_position = bool(
+        re.search(
+            r"오른\s*(?:쪽|편)|우\s*(?:측|편)|(?<![가-힣])우(?![가-힣])",
+            user_message,
+        )
+    )
+    position_indexes = {
+        index for index, matched in enumerate((left_position, right_position)) if matched
+    }
+    has_selection_intent = (
+        has_selection_intent or has_ordinal_selection or len(position_indexes) == 1
+    )
+    recipe_selection_context = bool(
+        re.search(r"선택|고르|골라|쪽|세트|레시피|추천", user_message)
+    )
+
+    # 카드 안의 레시피 제목을 말한 경우에도 해당 레시피가 속한 세트를
+    # 선택한다. 같은 제목이 양쪽 세트에 모두 있으면 임의로 선택하지 않는다.
+    normalized_recipe_matches: set[int] = set()
+    for index, recipe_set in enumerate(recommendation.recipe_sets):
+        for recipe in recipe_set.recipes:
+            normalized_title = re.sub(r"[^가-힣A-Za-z0-9]+", "", recipe.title).upper()
+            if not normalized_title:
+                continue
+            if normalized_title in normalized_message and (
+                recipe_selection_context or normalized_message == normalized_title
+            ):
+                normalized_recipe_matches.add(index)
+    if len(normalized_recipe_matches) == 1:
+        return available[next(iter(normalized_recipe_matches))]
+
     for index, recipe_set in enumerate(recommendation.recipe_sets):
         set_key = get_recipe_set_key(recipe_set, index)
         normalized_key = re.sub(r"[\s_-]+", "", set_key).upper()
         normalized_display_id = re.sub(r"[\s_-]+", "", recipe_set.set_id).upper()
+        if position_indexes == {index}:
+            return set_key
         if (
             normalized_key in normalized_message
             or normalized_display_id in normalized_message
@@ -1520,6 +1808,9 @@ def _merge_feedback_conditions(
     """Jev Plan 이후 피드백 원문과 새 조건 슬롯을 기존 조건에 누적합니다."""
 
     merged = dict(previous_conditions or {})
+    # 이전 배포본이 세션에 남긴 표시 전용 값을 제거한다. 재추천 여부는
+    # ChatState.regenerated_this_turn으로만 전달되고, 조건에는 레시피 제외 목록만 남긴다.
+    merged.pop("regenerated_recipe_request", None)
     previous_message = merged.get("message", "")
     feedback_message = user_message.strip()
     if isinstance(previous_message, str) and previous_message.strip():
@@ -1543,7 +1834,9 @@ def _is_recipe_regeneration_request(user_message: str) -> bool:
     return bool(
         re.search(
             r"마음에\s*(?:안|들지)|별로|다른\s*(?:레시피|식단|메뉴)|"
-            r"(?:다시|새로)\s*(?:추천|만들|짜|보여)",
+            # 추천 완료 단계에서는 "다시해줘"도 직전 식단을 새로 추천해 달라는
+            # 명확한 제어 명령이다. 이전 레시피 ID를 제외해 추천 노드로 되돌린다.
+            r"(?:다시|새로)\s*(?:추천|만들|짜|보여|해)(?:줘|주세요)?",
             user_message,
             flags=re.IGNORECASE,
         )
@@ -1565,14 +1858,7 @@ def _exclude_previously_recommended_recipes(
     return {
         **conditions,
         "excluded_recipe_ids": list(dict.fromkeys(excluded_ids)),
-        "regenerated_recipe_request": True,
     }
-
-
-def _is_regenerated_recipe_request(conditions: Mapping[str, object] | None) -> bool:
-    """현재 완료 응답이 기존 레시피를 제외해 만든 재추천인지 반환합니다."""
-
-    return bool(conditions and conditions.get("regenerated_recipe_request") is True)
 
 
 def _apply_confirmation_decision(
@@ -2046,8 +2332,14 @@ def _is_explicit_final_ingredient_confirmation(user_message: str) -> bool:
         "이대로확정할게요",
         "이대로진행",
         "이대로진행할게요",
+        "이대로가자",
+        "이대로가요",
+        "이대로진행하자",
+        "가자",
+        "가요",
         "그대로진행",
         "그대로진행해주세요",
+        "그대로해줘",
         "확정지어줘",
         "확정지어주세요",
         "확정지을게",
@@ -2175,6 +2467,58 @@ def _exclude_confirmed_ingredients(
     )
 
 
+def _validate_ingredient_edit_result(
+    *,
+    before: Sequence[IngredientCandidate],
+    proposed: Sequence[IngredientCandidate],
+    user_message: str,
+) -> tuple[IngredientCandidate, ...] | None:
+    """LLM이 제안한 목록 변경이 사용자 발화 범위를 벗어나지 않는지 확인합니다.
+
+    의미 해석은 Jev와 구조화 추출기에 맡긴다. 이 함수는 모델이 언급되지 않은
+    재료를 추가·삭제하거나 수량을 바꾸는 것만 막는다. 검증할 수 없으면 기존
+    목록을 유지하고 사용자에게 다시 물어본다.
+    """
+
+    before_by_key = {
+        _ingredient_candidate_key(item.name): item
+        for item in before
+        if _ingredient_candidate_key(item.name)
+    }
+    proposed_by_key: dict[str, IngredientCandidate] = {}
+    for item in proposed:
+        key = _ingredient_candidate_key(item.name)
+        if not key or key in proposed_by_key:
+            return None
+        proposed_by_key[key] = item
+
+    added = [
+        item for key, item in proposed_by_key.items() if key not in before_by_key
+    ]
+    removed = [
+        item for key, item in before_by_key.items() if key not in proposed_by_key
+    ]
+    quantity_changed = [
+        item
+        for key, item in proposed_by_key.items()
+        if key in before_by_key and item.amount != before_by_key[key].amount
+    ]
+    changed = [*added, *removed, *quantity_changed]
+    if not changed:
+        # 수정으로 분류됐지만 실제 변경이 없다면 모델이 사용자 의도를 놓친 것이다.
+        return None
+    if any(not _ingredient_name_is_mentioned(item.name, user_message) for item in changed):
+        return None
+    return tuple(proposed_by_key.values())
+
+
+def _ingredient_name_is_mentioned(name: str, user_message: str) -> bool:
+    """조사·공백 차이를 정규화한 뒤 재료명이 사용자 문장에 있는지 확인합니다."""
+
+    normalized_name = _ingredient_candidate_key(name)
+    return bool(normalized_name and normalized_name in _normalize_confirmation_message(user_message))
+
+
 def _reconcile_explicit_ingredient_edits(
     *,
     before: Sequence[IngredientCandidate],
@@ -2286,8 +2630,12 @@ def _is_explicit_candidate_removal(candidate_name: str, user_message: str) -> bo
     return bool(
         re.search(
             rf"(?:{escaped_name}).{{0,16}}(?:{_INGREDIENT_REMOVAL_PATTERN})|"
-            rf"(?:{_INGREDIENT_REMOVAL_PATTERN}).{{0,16}}(?:{escaped_name})",
+            rf"(?:{_INGREDIENT_REMOVAL_PATTERN}).{{0,16}}(?:{escaped_name})|"
+            # 재료명 뒤의 단독 x/X/×/✕/❌은 채팅에서 흔히 쓰는 제외 표기다.
+            # 재료명 안의 영문자는 매칭하지 않도록 이름 바로 뒤의 표기만 허용한다.
+            rf"{escaped_name}\s*(?:x|×|✕|❌)(?:\s|$)",
             user_message,
+            flags=re.IGNORECASE,
         )
     )
 
@@ -2342,14 +2690,18 @@ def _explicit_addition_names(user_message: str) -> list[str]:
 
     names: list[str] = []
     for match in re.finditer(
-        r"(?P<name>[가-힣A-Za-z][가-힣A-Za-z0-9]*?)(?:도|을|를|은|는|이|가)?\s+추가",
+        # 이름은 먼저 최대한 길게 읽는다. 기존의 lazy 정규식은 '오이 추가'를
+        # 이름 '오' + 조사 '이'로 잘못 쪼갰다.
+        r"(?P<name>[가-힣A-Za-z][가-힣A-Za-z0-9]*)\s+추가",
         user_message,
     ):
         # '양파 1개 추가'는 LLM이 수량까지 읽어야 하므로 '개'를 재료명으로
         # 오인하는 이 보정 경로에서는 건너뛴다.
         if match.start() > 0 and user_message[match.start() - 1].isdigit():
             continue
-        name = match.group("name")
+        name = re.sub(r"(?:도|을|를|은|는|가)$", "", match.group("name"))
+        if not name:
+            continue
         if name not in names:
             names.append(name)
     return names
@@ -2550,6 +2902,14 @@ def _is_optional_condition_question(question: str) -> bool:
     return bool(_OPTIONAL_CONDITION_QUESTION_PATTERN.search(question))
 
 
+def _with_condition_goal_examples(question: str) -> str:
+    """식단 목적 질문에는 사용자가 바로 답할 수 있는 예시를 보장합니다."""
+
+    if re.search(r"(?:예\s*:|예시)", question):
+        return question
+    return f"{question.rstrip()} 예: 다이어트, 식단 관리, 일반식"
+
+
 def _contains_optional_condition_question(text: str) -> bool:
     """안내 본문에 선택 조건을 필수처럼 요구하는 표현이 포함됐는지 확인합니다."""
 
@@ -2575,6 +2935,30 @@ def _looks_like_ingredient_replacement(user_message: str) -> bool:
             r"(?:새|다른)\s*(?:재료|식재료)",
             user_message,
         )
+    )
+
+
+def _has_explicit_ingredient_edit(
+    user_message: str,
+    current_ingredients: Sequence[IngredientCandidate],
+) -> bool:
+    """완료 후 메시지가 보유 재료를 직접 추가·제외·교체하는지 판정합니다.
+
+    Jev는 ``재료에 깻잎 추가해서 레시피 다시 짜줘``를 재추천으로만 분류할 수
+    있다. 이 경우에는 레시피를 바로 실행하면 새 재료가 Tool 입력에 반영되지
+    않으므로, 명시적인 재료 편집을 먼저 후보 확인 단계로 보낸다.
+    """
+
+    if not re.search(
+        r"추가|더\s*넣|넣어|빼|삭제|제거|제외|없애|교체|대신|바꾸|변경|대체",
+        user_message,
+    ):
+        return False
+    if re.search(r"재료|식재료", user_message):
+        return True
+    return any(
+        _ingredient_name_is_mentioned(candidate.name, user_message)
+        for candidate in current_ingredients
     )
 
 

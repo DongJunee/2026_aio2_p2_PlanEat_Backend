@@ -1592,6 +1592,52 @@ def test_related_whole_ingredient_confirmation_phrases_are_confirmed(
     )
 
 
+def test_confirmed_ingredients_survive_the_following_condition_turn() -> None:
+    """재료 확정 뒤 목적을 입력해도 같은 세션의 재료를 Tool에 전달한다."""
+
+    repository = InMemoryChatSessionRepository()
+    provider = RecordingToolHubProvider()
+    candidates = (
+        IngredientCandidate(name="계란", amount="4개"),
+        IngredientCandidate(name="삼겹살", amount="300g"),
+    )
+    session_id = "confirm-then-condition-session"
+    asyncio.run(
+        repository.save(
+            session_id,
+            ChatSessionState(
+                step="WAITING_INGREDIENT_CONFIRM",
+                ingredient_candidates=candidates,
+            ),
+        )
+    )
+    service = ChatService(
+        llm_responder=FakeCompletionMessageGenerator(),
+        # "이대로 가자"의 명시 확정 규칙이 Jev 오분류보다 우선해야 한다.
+        ingredient_confirmation_evaluator=FakeIngredientConfirmationEvaluator("unclear"),
+        tool_provider=provider,
+        session_repository=repository,
+    )
+
+    confirmation, confirmation_status = asyncio.run(
+        service.handle(ChatRequest(session_id=session_id, message="이대로 가자"))
+    )
+    saved_after_confirmation = asyncio.run(repository.get(session_id))
+    completion, completion_status = asyncio.run(
+        service.handle(ChatRequest(session_id=session_id, message="다이어트"))
+    )
+
+    assert confirmation_status == completion_status == 200
+    assert confirmation["step"] == "CONDITION_INPUT"
+    assert saved_after_confirmation.step == "WAITING_CONDITIONS"
+    assert saved_after_confirmation.confirmed_ingredients == candidates
+    assert completion["step"] == "COMPLETED"
+    assert provider.requests[0].confirmed_ingredients == (
+        {"name": "계란", "amount": "4개"},
+        {"name": "삼겹살", "amount": "300g"},
+    )
+
+
 def test_explicit_progress_phrase_overrides_misclassified_rejection() -> None:
     """'이대로 가자'는 Jev가 거절로 오분류해도 후보를 지우지 않고 확정한다."""
 

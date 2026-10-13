@@ -1718,11 +1718,49 @@ def _parse_selected_set_id(
             user_message,
         )
     )
-    has_selection_intent = has_selection_intent or has_ordinal_selection
+    left_position = bool(
+        re.search(
+            r"왼\s*(?:쪽|편)|좌\s*(?:측|편)|(?<![가-힣])좌(?![가-힣])",
+            user_message,
+        )
+    )
+    right_position = bool(
+        re.search(
+            r"오른\s*(?:쪽|편)|우\s*(?:측|편)|(?<![가-힣])우(?![가-힣])",
+            user_message,
+        )
+    )
+    position_indexes = {
+        index for index, matched in enumerate((left_position, right_position)) if matched
+    }
+    has_selection_intent = (
+        has_selection_intent or has_ordinal_selection or len(position_indexes) == 1
+    )
+    recipe_selection_context = bool(
+        re.search(r"선택|고르|골라|쪽|세트|레시피|추천", user_message)
+    )
+
+    # 카드 안의 레시피 제목을 말한 경우에도 해당 레시피가 속한 세트를
+    # 선택한다. 같은 제목이 양쪽 세트에 모두 있으면 임의로 선택하지 않는다.
+    normalized_recipe_matches: set[int] = set()
+    for index, recipe_set in enumerate(recommendation.recipe_sets):
+        for recipe in recipe_set.recipes:
+            normalized_title = re.sub(r"[^가-힣A-Za-z0-9]+", "", recipe.title).upper()
+            if not normalized_title:
+                continue
+            if normalized_title in normalized_message and (
+                recipe_selection_context or normalized_message == normalized_title
+            ):
+                normalized_recipe_matches.add(index)
+    if len(normalized_recipe_matches) == 1:
+        return available[next(iter(normalized_recipe_matches))]
+
     for index, recipe_set in enumerate(recommendation.recipe_sets):
         set_key = get_recipe_set_key(recipe_set, index)
         normalized_key = re.sub(r"[\s_-]+", "", set_key).upper()
         normalized_display_id = re.sub(r"[\s_-]+", "", recipe_set.set_id).upper()
+        if position_indexes == {index}:
+            return set_key
         if (
             normalized_key in normalized_message
             or normalized_display_id in normalized_message

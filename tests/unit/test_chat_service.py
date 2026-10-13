@@ -24,7 +24,9 @@ from app.repositories.chat_session import (
 from app.services.chat_service import (
     ChatService,
     _apply_ingredient_edit,
+    _explicit_addition_names,
     _fallback_ingredient_confirmation,
+    _has_explicit_ingredient_edit,
     _is_explicit_candidate_removal,
     _is_explicit_final_ingredient_confirmation,
     _parse_selected_set_id,
@@ -534,6 +536,62 @@ def test_regeneration_excludes_previous_recipes_and_uses_new_response_message() 
     assert returned_recipe_ids.isdisjoint(previous_recipe_ids)
     saved_session = asyncio.run(repository.get("regeneration-session"))
     assert "regenerated_recipe_request" not in saved_session.user_conditions
+
+
+def test_explicit_ingredient_addition_overrides_regeneration_plan() -> None:
+    """재료 추가와 재추천을 함께 말하면 재료 확인을 먼저 거칩니다."""
+
+    repository = InMemoryChatSessionRepository()
+    provider = RecordingToolHubProvider()
+    previous_data = _mock_recommendation_data()
+    asyncio.run(
+        repository.save(
+            "completed-ingredient-addition-session",
+            ChatSessionState(
+                step="COMPLETED",
+                confirmed_ingredients=(IngredientCandidate(name="가지", amount="1개"),),
+                user_conditions={"message": "다이어트 식단", "purpose": "다이어트"},
+                recommendation_data=previous_data,
+            ),
+        )
+    )
+    service = ChatService(
+        llm_responder=FakeCompletionMessageGenerator(
+            edited_ingredients=[
+                {"name": "가지", "amount": "1개"},
+                {"name": "깻잎", "amount": "수량 미정"},
+            ]
+        ),
+        tool_provider=provider,
+        session_repository=repository,
+        feedback_planner=FakeFeedbackPlanner("regenerate"),
+    )
+
+    payload, status_code = asyncio.run(
+        service.handle(
+            ChatRequest(
+                session_id="completed-ingredient-addition-session",
+                message="재료에 깻잎 추가해서 레시피 다시 짜줘",
+            )
+        )
+    )
+
+    assert status_code == 200
+    assert payload["step"] == "INGREDIENT_CONFIRM"
+    assert provider.requests == []
+    assert payload["ingredients"] == [
+        {"name": "가지", "amount": "1개"},
+        {"name": "깻잎", "amount": "수량 미정"},
+    ]
+
+
+def test_addition_name_parser_does_not_split_oi() -> None:
+    """'오이 추가'를 '오'와 조사 '이'로 분리하지 않는다."""
+
+    assert _explicit_addition_names("가지 빼고 오이 추가") == ["오이"]
+    assert _has_explicit_ingredient_edit(
+        "재료에 깻잎 추가해서 레시피 다시 짜줘", ()
+    )
 
 
 def test_jev_regeneration_plan_reaches_tool_hub_without_phrase_matching() -> None:

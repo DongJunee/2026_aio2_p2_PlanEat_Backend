@@ -289,24 +289,40 @@ class ChatService:
 
             # Jev가 완료 단계의 다음 노드를 먼저 고른다. 아래의 문자열 parser는
             # Jev 비활성화·timeout 같은 fallback에만 쓰며, 정상 Jev 판단을 덮어쓰지
-            # 않는다. 세트 ID는 이미 생성된 Tool 결과 안에서만 해석한다.
+            # 않는다. 다만 명시적인 보유 재료 변경은 Tool 입력을 바꾸는 작업이므로
+            # Jev가 regenerate/update_conditions로 잘못 분류해도 재료 확인 경로를
+            # 우선한다. 세트 ID는 이미 생성된 Tool 결과 안에서만 해석한다.
             is_jev_fallback = feedback_plan.source == "fallback"
+            explicit_ingredient_edit = _has_explicit_ingredient_edit(
+                request.message,
+                session.confirmed_ingredients,
+            )
+            if explicit_ingredient_edit and feedback_plan.intent != "replace_ingredients":
+                # 완료 피드백에서 보유 재료를 직접 바꾼다는 표현은 Jev가
+                # regenerate/update_conditions로 분류해도 재료 확인이 먼저다.
+                feedback_plan = replace(feedback_plan, intent="replace_ingredients")
             regenerate_with_new_recipes = feedback_plan.intent == "regenerate" or (
                 is_jev_fallback and _is_recipe_regeneration_request(request.message)
             )
-            logger.info(
-                "chat_completed_feedback token=%s intent=%s source=%s regenerate=%s",
-                session_token,
-                feedback_plan.intent,
-                feedback_plan.source,
-                regenerate_with_new_recipes,
-            )
             replace_confirmed_ingredients = (
                 feedback_plan.intent == "replace_ingredients"
+                or explicit_ingredient_edit
                 or (
                     is_jev_fallback
                     and _looks_like_ingredient_replacement(request.message)
                 )
+            )
+            if replace_confirmed_ingredients:
+                # 새 재료 확인을 마치기 전에는 Recipe/Shopping을 실행하지 않는다.
+                regenerate_with_new_recipes = False
+            logger.info(
+                "chat_completed_feedback token=%s intent=%s source=%s "
+                "explicit_ingredient_edit=%s regenerate=%s",
+                session_token,
+                feedback_plan.intent,
+                feedback_plan.source,
+                explicit_ingredient_edit,
+                regenerate_with_new_recipes,
             )
             wants_set_selection = feedback_plan.intent == "select_set" or is_jev_fallback
             if wants_set_selection:
@@ -2621,14 +2637,18 @@ def _explicit_addition_names(user_message: str) -> list[str]:
 
     names: list[str] = []
     for match in re.finditer(
-        r"(?P<name>[가-힣A-Za-z][가-힣A-Za-z0-9]*?)(?:도|을|를|은|는|이|가)?\s+추가",
+        # 이름은 먼저 최대한 길게 읽는다. 기존의 lazy 정규식은 '오이 추가'를
+        # 이름 '오' + 조사 '이'로 잘못 쪼갰다.
+        r"(?P<name>[가-힣A-Za-z][가-힣A-Za-z0-9]*)\s+추가",
         user_message,
     ):
         # '양파 1개 추가'는 LLM이 수량까지 읽어야 하므로 '개'를 재료명으로
         # 오인하는 이 보정 경로에서는 건너뛴다.
         if match.start() > 0 and user_message[match.start() - 1].isdigit():
             continue
-        name = match.group("name")
+        name = re.sub(r"(?:도|을|를|은|는|가)$", "", match.group("name"))
+        if not name:
+            continue
         if name not in names:
             names.append(name)
     return names
@@ -2862,6 +2882,30 @@ def _looks_like_ingredient_replacement(user_message: str) -> bool:
             r"(?:새|다른)\s*(?:재료|식재료)",
             user_message,
         )
+    )
+
+
+def _has_explicit_ingredient_edit(
+    user_message: str,
+    current_ingredients: Sequence[IngredientCandidate],
+) -> bool:
+    """완료 후 메시지가 보유 재료를 직접 추가·제외·교체하는지 판정합니다.
+
+    Jev는 ``재료에 깻잎 추가해서 레시피 다시 짜줘``를 재추천으로만 분류할 수
+    있다. 이 경우에는 레시피를 바로 실행하면 새 재료가 Tool 입력에 반영되지
+    않으므로, 명시적인 재료 편집을 먼저 후보 확인 단계로 보낸다.
+    """
+
+    if not re.search(
+        r"추가|더\s*넣|넣어|빼|삭제|제거|제외|없애|교체|대신|바꾸|변경|대체",
+        user_message,
+    ):
+        return False
+    if re.search(r"재료|식재료", user_message):
+        return True
+    return any(
+        _ingredient_name_is_mentioned(candidate.name, user_message)
+        for candidate in current_ingredients
     )
 
 

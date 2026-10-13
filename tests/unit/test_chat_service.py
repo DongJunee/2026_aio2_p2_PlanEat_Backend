@@ -25,6 +25,7 @@ from app.services.chat_service import (
     ChatService,
     _apply_ingredient_edit,
     _fallback_ingredient_confirmation,
+    _is_explicit_candidate_removal,
     _is_explicit_final_ingredient_confirmation,
     _parse_selected_set_id,
     _validate_ingredient_edit_result,
@@ -1028,7 +1029,9 @@ def test_condition_clarification_does_not_request_optional_cooking_time() -> Non
 
     assert status_code == 200
     assert payload["step"] == "CONDITION_INPUT"
-    assert payload["questions"] == ["식단 목적은 무엇인가요?"]
+    assert payload["questions"] == [
+        "식단 목적은 무엇인가요? 예: 다이어트, 식단 관리, 일반식"
+    ]
 
 
 def test_tool_request_rejects_unconfirmed_ingredient_candidates() -> None:
@@ -1497,6 +1500,7 @@ def test_confirmation_requires_an_explicit_whole_list_answer_before_tool_call() 
         "이 재료가 맞아",
         "재료 맞아",
         "현재 재료 목록으로 확정할게요",
+        "이대로 가자",
     ),
 )
 def test_related_whole_ingredient_confirmation_phrases_are_confirmed(
@@ -1539,6 +1543,48 @@ def test_related_whole_ingredient_confirmation_phrases_are_confirmed(
         {"name": "계란", "amount": "4개"},
         {"name": "삼겹살", "amount": "300g"},
     )
+
+
+def test_explicit_progress_phrase_overrides_misclassified_rejection() -> None:
+    """'이대로 가자'는 Jev가 거절로 오분류해도 후보를 지우지 않고 확정한다."""
+
+    repository = InMemoryChatSessionRepository()
+    provider = RecordingToolHubProvider()
+    asyncio.run(
+        repository.save(
+            "progress-phrase-session",
+            ChatSessionState(
+                step="WAITING_INGREDIENT_CONFIRM",
+                ingredient_candidates=(IngredientCandidate(name="연어", amount="2팩"),),
+                user_conditions={"message": "다이어트 식단", "purpose": "다이어트"},
+            ),
+        )
+    )
+    service = ChatService(
+        llm_responder=FakeCompletionMessageGenerator(),
+        ingredient_confirmation_evaluator=FakeIngredientConfirmationEvaluator("rejected"),
+        tool_provider=provider,
+        session_repository=repository,
+    )
+
+    payload, status_code = asyncio.run(
+        service.handle(
+            ChatRequest(session_id="progress-phrase-session", message="이대로 가자")
+        )
+    )
+
+    assert status_code == 200
+    assert payload["step"] == "COMPLETED"
+    assert provider.requests[0].confirmed_ingredients == (
+        {"name": "연어", "amount": "2팩"},
+    )
+
+
+@pytest.mark.parametrize("message", ("상추 x", "상추X", "상추 ❌"))
+def test_symbolic_x_after_ingredient_means_removal(message: str) -> None:
+    """채팅에서 쓰는 x/X/❌ 제외 표기를 재료명 뒤에서만 허용한다."""
+
+    assert _is_explicit_candidate_removal("상추", message)
 
 
 @pytest.mark.parametrize(

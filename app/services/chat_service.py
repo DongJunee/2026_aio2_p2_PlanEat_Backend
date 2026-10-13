@@ -955,7 +955,9 @@ class ChatService:
                 state=state,
                 session=session,
                 fallback_response="추천을 위해 몇 가지 정보를 더 알려주세요.",
-                fallback_questions=["식단 목표가 무엇인가요? 예: 다이어트, 고단백, 채식"],
+                fallback_questions=[
+                    "식단 목표가 무엇인가요? 예: 다이어트, 식단 관리, 일반식"
+                ],
             )
             return {
                 "status": "NEED_MORE_INFO",
@@ -1100,6 +1102,11 @@ class ChatService:
                 for question in normalized_questions
                 if not _is_optional_condition_question(question)
             ]
+            if response_kind == "CONDITION_INPUT":
+                normalized_questions = [
+                    _with_condition_goal_examples(question)
+                    for question in normalized_questions
+                ]
             if _contains_optional_condition_question(message):
                 # 본문에 선택값을 요구하는 문장이 남으면 질문 목록만 고쳐도 UX가
                 # 일관되지 않으므로, 서버가 보장하는 단계별 fallback 문구를 사용한다.
@@ -1304,6 +1311,21 @@ class ChatService:
             user_message,
             candidate_payload,
         )
+        if (
+            jev_decision is not None
+            and _is_explicit_final_ingredient_confirmation(user_message)
+            and jev_decision.intent in {"rejected", "unclear"}
+        ):
+            # 후보 목록을 모두 비우는 전이는 되돌리기 어려운 상태 변경이다. 바로 전
+            # 질문에 대한 명시적인 진행·확정 답변이라면 Jev의 일시적 오분류보다
+            # 사용자 의도를 우선해 후보를 확정한다.
+            return read(
+                "confirmed",
+                confidence=jev_decision.confidence,
+                acknowledged=(),
+                pending=None,
+                pending_action=None,
+            )
         if jev_decision is not None and jev_decision.intent != "unclear":
             # Jev가 충분한 신뢰도로 의미를 판단한 경우, "빼줘" 같은 표면 표현을
             # 다시 정규식으로 분류하지 않는다. 수정 내용은 다음 단계의 구조화
@@ -2220,8 +2242,14 @@ def _is_explicit_final_ingredient_confirmation(user_message: str) -> bool:
         "이대로확정할게요",
         "이대로진행",
         "이대로진행할게요",
+        "이대로가자",
+        "이대로가요",
+        "이대로진행하자",
+        "가자",
+        "가요",
         "그대로진행",
         "그대로진행해주세요",
+        "그대로해줘",
         "확정지어줘",
         "확정지어주세요",
         "확정지을게",
@@ -2512,8 +2540,12 @@ def _is_explicit_candidate_removal(candidate_name: str, user_message: str) -> bo
     return bool(
         re.search(
             rf"(?:{escaped_name}).{{0,16}}(?:{_INGREDIENT_REMOVAL_PATTERN})|"
-            rf"(?:{_INGREDIENT_REMOVAL_PATTERN}).{{0,16}}(?:{escaped_name})",
+            rf"(?:{_INGREDIENT_REMOVAL_PATTERN}).{{0,16}}(?:{escaped_name})|"
+            # 재료명 뒤의 단독 x/X/×/✕/❌은 채팅에서 흔히 쓰는 제외 표기다.
+            # 재료명 안의 영문자는 매칭하지 않도록 이름 바로 뒤의 표기만 허용한다.
+            rf"{escaped_name}\s*(?:x|×|✕|❌)(?:\s|$)",
             user_message,
+            flags=re.IGNORECASE,
         )
     )
 
@@ -2774,6 +2806,14 @@ def _is_optional_condition_question(question: str) -> bool:
     """필수값이 아닌 식단 조건을 요구하는 질문인지 확인합니다."""
 
     return bool(_OPTIONAL_CONDITION_QUESTION_PATTERN.search(question))
+
+
+def _with_condition_goal_examples(question: str) -> str:
+    """식단 목적 질문에는 사용자가 바로 답할 수 있는 예시를 보장합니다."""
+
+    if re.search(r"(?:예\s*:|예시)", question):
+        return question
+    return f"{question.rstrip()} 예: 다이어트, 식단 관리, 일반식"
 
 
 def _contains_optional_condition_question(text: str) -> bool:

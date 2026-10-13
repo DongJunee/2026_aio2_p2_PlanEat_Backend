@@ -516,7 +516,8 @@ def test_regeneration_excludes_previous_recipes_and_uses_new_response_message() 
         service.handle(
             ChatRequest(
                 session_id="regeneration-session",
-                message="다시해줘",
+                # 실제 화면에서 쓰는 표현도 Jev fallback 시 재추천으로 처리해야 한다.
+                message="레시피 다시 짜줘",
             )
         )
     )

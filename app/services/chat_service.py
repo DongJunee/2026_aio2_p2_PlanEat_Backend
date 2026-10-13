@@ -2,7 +2,9 @@
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
+import hashlib
 import json
+import logging
 import re
 from typing import Literal, Protocol
 
@@ -118,6 +120,8 @@ _ADDITIONAL_IMAGE_RESPONSE = (
     "추가 이미지에서 확인한 재료를 기존 재료 목록에 합쳤습니다. "
     "현재 목록으로 확정할까요? 더 추가하거나 수정할 재료가 있다면 말씀해주세요."
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _guardrail_rejection(message: str) -> tuple[dict[str, object], int]:
@@ -252,6 +256,16 @@ class ChatService:
         session = await self._session_repository.get(request.session_id)
         previous_step = session.step
         stored_recommendation = _stored_recommendation(session)
+        session_token = _session_log_token(request.session_id)
+        logger.info(
+            "chat_session_loaded token=%s step=%s confirmed=%d candidates=%d "
+            "stored_recommendation=%s",
+            session_token,
+            previous_step,
+            len(session.confirmed_ingredients),
+            len(session.ingredient_candidates),
+            stored_recommendation is not None,
+        )
         regenerate_with_new_recipes = False
         replace_confirmed_ingredients = False
         completed_additional_image = (
@@ -279,6 +293,13 @@ class ChatService:
             is_jev_fallback = feedback_plan.source == "fallback"
             regenerate_with_new_recipes = feedback_plan.intent == "regenerate" or (
                 is_jev_fallback and _is_recipe_regeneration_request(request.message)
+            )
+            logger.info(
+                "chat_completed_feedback token=%s intent=%s source=%s regenerate=%s",
+                session_token,
+                feedback_plan.intent,
+                feedback_plan.source,
+                regenerate_with_new_recipes,
             )
             replace_confirmed_ingredients = (
                 feedback_plan.intent == "replace_ingredients"
@@ -1591,6 +1612,12 @@ def _stored_recommendation(session: ChatSessionState) -> RecommendationData | No
         return RecommendationData.model_validate(session.recommendation_data)
     except ValueError:
         return None
+
+
+def _session_log_token(session_id: str) -> str:
+    """원본 세션 ID를 로그에 남기지 않는 짧은 요청 추적용 식별자입니다."""
+
+    return hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:12]
 
 
 def _store_recommendation_if_present(

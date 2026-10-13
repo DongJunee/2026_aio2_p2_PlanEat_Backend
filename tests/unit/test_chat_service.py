@@ -523,6 +523,7 @@ def test_regeneration_excludes_previous_recipes_and_uses_new_response_message() 
 
     assert status_code == 200
     assert provider.requests[0].user_conditions["excluded_recipe_ids"] == previous_recipe_ids
+    assert "regenerated_recipe_request" not in provider.requests[0].user_conditions
     assert payload["response"].startswith("기존 추천과 다른 레시피로 식단을 다시 추천했습니다.")
     returned_recipe_ids = {
         recipe["recipe_id"]
@@ -530,6 +531,8 @@ def test_regeneration_excludes_previous_recipes_and_uses_new_response_message() 
         for recipe in recipe_set["recipes"]
     }
     assert returned_recipe_ids.isdisjoint(previous_recipe_ids)
+    saved_session = asyncio.run(repository.get("regeneration-session"))
+    assert "regenerated_recipe_request" not in saved_session.user_conditions
 
 
 def test_jev_regeneration_plan_reaches_tool_hub_without_phrase_matching() -> None:
@@ -571,8 +574,52 @@ def test_jev_regeneration_plan_reaches_tool_hub_without_phrase_matching() -> Non
 
     assert status_code == 200
     assert planner.messages == ["이번에는 완전히 색다른 조합으로 보고 싶어"]
-    assert provider.requests[0].user_conditions["regenerated_recipe_request"] is True
+    assert provider.requests[0].user_conditions["excluded_recipe_ids"]
+    assert "regenerated_recipe_request" not in provider.requests[0].user_conditions
     assert payload["response"].startswith("기존 추천과 다른 레시피로 식단을 다시 추천했습니다.")
+
+
+def test_regeneration_message_is_limited_to_the_regeneration_turn() -> None:
+    """재추천 뒤 일반 조건 피드백은 재추천 안내 문구를 재사용하지 않는다."""
+
+    repository = InMemoryChatSessionRepository()
+    provider = RecordingToolHubProvider()
+    previous_data = _mock_recommendation_data()
+    asyncio.run(
+        repository.save(
+            "regeneration-message-session",
+            ChatSessionState(
+                step="COMPLETED",
+                confirmed_ingredients=(IngredientCandidate(name="두부", amount="1모"),),
+                user_conditions={"message": "다이어트 식단", "purpose": "다이어트"},
+                recommendation_data=previous_data,
+            ),
+        )
+    )
+    planner = FakeFeedbackPlanner("regenerate")
+    service = ChatService(
+        llm_responder=FakeCompletionMessageGenerator(),
+        tool_provider=provider,
+        session_repository=repository,
+        feedback_planner=planner,
+    )
+
+    first, first_status = asyncio.run(
+        service.handle(
+            ChatRequest(session_id="regeneration-message-session", message="다시 짜줘")
+        )
+    )
+    planner.intent = "update_conditions"
+    second, second_status = asyncio.run(
+        service.handle(
+            ChatRequest(session_id="regeneration-message-session", message="단백질을 더 높여줘")
+        )
+    )
+
+    assert first_status == second_status == 200
+    assert first["response"].startswith("기존 추천과 다른 레시피로 식단을 다시 추천했습니다.")
+    assert second["response"].startswith("확정한 재료와 조건에 맞는 메인·반찬 식단을 추천했습니다.")
+    assert "regenerated_recipe_request" not in provider.requests[1].user_conditions
 
 
 def test_jev_reconsider_plan_keeps_recommendation_without_running_tool_hub() -> None:

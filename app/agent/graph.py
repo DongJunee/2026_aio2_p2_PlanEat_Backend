@@ -56,6 +56,9 @@ class ChatState(TypedDict, total=False):
     tool_result: dict[str, object] | None
     tool_source_metadata: dict[str, object] | None
     tool_error: str | None
+    # 완료 후 피드백에서만 쓰는 이번 요청 전용 표시다. 세션 조건에는 저장하지
+    # 않으므로, 다음 일반 피드백의 완료 안내 문구에 남지 않는다.
+    regenerated_this_turn: bool
 
 
 ChatToolNode = Callable[[ChatState], Awaitable[dict[str, object]]]

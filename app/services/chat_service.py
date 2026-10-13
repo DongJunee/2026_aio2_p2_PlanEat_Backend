@@ -320,7 +320,6 @@ class ChatService:
                 request_conditions = {
                     **dict(session.user_conditions or {}),
                     "feedback_plan": feedback_plan.intent,
-                    "regenerated_recipe_request": False,
                 }
             else:
                 request_conditions = _merge_feedback_conditions(
@@ -333,12 +332,6 @@ class ChatService:
                     request_conditions,
                     stored_recommendation,
                 )
-            else:
-                # 이전 재생성 플래그가 다음 일반 피드백 응답의 문구까지 바꾸지 않게 한다.
-                request_conditions = {
-                    **request_conditions,
-                    "regenerated_recipe_request": False,
-                }
             condition_ready = _has_required_condition(request_conditions)
         elif completed_additional_image:
             # 완료 후 이미지를 올리는 경우에는 피드백·재추천 문장으로 해석하지 않고,
@@ -634,6 +627,9 @@ class ChatService:
             "ingredient_confirmation": (
                 confirmation_decision.intent if confirmation_decision is not None else None
             ),
+            # 재추천 안내 문구는 이번 요청의 Jev 판단에만 연결한다. 추천 조건은
+            # excluded_recipe_ids만 영구 보관하며, 표시용 bool은 세션에 저장하지 않는다.
+            "regenerated_this_turn": regenerate_with_new_recipes,
         }
         if ingredient_edit_summary:
             state["ingredient_edit_summary"] = ingredient_edit_summary
@@ -702,6 +698,7 @@ class ChatService:
                 request.message,
                 next_session,
                 tool_result=result.get("tool_result"),
+                regenerated=bool(result.get("regenerated_this_turn")),
             )
         except LLMResponseError:
             return {"status": "ERROR", "response": "추천 응답 생성 중 오류가 발생했습니다."}, 500
@@ -850,6 +847,7 @@ class ChatService:
         user_message: str,
         session: ChatSessionState,
         tool_result: object = None,
+        regenerated: bool = False,
     ) -> dict[str, object]:
         """LangGraph의 내부 단계를 외부 Chat API 응답 형식으로 변환합니다."""
 
@@ -968,7 +966,7 @@ class ChatService:
         if tool_result is not None:
             return await self._response_from_tool_hub(
                 tool_result,
-                regenerated=_is_regenerated_recipe_request(session.user_conditions),
+                regenerated=regenerated,
                 ingredient_edit_summary=_ingredient_edit_summary_from_state(state),
             )
 
@@ -979,7 +977,7 @@ class ChatService:
         _generated_message, recipe_sets = generated_recommendation
         completion_message = _with_ingredient_edit_confirmation(
             _completion_selection_message(
-                regenerated=_is_regenerated_recipe_request(session.user_conditions)
+                regenerated=regenerated
             ),
             _ingredient_edit_summary_from_state(state),
         )
@@ -1714,6 +1712,9 @@ def _merge_feedback_conditions(
     """Jev Plan 이후 피드백 원문과 새 조건 슬롯을 기존 조건에 누적합니다."""
 
     merged = dict(previous_conditions or {})
+    # 이전 배포본이 세션에 남긴 표시 전용 값을 제거한다. 재추천 여부는
+    # ChatState.regenerated_this_turn으로만 전달되고, 조건에는 레시피 제외 목록만 남긴다.
+    merged.pop("regenerated_recipe_request", None)
     previous_message = merged.get("message", "")
     feedback_message = user_message.strip()
     if isinstance(previous_message, str) and previous_message.strip():
@@ -1761,14 +1762,7 @@ def _exclude_previously_recommended_recipes(
     return {
         **conditions,
         "excluded_recipe_ids": list(dict.fromkeys(excluded_ids)),
-        "regenerated_recipe_request": True,
     }
-
-
-def _is_regenerated_recipe_request(conditions: Mapping[str, object] | None) -> bool:
-    """현재 완료 응답이 기존 레시피를 제외해 만든 재추천인지 반환합니다."""
-
-    return bool(conditions and conditions.get("regenerated_recipe_request") is True)
 
 
 def _apply_confirmation_decision(

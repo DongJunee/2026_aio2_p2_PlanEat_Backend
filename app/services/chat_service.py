@@ -326,18 +326,20 @@ class ChatService:
                 explicit_ingredient_edit,
                 regenerate_with_new_recipes,
             )
+            # 명확한 세트 대상(첫번째·1번·두 번째 세트 등)은 Jev가 unclear로
+            # 분류해도 서버가 먼저 선택 처리한다.
+            selected_set_id = _parse_selected_set_id(
+                request.message, stored_recommendation
+            )
+            if selected_set_id is not None:
+                return await self._handle_set_selection(
+                    request=request,
+                    session=session,
+                    recommendation=stored_recommendation,
+                    selected_set_id=selected_set_id,
+                )
             wants_set_selection = feedback_plan.intent == "select_set" or is_jev_fallback
             if wants_set_selection:
-                selected_set_id = _parse_selected_set_id(
-                    request.message, stored_recommendation
-                )
-                if selected_set_id is not None:
-                    return await self._handle_set_selection(
-                        request=request,
-                        session=session,
-                        recommendation=stored_recommendation,
-                        selected_set_id=selected_set_id,
-                    )
                 if feedback_plan.intent == "select_set":
                     return await self._respond_to_incomplete_set_selection(
                         request=request,

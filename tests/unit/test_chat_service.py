@@ -399,10 +399,12 @@ def test_selected_set_generates_pdf_url_and_saves_selection() -> None:
         llm_responder=FakeCompletionMessageGenerator(),
         session_repository=repository,
         pdf_service=pdf_service,
+        # Jev가 선택 의도를 놓쳐도 명확한 세트 대상은 서버가 처리해야 한다.
+        feedback_planner=FakeFeedbackPlanner("unclear"),
     )
 
     payload, status_code = asyncio.run(
-        service.handle(ChatRequest(session_id="pdf-session", message="1번 세트 선택"))
+        service.handle(ChatRequest(session_id="pdf-session", message="첫번째 세트"))
     )
     session = asyncio.run(repository.get("pdf-session"))
 

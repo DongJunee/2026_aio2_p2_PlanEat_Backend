@@ -42,10 +42,16 @@ LangGraph가 다음 단계를 정하는 보조 판단기로만 사용한다.
 
 Jev가 활성화되어도 `/chat` 요청·응답의 `status`, `step`, DTO는 변경되지 않는다.
 
-최종 추천 이후 사용자의 개선 의견은 `feedback_plan` choice로 분류한다. Orchestrator는 Jev의
-판정 자체를 사용자에게 노출하지 않고, 피드백 원문과 추출된 조건 슬롯을 기존 조건에 누적한 뒤
-동일한 추천 Tool·RecommendationData·Output Guardrail 검증을 다시 실행한다. 세트 선택은
-검증된 `available_set_ids`와 자연어 선택 표현을 비교해 처리한다.
+최종 추천 이후에는 `feedback_plan` choice가 **다음 노드**를 먼저 선택한다. `regenerate`는
+이전 레시피 ID를 제외해 Recipe·Shopping Tool node를 다시 실행하고, `update_conditions`는
+새 조건을 누적해 같은 Tool node를 실행한다. `replace_ingredients`는 기존 식단 목적을 유지한
+채 OpenAI 구조화 추출기로 보유 재료만 갱신한 뒤 Tool node를 다시 실행한다. `select_set`은
+이미 검증된 `available_set_ids` 안에서만 대상 세트를 찾아 PDF node로 보낸다. `reconsider`,
+`out_of_scope`, `unclear`는 Tool을 재실행하지 않고 현재 추천을 보존한 채 다음 입력을 안내한다.
+
+Jev가 활성화되어 정상 응답한 경우에는 정규식이 이 판단을 덮어쓰지 않는다. Jev가 비활성화되어
+있거나 timeout·형식 오류가 발생한 경우에만 기존의 제한적인 문구 parser가 호환 fallback으로
+사용된다.
 
 ## 3. API 키 발급
 

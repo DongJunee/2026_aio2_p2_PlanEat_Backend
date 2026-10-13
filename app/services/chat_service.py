@@ -192,7 +192,7 @@ class IngredientConfirmationRead:
 
 
 class FeedbackPlanner(Protocol):
-    """완료된 추천에 대한 사용자 피드백의 재추천 계획 경계입니다."""
+    """완료된 추천에 대한 사용자 피드백의 다음 노드 계획 경계입니다."""
 
     async def plan(
         self,
@@ -252,17 +252,8 @@ class ChatService:
         session = await self._session_repository.get(request.session_id)
         previous_step = session.step
         stored_recommendation = _stored_recommendation(session)
-        regenerate_with_new_recipes = (
-            previous_step == "COMPLETED"
-            and stored_recommendation is not None
-            and _is_recipe_regeneration_request(request.message)
-        )
-        replace_confirmed_ingredients = (
-            previous_step == "COMPLETED"
-            and stored_recommendation is not None
-            and not request.attachments
-            and _looks_like_ingredient_replacement(request.message)
-        )
+        regenerate_with_new_recipes = False
+        replace_confirmed_ingredients = False
         completed_additional_image = (
             previous_step == "COMPLETED" and bool(request.attachments)
         )
@@ -271,26 +262,72 @@ class ChatService:
             and stored_recommendation is not None
             and not completed_additional_image
         ):
-            selected_set_id = _parse_selected_set_id(request.message, stored_recommendation)
-            if selected_set_id is not None:
-                return await self._handle_set_selection(
+            feedback_context = {
+                **dict(session.user_conditions or {}),
+                "available_recipe_sets": [
+                    recipe_set.set_id for recipe_set in stored_recommendation.recipe_sets
+                ],
+            }
+            feedback_plan = await self._feedback_planner.plan(
+                request.message,
+                feedback_context,
+            )
+
+            # Jev가 완료 단계의 다음 노드를 먼저 고른다. 아래의 문자열 parser는
+            # Jev 비활성화·timeout 같은 fallback에만 쓰며, 정상 Jev 판단을 덮어쓰지
+            # 않는다. 세트 ID는 이미 생성된 Tool 결과 안에서만 해석한다.
+            is_jev_fallback = feedback_plan.source == "fallback"
+            regenerate_with_new_recipes = feedback_plan.intent == "regenerate" or (
+                is_jev_fallback and _is_recipe_regeneration_request(request.message)
+            )
+            replace_confirmed_ingredients = (
+                feedback_plan.intent == "replace_ingredients"
+                or (
+                    is_jev_fallback
+                    and _looks_like_ingredient_replacement(request.message)
+                )
+            )
+            wants_set_selection = feedback_plan.intent == "select_set" or is_jev_fallback
+            if wants_set_selection:
+                selected_set_id = _parse_selected_set_id(
+                    request.message, stored_recommendation
+                )
+                if selected_set_id is not None:
+                    return await self._handle_set_selection(
+                        request=request,
+                        session=session,
+                        recommendation=stored_recommendation,
+                        selected_set_id=selected_set_id,
+                    )
+                if feedback_plan.intent == "select_set":
+                    return await self._respond_to_incomplete_set_selection(
+                        request=request,
+                        session=session,
+                        recommendation=stored_recommendation,
+                    )
+
+            if feedback_plan.intent in {"reconsider", "out_of_scope", "unclear"}:
+                return await self._respond_to_completed_feedback(
                     request=request,
                     session=session,
                     recommendation=stored_recommendation,
-                    selected_set_id=selected_set_id,
+                    intent=feedback_plan.intent,
                 )
 
-            # 완료 결과 이후에는 새 메시지를 단순한 재추천 요청으로 취급하지 않고
-            # Jev Plan을 거쳐 조건·피드백을 누적한 뒤 같은 Tool 검증 경로를 다시 탄다.
-            feedback_plan = await self._feedback_planner.plan(
-                request.message,
-                session.user_conditions,
-            )
-            request_conditions = _merge_feedback_conditions(
-                session.user_conditions,
-                request.message,
-                feedback_plan,
-            )
+            if replace_confirmed_ingredients:
+                # 보유 재료 수정은 기존 식단 목적을 유지한다. 재료를 조건 원문에
+                # 섞으면 Tool Hub가 "돼지고기"를 식단 목적처럼 읽을 수 있다.
+                request_conditions = {
+                    **dict(session.user_conditions or {}),
+                    "feedback_plan": feedback_plan.intent,
+                    "regenerated_recipe_request": False,
+                }
+            else:
+                request_conditions = _merge_feedback_conditions(
+                    session.user_conditions,
+                    request.message,
+                    feedback_plan,
+                )
             if regenerate_with_new_recipes:
                 request_conditions = _exclude_previously_recommended_recipes(
                     request_conditions,
@@ -650,6 +687,74 @@ class ChatService:
             messages=(
                 *next_session.messages,
                 _conversation_message("assistant", response["response"]),
+            ),
+        )
+        await self._session_repository.save(request.session_id, next_session)
+        return response, 200
+
+    async def _respond_to_completed_feedback(
+        self,
+        *,
+        request: ChatRequest,
+        session: ChatSessionState,
+        recommendation: RecommendationData,
+        intent: Literal["reconsider", "out_of_scope", "unclear"],
+    ) -> tuple[dict[str, object], int]:
+        """Tool 실행 없이 완료된 추천을 유지하고 다음 입력을 안내합니다."""
+
+        if intent == "out_of_scope":
+            response_message = (
+                "PlanEat에서는 현재 식단을 바꾸거나 다른 식단을 다시 추천하고, "
+                "추천 세트의 상세 PDF를 만들 수 있어요."
+            )
+        elif intent == "reconsider":
+            response_message = (
+                "현재 추천은 그대로 두었어요. 다른 메뉴가 필요하면 '다시 추천해줘', "
+                "조건을 바꾸려면 원하시는 조건을 말씀해주세요."
+            )
+        else:
+            response_message = (
+                "원하시는 다음 작업을 조금만 더 알려주세요. 예를 들어 '다시 추천해줘', "
+                "'20분 이내로 바꿔줘', '1번 세트 PDF 만들어줘'라고 말할 수 있어요."
+            )
+        response = _completed_feedback_response(
+            recommendation=recommendation,
+            response_message=response_message,
+        )
+        next_session = replace(
+            session,
+            messages=(
+                *session.messages,
+                _conversation_message("user", request.message),
+                _conversation_message("assistant", response_message),
+            ),
+        )
+        await self._session_repository.save(request.session_id, next_session)
+        return response, 200
+
+    async def _respond_to_incomplete_set_selection(
+        self,
+        *,
+        request: ChatRequest,
+        session: ChatSessionState,
+        recommendation: RecommendationData,
+    ) -> tuple[dict[str, object], int]:
+        """Jev가 세트 선택으로 판단했지만 대상이 없을 때만 한 번 더 묻습니다."""
+
+        labels = ", ".join(
+            recipe_set.set_id for recipe_set in recommendation.recipe_sets
+        )
+        response_message = f"선택할 식단 세트를 알려주세요. 현재 선택 가능한 세트는 {labels}예요."
+        response = _completed_feedback_response(
+            recommendation=recommendation,
+            response_message=response_message,
+        )
+        next_session = replace(
+            session,
+            messages=(
+                *session.messages,
+                _conversation_message("user", request.message),
+                _conversation_message("assistant", response_message),
             ),
         )
         await self._session_repository.save(request.session_id, next_session)
@@ -1478,6 +1583,26 @@ def _find_recipe_set(
         ),
         None,
     )
+
+
+def _completed_feedback_response(
+    *,
+    recommendation: RecommendationData,
+    response_message: str,
+) -> dict[str, object]:
+    """완료 상태를 유지하는 피드백 응답을 기존 FE 계약으로 조립합니다."""
+
+    return {
+        "status": "SUCCESS",
+        "step": "COMPLETED",
+        "response": response_message,
+        "data": recommendation.model_dump(),
+        "next_action": "FEEDBACK_OR_SET_SELECTION",
+        "available_set_ids": [
+            get_recipe_set_key(recipe_set, index)
+            for index, recipe_set in enumerate(recommendation.recipe_sets)
+        ],
+    }
 
 
 def _parse_selected_set_id(

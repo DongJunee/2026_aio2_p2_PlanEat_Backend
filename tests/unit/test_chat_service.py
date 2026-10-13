@@ -216,6 +216,23 @@ class FakeIngredientConfirmationEvaluator:
         return IngredientConfirmationDecision(intent=self.intent, confidence=0.99)  # type: ignore[arg-type]
 
 
+class FakeFeedbackPlanner:
+    """완료 뒤 Jev의 다음 노드 결정을 고정하는 fake입니다."""
+
+    def __init__(self, intent: str) -> None:
+        self.intent = intent
+        self.messages: list[str] = []
+
+    async def plan(
+        self,
+        user_message: str,
+        current_conditions: dict[str, object] | None,
+    ) -> FeedbackPlan:
+        del current_conditions
+        self.messages.append(user_message)
+        return FeedbackPlan(intent=self.intent, confidence=0.99)  # type: ignore[arg-type]
+
+
 class RecordingToolHubProvider:
     """완료 단계에서 Tool Hub로 전달할 ToolRequest와 결과를 기록하는 fake입니다."""
 
@@ -514,6 +531,86 @@ def test_regeneration_excludes_previous_recipes_and_uses_new_response_message() 
     assert returned_recipe_ids.isdisjoint(previous_recipe_ids)
 
 
+def test_jev_regeneration_plan_reaches_tool_hub_without_phrase_matching() -> None:
+    """Jev의 regenerate 판단은 기존 정규식 문구와 무관하게 추천 노드를 다시 탄다."""
+
+    repository = InMemoryChatSessionRepository()
+    provider = RecordingToolHubProvider()
+    previous_data = _mock_recommendation_data()
+    for recipe_set in previous_data["recipe_sets"]:
+        for recipe in recipe_set["recipes"]:
+            recipe["recipe_id"] = f"old-{recipe['title']}"
+    asyncio.run(
+        repository.save(
+            "jev-regenerate-session",
+            ChatSessionState(
+                step="COMPLETED",
+                confirmed_ingredients=(IngredientCandidate(name="두부", amount="1모"),),
+                user_conditions={"message": "다이어트 식단", "purpose": "다이어트"},
+                recommendation_data=previous_data,
+            ),
+        )
+    )
+    planner = FakeFeedbackPlanner("regenerate")
+    service = ChatService(
+        llm_responder=FakeCompletionMessageGenerator(),
+        tool_provider=provider,
+        session_repository=repository,
+        feedback_planner=planner,
+    )
+
+    payload, status_code = asyncio.run(
+        service.handle(
+            ChatRequest(
+                session_id="jev-regenerate-session",
+                message="이번에는 완전히 색다른 조합으로 보고 싶어",
+            )
+        )
+    )
+
+    assert status_code == 200
+    assert planner.messages == ["이번에는 완전히 색다른 조합으로 보고 싶어"]
+    assert provider.requests[0].user_conditions["regenerated_recipe_request"] is True
+    assert payload["response"].startswith("기존 추천과 다른 레시피로 식단을 다시 추천했습니다.")
+
+
+def test_jev_reconsider_plan_keeps_recommendation_without_running_tool_hub() -> None:
+    """설명·비교 요청은 Tool Hub 재실행 대신 현재 결과를 유지한다."""
+
+    repository = InMemoryChatSessionRepository()
+    provider = RecordingToolHubProvider()
+    previous_data = _mock_recommendation_data()
+    asyncio.run(
+        repository.save(
+            "jev-reconsider-session",
+            ChatSessionState(
+                step="COMPLETED",
+                confirmed_ingredients=(IngredientCandidate(name="두부", amount="1모"),),
+                user_conditions={"message": "다이어트 식단", "purpose": "다이어트"},
+                recommendation_data=previous_data,
+            ),
+        )
+    )
+    service = ChatService(
+        llm_responder=FakeCompletionMessageGenerator(),
+        tool_provider=provider,
+        session_repository=repository,
+        feedback_planner=FakeFeedbackPlanner("reconsider"),
+    )
+
+    payload, status_code = asyncio.run(
+        service.handle(
+            ChatRequest(session_id="jev-reconsider-session", message="두 세트를 비교해줘")
+        )
+    )
+
+    assert status_code == 200
+    assert provider.requests == []
+    assert payload["status"] == "SUCCESS"
+    assert payload["data"] == previous_data
+    assert "현재 추천은 그대로" in payload["response"]
+
+
 def test_missing_image_after_first_request_uses_natural_language_fallback() -> None:
     service = ChatService(
         llm_responder=FakeClarificationGenerator(),
@@ -692,13 +789,11 @@ def test_jev_low_confidence_or_invalid_choice_is_ignored() -> None:
 
 def test_jev_feedback_plan_accepts_only_confident_supported_choices() -> None:
     payload = {
-        "answers": {
-            "feedback_plan": {"choice": "update_conditions", "confidence": 0.9}
-        }
+        "answers": {"feedback_plan": {"choice": "regenerate", "confidence": 0.9}}
     }
 
     assert JevFeedbackPlanner.parse_feedback_plan(payload, min_confidence=0.8) == FeedbackPlan(
-        intent="update_conditions", confidence=0.9
+        intent="regenerate", confidence=0.9
     )
     assert (
         JevFeedbackPlanner.parse_feedback_plan(

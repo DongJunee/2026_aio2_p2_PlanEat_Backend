@@ -30,12 +30,13 @@
 ### 🎤 발표
 
 1. [팀원 소개](#팀원-소개)
-2. [주요 기능](#주요-기능)
-3. [서비스 동작 방식](#서비스-동작-방식)
-4. [핵심 기술 1: LangGraph Orchestrator](#핵심-기술-1-langgraph-orchestrator)
-5. [핵심 기술 2: Tool Hub](#핵심-기술-2-tool-hub)
-6. [확장 서비스와 안전성](#확장-서비스와-안전성)
-7. [트러블슈팅](#트러블슈팅)
+2. [사용자 페르소나와 공감지도](#사용자-페르소나와-공감지도)
+3. [주요 기능](#주요-기능)
+4. [서비스 동작 방식](#서비스-동작-방식)
+5. [핵심 기술 1: LangGraph Orchestrator](#핵심-기술-1-langgraph-orchestrator)
+6. [핵심 기술 2: Tool Hub](#핵심-기술-2-tool-hub)
+7. [확장 서비스와 안전성](#확장-서비스와-안전성)
+8. [트러블슈팅](#트러블슈팅)
 
 ### 🛠️ 프로젝트 문서
 
@@ -85,6 +86,14 @@
 
 <br>
 
+## 사용자 페르소나와 공감지도
+
+<p align="center">
+  <img src="docs/images/planeat-persona-empathy-map.png" alt="PlanEat 사용자 페르소나와 공감지도 인포그래픽" width="100%">
+</p>
+
+<br>
+
 ## 주요 기능
 
 | 기능 | 내용 | 사용자 가치 |
@@ -126,18 +135,20 @@ flowchart LR
 
 아래 화면은 서비스 동작 방식의 주요 단계를 보여줍니다. 이미지에서 찾은 재료는 먼저 확인·수정할 수 있고, 확정된 재료와 식단 조건을 바탕으로 추천 결과를 제공합니다.
 
-<table>
-  <tr>
-    <th align="center">① 재료 후보 확인</th>
-    <th align="center">② 영수증 기반 재료 입력</th>
-    <th align="center">③ 식단 추천 결과</th>
-  </tr>
-  <tr>
-    <td><img src="docs/images/fridge-ingredient-confirmation.png" alt="냉장고 재료 후보 확인 화면" width="300"></td>
-    <td><img src="docs/images/receipt-ingredient-confirmation.png" alt="영수증 재료 후보 확인 화면" width="300"></td>
-    <td><img src="docs/images/recipe-recommendations.png" alt="추천 결과 화면" width="300"></td>
-  </tr>
-</table>
+<p align="center">
+  <strong>① 재료 후보 확인</strong><br>
+  <img src="docs/images/fridge-ingredient-confirmation.png" alt="냉장고 재료 후보 확인 화면" width="720">
+</p>
+
+<p align="center">
+  <strong>② 영수증 기반 재료 입력</strong><br>
+  <img src="docs/images/receipt-ingredient-confirmation.png" alt="영수증 재료 후보 확인 화면" width="720">
+</p>
+
+<p align="center">
+  <strong>③ 식단 추천 결과</strong><br>
+  <img src="docs/images/recipe-recommendations.png" alt="추천 결과 화면" width="720">
+</p>
 
 <br>
 
@@ -242,6 +253,10 @@ PlanEat은 모든 기능을 한 모델에 맡기지 않고, 역할별 서비스�
 | ChromaDB | 레시피 후보 의미 검색과 재료 대체 가이드 보강 | 단순 키워드 일치만으로 놓칠 수 있는 유사 레시피와 대체 정보를 찾기 위해 | 내부 CSV 기반 추천을 계속 사용 |
 | LangSmith | LangGraph의 단계 전이와 Tool 호출 trace 관찰 | 다단계 대화에서 어느 단계·도구에서 문제가 생겼는지 추적하기 위해 | trace만 생략하고 사용자 응답은 계속 처리 |
 
+<p align="center">
+  <img src="docs/images/planeat-jev-nemo-roles.png" alt="Jev와 NeMo Guardrails의 역할 비교 인포그래픽" width="100%">
+</p>
+
 <br>
 
 ### 참조 개념: Jev와 NeMo Guardrails
@@ -259,20 +274,17 @@ PlanEat은 모든 기능을 한 모델에 맡기지 않고, 역할별 서비스�
 
 사용자 입력과 첨부 이미지는 모두 신뢰하지 않는 데이터로 취급합니다. 시스템 지시 공개를 요청하는 텍스트는 추천 흐름으로 전달하지 않고, 식단 추천에 필요한 재료·목적을 다시 묻는 안전한 안내로 바꿉니다. 재료를 판별할 수 없는 이미지도 후보 재료나 추천 조건으로 사용하지 않고, 사용자가 확인 가능한 냉장고·영수증 사진을 다시 요청합니다.
 
-<table>
-  <tr>
-    <th align="center">① 텍스트 프롬프트 인젝션 차단</th>
-    <th align="center">② 비신뢰 이미지 안전 재시도</th>
-  </tr>
-  <tr>
-    <td><img src="docs/images/prompt-injection-text-blocked.png" alt="시스템 지시사항 공개 요청을 거절하고 재료와 식단 목표를 묻는 화면" width="410"></td>
-    <td><img src="docs/images/untrusted-image-retry.png" alt="재료를 확인할 수 없는 이미지에 대해 냉장고 또는 영수증 사진을 다시 요청하는 화면" width="410"></td>
-  </tr>
-  <tr>
-    <td align="center">시스템 지시사항 공개 요청을 거절하고, 필요한 입력만 안내</td>
-    <td align="center">이미지 속 텍스트·불명확한 내용을 재료로 채택하지 않고 재촬영 요청</td>
-  </tr>
-</table>
+<p align="center">
+  <strong>① 텍스트 프롬프트 인젝션 차단</strong><br>
+  <img src="docs/images/prompt-injection-text-blocked.png" alt="시스템 지시사항 공개 요청을 거절하고 재료와 식단 목표를 묻는 화면" width="720"><br>
+  시스템 지시사항 공개 요청을 거절하고, 필요한 입력만 안내
+</p>
+
+<p align="center">
+  <strong>② 비신뢰 이미지 안전 재시도</strong><br>
+  <img src="docs/images/untrusted-image-retry.png" alt="재료를 확인할 수 없는 이미지에 대해 냉장고 또는 영수증 사진을 다시 요청하는 화면" width="720"><br>
+  이미지 속 텍스트·불명확한 내용을 재료로 채택하지 않고 재촬영 요청
+</p>
 
 > [!IMPORTANT]
 > 두 번째 화면은 **이미지 입력을 신뢰하지 않는 처리**를 보여 주는 사례입니다. 재료를 식별하지 못한 이미지는 추천 입력으로 사용하지 않으며, 명시적인 텍스트 프롬프트 인젝션 차단은 첫 번째 화면과 같은 입력·출력 Guardrails가 담당합니다.
@@ -283,6 +295,12 @@ PlanEat은 모든 기능을 한 모델에 맡기지 않고, 역할별 서비스�
 ## 트러블슈팅
 
 배포 이후 메모리 512MB 서버에서 레시피 추천 결과를 PDF로 생성하는 과정 중 서버가 종료되는 문제가 발생했습니다.
+
+<p align="center">
+  <img src="docs/images/planeat-troubleshooting-before-after.png" alt="PDF 생성 트러블슈팅 변경 전후 비교 인포그래픽" width="100%">
+</p>
+
+<br>
 
 | 문제 | 원인 | 대응 |
 | --- | --- | --- |

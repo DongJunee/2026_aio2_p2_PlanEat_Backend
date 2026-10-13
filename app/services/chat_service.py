@@ -293,6 +293,9 @@ class ChatService:
             # Jev가 regenerate/update_conditions로 잘못 분류해도 재료 확인 경로를
             # 우선한다. 세트 ID는 이미 생성된 Tool 결과 안에서만 해석한다.
             is_jev_fallback = feedback_plan.source == "fallback"
+            requested_regeneration = feedback_plan.intent == "regenerate" or (
+                is_jev_fallback and _is_recipe_regeneration_request(request.message)
+            )
             explicit_ingredient_edit = _has_explicit_ingredient_edit(
                 request.message,
                 session.confirmed_ingredients,
@@ -301,9 +304,7 @@ class ChatService:
                 # 완료 피드백에서 보유 재료를 직접 바꾼다는 표현은 Jev가
                 # regenerate/update_conditions로 분류해도 재료 확인이 먼저다.
                 feedback_plan = replace(feedback_plan, intent="replace_ingredients")
-            regenerate_with_new_recipes = feedback_plan.intent == "regenerate" or (
-                is_jev_fallback and _is_recipe_regeneration_request(request.message)
-            )
+            regenerate_with_new_recipes = requested_regeneration
             replace_confirmed_ingredients = (
                 feedback_plan.intent == "replace_ingredients"
                 or explicit_ingredient_edit
@@ -312,9 +313,10 @@ class ChatService:
                     and _looks_like_ingredient_replacement(request.message)
                 )
             )
-            if replace_confirmed_ingredients:
-                # 새 재료 확인을 마치기 전에는 Recipe/Shopping을 실행하지 않는다.
-                regenerate_with_new_recipes = False
+            # replace_confirmed_ingredients인 경우에도 regenerate 플래그는 유지한다.
+            # 그래프는 WAITING_INGREDIENT_CONFIRM에서 멈추므로 이번 턴에 Tool을
+            # 실행하지 않지만, 기존 레시피 제외 목록은 세션 조건에 보존되어
+            # 사용자가 새 재료를 확정한 다음 실제로 다른 레시피를 받게 된다.
             logger.info(
                 "chat_completed_feedback token=%s intent=%s source=%s "
                 "explicit_ingredient_edit=%s regenerate=%s",

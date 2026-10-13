@@ -583,6 +583,10 @@ def test_explicit_ingredient_addition_overrides_regeneration_plan() -> None:
         {"name": "가지", "amount": "1개"},
         {"name": "깻잎", "amount": "수량 미정"},
     ]
+    saved_session = asyncio.run(
+        repository.get("completed-ingredient-addition-session")
+    )
+    assert saved_session.user_conditions["excluded_recipe_ids"]
 
 
 def test_addition_name_parser_does_not_split_oi() -> None:

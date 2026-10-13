@@ -27,6 +27,7 @@ from app.services.chat_service import (
     _fallback_ingredient_confirmation,
     _is_explicit_final_ingredient_confirmation,
     _parse_selected_set_id,
+    _validate_ingredient_edit_result,
     chat_service,
 )
 
@@ -497,7 +498,7 @@ def test_regeneration_excludes_previous_recipes_and_uses_new_response_message() 
         service.handle(
             ChatRequest(
                 session_id="regeneration-session",
-                message="식단이 맘에 안들어서 다시 만들어줘",
+                message="다시해줘",
             )
         )
     )
@@ -719,7 +720,6 @@ def test_jev_ingredient_confirmation_accepts_only_supported_high_confidence_choi
     decision = JevIngredientConfirmationEvaluator.parse_ingredient_confirmation(
         confirmed, min_confidence=0.8
     )
-
     assert decision == IngredientConfirmationDecision(intent="confirmed", confidence=0.9)
     assert (
         JevIngredientConfirmationEvaluator.parse_ingredient_confirmation(
@@ -727,6 +727,37 @@ def test_jev_ingredient_confirmation_accepts_only_supported_high_confidence_choi
         )
         is None
     )
+
+
+def test_ingredient_edit_validation_allows_only_user_mentioned_changes() -> None:
+    """구조화 추출기가 제안해도 사용자 발화 밖 재료 변경은 적용하지 않는다."""
+
+    before = (
+        IngredientCandidate(name="토마토", amount="2개"),
+        IngredientCandidate(name="양파", amount="1개"),
+    )
+    valid = _validate_ingredient_edit_result(
+        before=before,
+        proposed=(
+            IngredientCandidate(name="참치", amount="1캔"),
+            IngredientCandidate(name="양파", amount="1개"),
+        ),
+        user_message="토마토 대신 참치로 바꿔줘",
+    )
+    unsafe = _validate_ingredient_edit_result(
+        before=before,
+        proposed=(
+            IngredientCandidate(name="양파", amount="1개"),
+            IngredientCandidate(name="두부", amount="1모"),
+        ),
+        user_message="토마토는 빼줘",
+    )
+
+    assert valid == (
+        IngredientCandidate(name="참치", amount="1캔"),
+        IngredientCandidate(name="양파", amount="1개"),
+    )
+    assert unsafe is None
 
 
 def test_high_confidence_jev_decision_keeps_condition_step() -> None:

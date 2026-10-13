@@ -447,20 +447,34 @@ class ChatService:
                         "status": "ERROR",
                         "response": "재료 입력을 해석하는 중 오류가 발생했습니다.",
                     }, 500
-                # 빈 결과는 사용자가 전체 후보를 삭제한 경우가 아니라 모델이 수정 내용을
-                # 해석하지 못한 경우일 수 있으므로, 기존 후보를 보존해 빈 확인 응답을 막는다.
-                # 또한 사용자가 이름까지 직접 말한 추가·제거·교체는 추출 모델이 일부
-                # 누락해도 결정적으로 한 번 더 반영한다.
-                candidate_ingredients = _reconcile_explicit_ingredient_edits(
+                # OpenAI는 수정된 전체 목록을 제안할 뿐 직접 상태를 바꾸지 않는다.
+                # 서버는 사용자 문장에 없는 재료의 추가·제거·수량 변경을 거부한다.
+                # 명시적으로 말한 짧은 동작어는 모델이 누락해도 안전하게 보완한다.
+                proposed_candidates = _reconcile_explicit_ingredient_edits(
                     before=session.ingredient_candidates,
-                    extracted=extracted_ingredients or candidate_ingredients,
+                    extracted=extracted_ingredients,
                     user_message=ingredient_extraction_message,
                 )
-                ingredient_edit_summary = _summarize_ingredient_changes(
+                candidate_ingredients = _validate_ingredient_edit_result(
                     before=session.ingredient_candidates,
-                    after=candidate_ingredients,
+                    proposed=proposed_candidates,
                     user_message=ingredient_extraction_message,
                 )
+                if candidate_ingredients is None:
+                    candidate_ingredients = session.ingredient_candidates
+                    confirmation_decision = IngredientConfirmationDecision(
+                        intent="unclear", confidence=confirmation_decision.confidence
+                    )
+                    ingredient_confirmation_message = (
+                        "말씀하신 변경 내용을 현재 목록에서 안전하게 확인하지 못했어요. "
+                        "추가하거나 제외할 재료명을 다시 알려주세요."
+                    )
+                else:
+                    ingredient_edit_summary = _summarize_ingredient_changes(
+                        before=session.ingredient_candidates,
+                        after=candidate_ingredients,
+                        user_message=ingredient_extraction_message,
+                    )
                 if not candidate_ingredients and confirmed_ingredients:
                     confirmation_decision = IngredientConfirmationDecision(
                         intent="confirmed", confidence=confirmation_decision.confidence
@@ -1060,16 +1074,11 @@ class ChatService:
         pending_ingredient_correction: str | None = None,
         pending_ingredient_action: PendingIngredientAction | None = None,
     ) -> IngredientConfirmationRead:
-        """재료 확인 답변의 주어·긍정/부정을 구분해 다음 동작을 정합니다.
-        명시적인 재료 수정은 로컬로 먼저 확정하고, 나머지는 Jev로 판정합니다.
+        """Jev의 자연어 판단을 우선하고, 서버는 상태 변경만 검증합니다.
 
-        ``빼줘``·``제거해줘``처럼 의도가 분명한 재료 수정 표현까지 외부 판정에
-        맡기면 모델이 ``unclear``로 반환해 후보 목록이 그대로 남을 수 있다. 명시적인
-        수정 명령은 로컬 판정을 우선하고, 긍정·거절·모호한 표현만 Jev에 위임한다.
-
-        단독 ``맞아``·``없어``는 바로 전의 "더 수정할 내용이 있나요?"라는 질문에 대한
-        목록 전체 확인으로 본다. 반면 특정 후보명에 붙은 긍정·부정은 그 후보 하나에만
-        적용하며, 부정한 후보는 무엇으로 바꿀지 후속 턴에서 받는다.
+        Jev는 목록 전체 확정·수정·재인식 여부처럼 문맥 판단이 필요한 일을 맡는다.
+        서버의 표현별 parser는 Jev가 불명확하거나 사용할 수 없을 때의 fallback 및
+        이미 질문한 추가·교체의 후속 답변을 연결하는 용도로만 사용한다.
         """
 
         acknowledged_names = _known_acknowledged_ingredients(
@@ -1157,6 +1166,28 @@ class ChatService:
                 ),
             )
 
+        candidate_payload = [
+            {"name": ingredient.name, "amount": ingredient.amount}
+            for ingredient in proposed_ingredients
+        ]
+        jev_decision = await self._ingredient_confirmation_evaluator.evaluate(
+            user_message,
+            candidate_payload,
+        )
+        if jev_decision is not None and jev_decision.intent != "unclear":
+            # Jev가 충분한 신뢰도로 의미를 판단한 경우, "빼줘" 같은 표면 표현을
+            # 다시 정규식으로 분류하지 않는다. 수정 내용은 다음 단계의 구조화
+            # 추출 결과를 서버가 검증한 뒤에만 상태에 반영한다.
+            return read(
+                jev_decision.intent,
+                confidence=jev_decision.confidence,
+                acknowledged=(),
+                pending=None,
+                pending_action=None,
+            )
+
+        # Jev가 불확실하거나 비활성일 때만 기존의 보수적 fallback을 사용한다.
+        # 이 경로는 모델 판단을 덮어쓰는 주 경로가 아니라 서비스 연속성 장치다.
         candidate_replies = _candidate_subject_replies(user_message, proposed_ingredients)
         negative_names = [name for name, sentiment in candidate_replies if sentiment == "negative"]
         positive_names = [name for name, sentiment in candidate_replies if sentiment == "positive"]
@@ -1267,16 +1298,7 @@ class ChatService:
                 ),
             )
 
-        candidate_payload = [
-            {"name": ingredient.name, "amount": ingredient.amount}
-            for ingredient in proposed_ingredients
-        ]
-        decision = await self._ingredient_confirmation_evaluator.evaluate(
-            user_message,
-            candidate_payload,
-        )
-        if decision is None:
-            decision = _fallback_ingredient_confirmation(user_message)
+        decision = jev_decision or _fallback_ingredient_confirmation(user_message)
         if decision.intent in {"confirmed", "unclear"} and _has_ingredient_edit_expression(
             user_message
         ):
@@ -1543,7 +1565,9 @@ def _is_recipe_regeneration_request(user_message: str) -> bool:
     return bool(
         re.search(
             r"마음에\s*(?:안|들지)|별로|다른\s*(?:레시피|식단|메뉴)|"
-            r"(?:다시|새로)\s*(?:추천|만들|짜|보여)",
+            # 추천 완료 단계에서는 "다시해줘"도 직전 식단을 새로 추천해 달라는
+            # 명확한 제어 명령이다. 이전 레시피 ID를 제외해 추천 노드로 되돌린다.
+            r"(?:다시|새로)\s*(?:추천|만들|짜|보여|해)(?:줘|주세요)?",
             user_message,
             flags=re.IGNORECASE,
         )
@@ -2173,6 +2197,58 @@ def _exclude_confirmed_ingredients(
         for candidate in candidates
         if _ingredient_candidate_key(candidate.name) not in confirmed_keys
     )
+
+
+def _validate_ingredient_edit_result(
+    *,
+    before: Sequence[IngredientCandidate],
+    proposed: Sequence[IngredientCandidate],
+    user_message: str,
+) -> tuple[IngredientCandidate, ...] | None:
+    """LLM이 제안한 목록 변경이 사용자 발화 범위를 벗어나지 않는지 확인합니다.
+
+    의미 해석은 Jev와 구조화 추출기에 맡긴다. 이 함수는 모델이 언급되지 않은
+    재료를 추가·삭제하거나 수량을 바꾸는 것만 막는다. 검증할 수 없으면 기존
+    목록을 유지하고 사용자에게 다시 물어본다.
+    """
+
+    before_by_key = {
+        _ingredient_candidate_key(item.name): item
+        for item in before
+        if _ingredient_candidate_key(item.name)
+    }
+    proposed_by_key: dict[str, IngredientCandidate] = {}
+    for item in proposed:
+        key = _ingredient_candidate_key(item.name)
+        if not key or key in proposed_by_key:
+            return None
+        proposed_by_key[key] = item
+
+    added = [
+        item for key, item in proposed_by_key.items() if key not in before_by_key
+    ]
+    removed = [
+        item for key, item in before_by_key.items() if key not in proposed_by_key
+    ]
+    quantity_changed = [
+        item
+        for key, item in proposed_by_key.items()
+        if key in before_by_key and item.amount != before_by_key[key].amount
+    ]
+    changed = [*added, *removed, *quantity_changed]
+    if not changed:
+        # 수정으로 분류됐지만 실제 변경이 없다면 모델이 사용자 의도를 놓친 것이다.
+        return None
+    if any(not _ingredient_name_is_mentioned(item.name, user_message) for item in changed):
+        return None
+    return tuple(proposed_by_key.values())
+
+
+def _ingredient_name_is_mentioned(name: str, user_message: str) -> bool:
+    """조사·공백 차이를 정규화한 뒤 재료명이 사용자 문장에 있는지 확인합니다."""
+
+    normalized_name = _ingredient_candidate_key(name)
+    return bool(normalized_name and normalized_name in _normalize_confirmation_message(user_message))
 
 
 def _reconcile_explicit_ingredient_edits(
